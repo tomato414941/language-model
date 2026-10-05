@@ -1,0 +1,9 @@
+[project]
+name = "language-model"
+version = "0.1.0"
+description = "A small character language model trained from scratch in pure Python."
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv]
+package = false
