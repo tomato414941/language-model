@@ -1,0 +1,20 @@
+[model]
+width = 64
+heads = 4
+layers = 2
+context = 64
+
+[training]
+steps = 20
+batch_size = 4
+accumulation_steps = 1
+learning_rate = 0.001
+min_learning_rate = 0.0001
+warmup_steps = 2
+weight_decay = 0.1
+gradient_clip = 1.0
+eval_every = 10
+save_every = 10
+eval_batches = 2
+log_every = 5
+seed = 42
