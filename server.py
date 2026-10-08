@@ -1,112 +1,224 @@
-"""Serve the trained character model over HTTP."""
+"""Serve the trained character model with FastAPI."""
 
-import json
-import math
 import os
-import random
+import secrets
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
+from starlette.datastructures import Headers
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from model import load_model
 
 CHECKPOINT = Path(__file__).parent / "checkpoints" / "names.json"
+CONTEXT_LENGTH = 16
+MAX_BODY_BYTES = 4096
 
 
-def generate(model, payload):
-    if not isinstance(payload, dict):
-        raise ValueError("Send a JSON object.")
-    allowed = {"prefix", "count", "temperature", "seed", "max_new_tokens"}
-    if payload.keys() - allowed:
-        raise ValueError("Unknown generation option.")
-    prefix = payload.get("prefix", "")
-    count = payload.get("count", 1)
-    temperature = payload.get("temperature", 0.8)
-    seed = payload.get("seed", random.SystemRandom().randrange(2**32))
-    limit = payload.get("max_new_tokens", model.config.context)
-    if not isinstance(prefix, str):
-        raise ValueError("prefix must be a string.")
-    if type(count) is not int or not 1 <= count <= 20:
-        raise ValueError("count must be an integer between 1 and 20.")
-    if type(seed) is not int or not 0 <= seed < 2**32:
-        raise ValueError("seed must be an integer between 0 and 4294967295.")
-    if type(limit) is not int or not 1 <= limit <= model.config.context:
-        raise ValueError(f"max_new_tokens must be between 1 and {model.config.context}.")
-    if type(temperature) not in (int, float) or not 0 <= temperature <= 2 or not math.isfinite(temperature):
-        raise ValueError("temperature must be a finite number between 0 and 2.")
-    names = [
-        model.generate(prefix, max_new_tokens=limit, temperature=temperature, seed=seed + index)
-        for index in range(count)
-    ]
-    return {"model": "tiny-names-gpt", "names": names, "seed": seed}
+class GenerationRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        json_schema_extra={"examples": [{"prefix": "ka", "count": 3, "seed": 42}]},
+    )
+
+    prefix: str = Field(
+        default="",
+        max_length=CONTEXT_LENGTH - 1,
+        pattern=r"^[a-z]*$",
+        description="Lowercase letters to keep at the start of each name.",
+    )
+    count: int = Field(default=1, ge=1, le=20)
+    temperature: float = Field(
+        default=0.8,
+        ge=0,
+        le=2,
+        allow_inf_nan=False,
+        description="Sampling temperature. Use 0 for the most likely continuation.",
+    )
+    seed: int = Field(
+        default_factory=lambda: secrets.randbits(32),
+        ge=0,
+        le=2**32 - 1,
+        description="Random seed. Omit it to choose a new seed for each request.",
+    )
+    max_new_tokens: int = Field(
+        default=CONTEXT_LENGTH,
+        ge=1,
+        le=CONTEXT_LENGTH,
+        description="Maximum new characters per name; total length is at most 16.",
+    )
 
 
-def create_server(host="127.0.0.1", port=0, checkpoint=CHECKPOINT):
-    model = load_model(checkpoint)
-    capacity = threading.BoundedSemaphore(2)
+class GenerationResponse(BaseModel):
+    model: Literal["tiny-names-gpt"] = "tiny-names-gpt"
+    names: list[str]
+    seed: int
 
-    class Handler(BaseHTTPRequestHandler):
-        def setup(self):
-            super().setup()
-            self.connection.settimeout(10)
 
-        def reply(self, status, value):
-            body = json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
+class ModelInfo(BaseModel):
+    model: Literal["tiny-names-gpt"] = "tiny-names-gpt"
+    parameters: int
+    context_length: int
+    characters: str
+    generation_endpoint: Literal["/generate"] = "/generate"
 
-        def do_GET(self):
-            if self.path == "/healthz":
-                self.reply(200, {"status": "ok"})
-            elif self.path == "/":
-                self.reply(200, {
-                    "model": "tiny-names-gpt",
-                    "parameters": len(model.parameters),
-                    "context_length": model.config.context,
-                    "characters": model.tokenizer.characters,
-                    "generation_endpoint": "/generate",
-                })
-            else:
-                self.reply(404, {"error": "Endpoint not found."})
 
-        def do_POST(self):
-            if self.path != "/generate":
-                self.reply(404, {"error": "Endpoint not found."})
+class HealthResponse(BaseModel):
+    status: Literal["ok"] = "ok"
+
+
+class ErrorResponse(BaseModel):
+    detail: str
+
+
+class GenerationBodyLimit:
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if (
+            scope["type"] != "http"
+            or scope["method"] != "POST"
+            or scope["path"] != "/generate"
+        ):
+            await self.app(scope, receive, send)
+            return
+        content_type = (
+            Headers(scope=scope).get("content-type", "").split(";")[0].strip().lower()
+        )
+        if content_type != "application/json":
+            await JSONResponse(
+                status_code=415,
+                content={"detail": "Use Content-Type: application/json."},
+            )(scope, receive, send)
+            return
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
                 return
-            if self.headers.get_content_type() != "application/json":
-                self.reply(415, {"error": "Use Content-Type: application/json."})
+            body.extend(message.get("body", b""))
+            if len(body) > MAX_BODY_BYTES:
+                await JSONResponse(
+                    status_code=413,
+                    content={"detail": "Send a JSON body of at most 4096 bytes."},
+                )(scope, receive, send)
                 return
-            try:
-                size = int(self.headers.get("Content-Length", "0"))
-                if not 0 < size <= 4096:
-                    raise ValueError("Send a JSON body of at most 4096 bytes.")
-                payload = json.loads(self.rfile.read(size))
-            except (ValueError, UnicodeDecodeError):
-                self.reply(400, {"error": "Send a valid JSON body of at most 4096 bytes."})
-                return
-            if not capacity.acquire(blocking=False):
-                self.reply(429, {"error": "Generation is busy. Try again shortly."})
-                return
-            try:
-                self.reply(200, generate(model, payload))
-            except ValueError as error:
-                self.reply(400, {"error": str(error)})
-            finally:
-                capacity.release()
+            if not message.get("more_body", False):
+                break
+        pending = True
 
-    return ThreadingHTTPServer((host, port), Handler)
+        async def receive_body():
+            nonlocal pending
+            if pending:
+                pending = False
+                return {"type": "http.request", "body": bytes(body), "more_body": False}
+            return await receive()
+
+        await self.app(scope, receive_body, send)
+
+
+def create_app(checkpoint: Path = CHECKPOINT) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.model = load_model(checkpoint)
+        app.state.capacity = threading.BoundedSemaphore(2)
+        try:
+            yield
+        finally:
+            del app.state.model
+            del app.state.capacity
+
+    app = FastAPI(
+        title="Tiny Names GPT",
+        description="Generate names with a small character language model.",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+    app.add_middleware(GenerationBodyLimit)
+
+    @app.middleware("http")
+    async def prevent_caching(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, error: RequestValidationError):
+        # Keep errors JSON-safe even when the supplied number is NaN or infinity.
+        details = [
+            {key: item[key] for key in ("loc", "msg", "type")}
+            for item in error.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": details})
+
+    @app.get("/healthz", summary="Check service health")
+    async def health() -> HealthResponse:
+        return HealthResponse()
+
+    @app.get("/", summary="Get model information")
+    async def model_info(request: Request) -> ModelInfo:
+        model = request.app.state.model
+        return ModelInfo(
+            parameters=len(model.parameters),
+            context_length=model.config.context,
+            characters=model.tokenizer.characters,
+        )
+
+    @app.post(
+        "/generate",
+        summary="Generate names",
+        responses={
+            413: {
+                "model": ErrorResponse,
+                "description": "Request body exceeds 4096 bytes.",
+            },
+            415: {
+                "model": ErrorResponse,
+                "description": "Content-Type must be application/json.",
+            },
+            429: {
+                "model": ErrorResponse,
+                "description": "Both generation slots are busy.",
+            },
+        },
+    )
+    def generate(payload: GenerationRequest, request: Request) -> GenerationResponse:
+        capacity = request.app.state.capacity
+        if not capacity.acquire(blocking=False):
+            raise HTTPException(
+                status_code=429,
+                detail="Generation is busy. Try again shortly.",
+                headers={"Retry-After": "1"},
+            )
+        try:
+            names = [
+                request.app.state.model.generate(
+                    payload.prefix,
+                    max_new_tokens=payload.max_new_tokens,
+                    temperature=payload.temperature,
+                    seed=payload.seed + index,
+                )
+                for index in range(payload.count)
+            ]
+            return GenerationResponse(names=names, seed=payload.seed)
+        finally:
+            capacity.release()
+
+    return app
+
+
+app = create_app()
 
 
 if __name__ == "__main__":
-    server = create_server("0.0.0.0", int(os.environ.get("PORT", "8000")))
-    print(f"Listening on port {server.server_port}", flush=True)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
