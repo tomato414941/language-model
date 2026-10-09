@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 from tokenizers import Tokenizer
 
-from .data import LANGUAGES, Corpus
+from .data import LANGUAGES, Corpus, file_digest
 from .model import LanguageModel, ModelConfig
 
 
@@ -203,7 +203,10 @@ def train(
     resume=None,
     max_steps=None,
     stop_requested=None,
+    initialize_from=None,
 ):
+    if resume is not None and initialize_from is not None:
+        raise ValueError("choose resume or initialize_from for a new training phase")
     corpus = Corpus(data)
     corpus.validate_context(model_config.context)
     precision = select_precision(device, precision)
@@ -237,13 +240,28 @@ def train(
     generator = torch.Generator().manual_seed(config.seed)
     step, tokens_seen, best_loss = 0, 0, math.inf
     skipped_updates = 0
+    initialization = None
+    if initialize_from is not None:
+        saved = load_checkpoint(initialize_from)
+        if ModelConfig(**saved["model_config"]) != model_config:
+            raise ValueError("initialization requires the same model configuration")
+        if Tokenizer.from_str(saved["tokenizer"]).to_str() != corpus.tokenizer.to_str():
+            raise ValueError("initialization requires the same tokenizer")
+        model.load_state_dict(saved["model"])
+        initialization = {
+            "checkpoint_sha256": file_digest(initialize_from),
+            "source_step": saved["step"],
+            "source_tokens_seen": saved["tokens_seen"],
+            "source_dataset_fingerprint": saved["dataset_fingerprint"],
+        }
     if resume:
         saved = load_checkpoint(resume)
         if saved["dataset_fingerprint"] != corpus.fingerprint:
             raise ValueError("resume requires the same prepared dataset")
-        if saved["model_config"] != asdict(model_config) or saved[
-            "train_config"
-        ] != asdict(config):
+        if (
+            ModelConfig(**saved["model_config"]) != model_config
+            or TrainConfig(**saved["train_config"]) != config
+        ):
             raise ValueError(
                 "resume requires the same model and training configuration"
             )
@@ -263,6 +281,7 @@ def train(
             saved["best_loss"],
         )
         skipped_updates = saved["skipped_updates"]
+        initialization = saved.get("initialization")
     target = min(config.steps, max_steps) if max_steps is not None else config.steps
     if target <= step:
         raise ValueError(
@@ -297,6 +316,7 @@ def train(
             "precision": precision,
             "skipped_updates": skipped_updates,
             "torch_version": str(torch.__version__),
+            "initialization": initialization,
         }
 
     if validation["loss"] < best_loss:

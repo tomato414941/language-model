@@ -1,0 +1,24 @@
+[model]
+architecture = "llama"
+width = 576
+heads = 9
+kv_heads = 3
+layers = 30
+intermediate_size = 1536
+context = 2048
+rope_theta = 10000.0
+
+[training]
+steps = 305176
+batch_size = 4
+accumulation_steps = 4
+learning_rate = 0.0004
+min_learning_rate = 0.00004
+warmup_steps = 200
+weight_decay = 0.1
+gradient_clip = 1.0
+eval_every = 2500
+save_every = 2500
+eval_batches = 16
+log_every = 50
+seed = 42

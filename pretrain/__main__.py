@@ -27,6 +27,16 @@ def main(argv=None):
     wikipedia.add_argument("--output", type=Path, default=Path("data/wikipedia-source"))
     wikipedia.add_argument("--documents-per-language", type=int, default=20000)
     wikipedia.add_argument("--seed", type=int, default=42)
+    web = commands.add_parser(
+        "fetch-web", help="品質選別済みの日英Web本文をトークン量を指定して取得する"
+    )
+    web.add_argument("--output", type=Path, default=Path("data/web-source"))
+    web.add_argument("--tokenizer", type=Path, required=True)
+    web.add_argument("--tokens-per-language", type=int, default=500000000)
+    web.add_argument("--wiki-source", type=Path)
+    web.add_argument("--shards-per-language", type=int, default=64)
+    web.add_argument("--workers", type=int, default=4)
+    web.add_argument("--seed", type=int, default=42)
     prepare = commands.add_parser(
         "prepare", help="文書を重複除去し、BPEと学習・検証データを作る"
     )
@@ -46,6 +56,9 @@ def main(argv=None):
     prepare.add_argument("--vocab-size", type=int, default=16384)
     prepare.add_argument("--validation-fraction", type=float, default=0.05)
     prepare.add_argument("--seed", type=int, default=42)
+    prepare.add_argument(
+        "--tokenizer", type=Path, help="既存の自作語彙を使って追加データを準備する"
+    )
     prepare.add_argument(
         "--tokenizer-bytes-per-language",
         type=int,
@@ -68,6 +81,11 @@ def main(argv=None):
         default="auto",
     )
     training.add_argument("--resume", type=Path, nargs="?", const=Path("last.pt"))
+    training.add_argument(
+        "--initialize-from",
+        type=Path,
+        help="保存したモデルの重みから新しい学習段階を開始する",
+    )
     training.add_argument(
         "--max-steps",
         type=int,
@@ -109,6 +127,19 @@ def main(argv=None):
                     indent=2,
                 )
             )
+        elif args.command == "fetch-web":
+            from .web import fetch_web
+
+            result = fetch_web(
+                args.output,
+                args.tokenizer,
+                args.tokens_per_language,
+                args.wiki_source,
+                args.shards_per_language,
+                args.workers,
+                args.seed,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command == "prepare":
             result = prepare_data(
                 args.japanese,
@@ -119,6 +150,7 @@ def main(argv=None):
                 args.seed,
                 args.provenance,
                 args.tokenizer_bytes_per_language,
+                args.tokenizer,
             )
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command == "train":
@@ -151,6 +183,7 @@ def main(argv=None):
                     resume,
                     args.max_steps,
                     lambda: stopped,
+                    args.initialize_from,
                 )
             finally:
                 for s, handler in previous.items():

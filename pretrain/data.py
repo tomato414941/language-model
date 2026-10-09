@@ -61,6 +61,7 @@ def prepare_data(
     seed=42,
     provenance=None,
     tokenizer_bytes_per_language=8 * 1024 * 1024,
+    tokenizer_path=None,
 ):
     if type(vocabulary_size) is not int or not 258 <= vocabulary_size <= 2**32 - 1:
         raise ValueError("vocabulary_size must be an integer of at least 258")
@@ -142,9 +143,20 @@ def prepare_data(
 
         # Train our own byte BPE on training documents only. Every byte has a token,
         # so unseen Japanese/English text can still be encoded without an UNK token.
-        tokenizer = Tokenizer(models.BPE())
-        tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
-        tokenizer.decoder = decoders.ByteLevel()
+        tokenizer = (
+            Tokenizer.from_file(str(tokenizer_path))
+            if tokenizer_path is not None
+            else Tokenizer(models.BPE())
+        )
+        if tokenizer_path is None:
+            tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+            tokenizer.decoder = decoders.ByteLevel()
+        elif tokenizer.get_vocab_size() != vocabulary_size or any(
+            tokenizer.token_to_id(token) is None for token in (BOS, EOS)
+        ):
+            raise ValueError(
+                "the reused tokenizer must match the vocabulary and BOS/EOS tokens"
+            )
         trainer = trainers.BpeTrainer(
             vocab_size=vocabulary_size,
             min_frequency=2,
@@ -177,20 +189,29 @@ def prepare_data(
         balanced = itertools.chain.from_iterable(
             itertools.zip_longest(tokenizer_documents("ja"), tokenizer_documents("en"))
         )
-        tokenizer.train_from_iterator(
-            (text for text in balanced if text is not None), trainer=trainer
-        )
-        tokenizer.save(str(staging / "tokenizer.json"))
+        if tokenizer_path is None:
+            tokenizer.train_from_iterator(
+                (text for text in balanced if text is not None), trainer=trainer
+            )
+            tokenizer.save(str(staging / "tokenizer.json"))
+            tokenizer_metadata = {
+                "max_bytes_per_language": tokenizer_bytes_per_language,
+                "samples": tokenizer_sample,
+            }
+        else:
+            shutil.copyfile(tokenizer_path, staging / "tokenizer.json")
+            tokenizer_metadata = {
+                "reused": True,
+                "source_filename": Path(tokenizer_path).name,
+                "source_sha256": file_digest(tokenizer_path),
+            }
         manifest = {
             "version": 1,
             "dtype": TOKEN_DTYPE.str,
             "seed": seed,
             "vocabulary_size": tokenizer.get_vocab_size(),
             "tokenizer_sha256": file_digest(staging / "tokenizer.json"),
-            "tokenizer_training": {
-                "max_bytes_per_language": tokenizer_bytes_per_language,
-                "samples": tokenizer_sample,
-            },
+            "tokenizer_training": tokenizer_metadata,
             "duplicates_removed": duplicates,
             "inputs": inputs,
             "provenance": source_manifest,

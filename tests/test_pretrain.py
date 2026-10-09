@@ -167,6 +167,110 @@ class PretrainingTests(unittest.TestCase):
             second.generate(restored_tokenizer, prompt, max_new_tokens=12, seed=9),
         )
 
+    def test_rotary_grouped_attention_learns_both_languages_causally(self):
+        self.model_config = ModelConfig(
+            width=24,
+            heads=4,
+            kv_heads=2,
+            layers=2,
+            context=16,
+            architecture="llama",
+            intermediate_size=64,
+        )
+        torch.manual_seed(42)
+        model = LanguageModel(258, self.model_config).eval()
+        first = torch.tensor([[1, 2, 3, 4, 5]])
+        second = torch.tensor([[1, 2, 3, 200, 201]])
+        torch.testing.assert_close(
+            model(first)[:, :3], model(second)[:, :3], rtol=0, atol=1e-6
+        )
+        before = evaluate(
+            model, self.corpus, torch.device("cpu"), batches=2, batch_size=4
+        )
+        after = self.run_training("modern", self.config(steps=24))["validation"]
+        for language in ("ja", "en"):
+            self.assertLess(after[language]["loss"], before[language]["loss"] * 0.8)
+
+    def test_rotary_model_resumes_the_same_updates_and_restores_generation(self):
+        self.model_config = ModelConfig(
+            width=24,
+            heads=4,
+            kv_heads=2,
+            layers=2,
+            context=16,
+            architecture="llama",
+            intermediate_size=64,
+        )
+        self.run_training("modern-continuous")
+        self.run_training("modern-resumed", max_steps=3)
+        self.run_training("modern-resumed", resume=self.root / "modern-resumed/last.pt")
+        continuous, tokenizer, first = load_model(
+            self.root / "modern-continuous/last.pt", torch.device("cpu")
+        )
+        resumed, _, second = load_model(
+            self.root / "modern-resumed/last.pt", torch.device("cpu")
+        )
+        self.assertEqual(first["tokens_seen"], second["tokens_seen"])
+        for name, parameter in continuous.state_dict().items():
+            torch.testing.assert_close(
+                parameter, resumed.state_dict()[name], rtol=0, atol=0
+            )
+        prompt = "日本語とEnglish"
+        self.assertEqual(
+            continuous.generate(tokenizer, prompt, max_new_tokens=8, seed=7),
+            resumed.generate(tokenizer, prompt, max_new_tokens=8, seed=7),
+        )
+
+    def test_new_training_phase_keeps_learned_predictions_on_additional_data(self):
+        self.run_training("phase-one", max_steps=3)
+        source = self.root / "phase-one/last.pt"
+        old = load_checkpoint(source)
+        new_data = self.root / "additional-data"
+        prepare_data(
+            self.japanese,
+            self.english,
+            new_data,
+            vocabulary_size=258,
+            seed=99,
+            tokenizer_path=self.data / "tokenizer.json",
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            train(
+                new_data,
+                self.root / "phase-two",
+                self.model_config,
+                self.config(steps=12),
+                torch.device("cpu"),
+                initialize_from=source,
+                stop_requested=lambda: True,
+            )
+        initialized = load_checkpoint(self.root / "phase-two/last.pt")
+        self.assertEqual(initialized["step"], 0)
+        self.assertEqual(
+            initialized["initialization"]["source_tokens_seen"], old["tokens_seen"]
+        )
+        self.assertEqual(
+            initialized["dataset_fingerprint"], Corpus(new_data).fingerprint
+        )
+        for name, parameter in old["model"].items():
+            torch.testing.assert_close(
+                parameter, initialized["model"][name], rtol=0, atol=0
+            )
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = train(
+                new_data,
+                self.root / "phase-two",
+                self.model_config,
+                self.config(steps=12),
+                torch.device("cpu"),
+                resume=self.root / "phase-two/last.pt",
+                max_steps=2,
+            )
+        self.assertEqual(result["step"], 2)
+        self.assertEqual(
+            Corpus(new_data).tokenizer.to_str(), self.corpus.tokenizer.to_str()
+        )
+
     def test_prepared_data_reports_corruption_before_training(self):
         """改変されたトークンファイルを検出して、データの破損を通知する。"""
         path = self.data / "train_ja.bin"
