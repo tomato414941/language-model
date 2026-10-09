@@ -21,6 +21,12 @@ def main(argv=None):
         description="日本語・英語の言語モデルをゼロから学習する"
     )
     commands = parser.add_subparsers(dest="command", required=True)
+    wikipedia = commands.add_parser(
+        "fetch-wikipedia", help="日本語・英語のWikipedia本文を出典付きで取得する"
+    )
+    wikipedia.add_argument("--output", type=Path, default=Path("data/wikipedia-source"))
+    wikipedia.add_argument("--documents-per-language", type=int, default=20000)
+    wikipedia.add_argument("--seed", type=int, default=42)
     prepare = commands.add_parser(
         "prepare", help="文書を重複除去し、BPEと学習・検証データを作る"
     )
@@ -40,6 +46,15 @@ def main(argv=None):
     prepare.add_argument("--vocab-size", type=int, default=16384)
     prepare.add_argument("--validation-fraction", type=float, default=0.05)
     prepare.add_argument("--seed", type=int, default=42)
+    prepare.add_argument(
+        "--tokenizer-bytes-per-language",
+        type=int,
+        default=8 * 1024 * 1024,
+        help="語彙学習に使う各言語の本文量の上限（UTF-8バイト数）",
+    )
+    prepare.add_argument(
+        "--provenance", type=Path, help="入力本文の出典とチェックサムを記録したJSON"
+    )
     training = commands.add_parser(
         "train", help="学習し、再開可能なチェックポイントを保存する"
     )
@@ -82,7 +97,19 @@ def main(argv=None):
         )
     args = parser.parse_args(argv)
     try:
-        if args.command == "prepare":
+        if args.command == "fetch-wikipedia":
+            from .wikipedia import fetch_wikipedia
+
+            print(
+                json.dumps(
+                    fetch_wikipedia(
+                        args.output, args.documents_per_language, args.seed
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        elif args.command == "prepare":
             result = prepare_data(
                 args.japanese,
                 args.english,
@@ -90,6 +117,8 @@ def main(argv=None):
                 args.vocab_size,
                 args.validation_fraction,
                 args.seed,
+                args.provenance,
+                args.tokenizer_bytes_per_language,
             )
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command == "train":

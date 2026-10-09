@@ -12,6 +12,7 @@ dependencies = [
 [project.optional-dependencies]
 train = ["numpy>=2.2,<3", "tokenizers>=0.22,<1", "torch>=2.6,<3"]
 train-cpu = ["numpy>=2.2,<3", "tokenizers>=0.22,<1", "torch>=2.6,<3"]
+corpus = ["huggingface-hub>=0.35,<2", "pyarrow>=21,<30"]
 
 [tool.uv]
 package = false
