@@ -111,7 +111,7 @@ def fetch_web(
     output = Path(output)
     if output.exists():
         raise ValueError("output already exists; select a new source directory")
-    Tokenizer.from_file(str(tokenizer_path))
+    tokenizer = Tokenizer.from_file(str(tokenizer_path))
     wiki_manifest = None
     if wiki_source is not None:
         wiki_source = Path(wiki_source)
@@ -170,7 +170,7 @@ def fetch_web(
                 ):
                     result = sample_web_shard(
                         table,
-                        Tokenizer.from_file(str(tokenizer_path)),
+                        tokenizer,
                         source,
                         limit,
                         random.Random(f"{seed}:{language}:{shard}"),
