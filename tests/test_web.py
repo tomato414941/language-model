@@ -68,7 +68,7 @@ class WebCorpusTests(unittest.TestCase):
         )
         self.tokenizer = Corpus(self.data).tokenizer
 
-    def export(self, output, workers=2):
+    def export(self, output, workers=2, tokens=2000, shards=2):
         def dataset_info(repo, revision):
             return SimpleNamespace(
                 sha=revision,
@@ -93,8 +93,8 @@ class WebCorpusTests(unittest.TestCase):
             return fetch_web(
                 output,
                 self.data / "tokenizer.json",
-                2000,
-                shards_per_language=2,
+                tokens,
+                shards_per_language=shards,
                 workers=workers,
             )
 
@@ -123,6 +123,14 @@ class WebCorpusTests(unittest.TestCase):
                 (first / f"{language}.jsonl").read_bytes(),
                 (second / f"{language}.jsonl").read_bytes(),
             )
+
+    def test_additional_shards_fill_the_budget_after_a_small_shard_is_exhausted(self):
+        manifest = self.export(self.root / "expanded", tokens=11000, shards=1)
+        for language in ("ja", "en"):
+            metadata = manifest["files"][f"{language}.jsonl"]
+            self.assertLess(metadata["shards"][0]["tokens"], 11000)
+            self.assertEqual(len(metadata["shards"]), 2)
+            self.assertGreaterEqual(metadata["web_tokens"], 11000)
 
     def test_sampling_keeps_confident_educational_text_and_filters_repeated_lines(self):
         source = SOURCES["en"]

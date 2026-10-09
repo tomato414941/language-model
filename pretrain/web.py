@@ -84,7 +84,7 @@ def sample_web_shard(parquet, tokenizer, source, limit, generator, destination):
                 tokens += len(encoding.ids) + 2
                 if tokens >= limit:
                     return {"documents": count, "tokens": tokens, "rejected": rejected}
-    raise ValueError(f"shard contains only {tokens} eligible tokens; requested {limit}")
+    return {"documents": count, "tokens": tokens, "rejected": rejected}
 
 
 def fetch_web(
@@ -125,7 +125,7 @@ def fetch_web(
                 raise ValueError(
                     "Wikipedia source checksum does not match its provenance"
                 )
-    jobs, resolved = [], {}
+    jobs, resolved, unused = [], {}, {}
     api = HfApi(token=False)
     for language, source in SOURCES.items():
         info = api.dataset_info(source["repository"], revision=source["revision"])
@@ -136,7 +136,9 @@ def fetch_web(
             and item.rfilename.endswith(".parquet")
         )
         random.Random(f"{seed}:{language}").shuffle(shards)
-        shards = shards[: min(shards_per_language, tokens_per_language, len(shards))]
+        selected_count = min(shards_per_language, tokens_per_language, len(shards))
+        unused[language] = shards[selected_count:]
+        shards = shards[:selected_count]
         if not shards:
             raise ValueError(f"dataset has no {language} Parquet shards")
         resolved[language] = {
@@ -195,6 +197,24 @@ def fetch_web(
             }
             for future in as_completed(futures):
                 results[futures[future]] = future.result()
+        for language in LANGUAGES:
+            remaining = tokens_per_language - sum(
+                results[index]["tokens"]
+                for index, job in enumerate(jobs)
+                if job[0] == language
+            )
+            for shard in unused[language]:
+                if remaining <= 0:
+                    break
+                index = len(jobs)
+                job = (language, shard, remaining)
+                jobs.append(job)
+                results[index] = download(index, job)
+                remaining -= results[index]["tokens"]
+            if remaining > 0:
+                raise ValueError(
+                    f"{language} sources are short of the requested budget by {remaining} tokens"
+                )
         manifest = {
             "version": 1,
             "sources": resolved,
