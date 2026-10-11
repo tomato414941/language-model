@@ -5,7 +5,7 @@ from pathlib import Path
 
 import torch
 
-from .data import Corpus, prepare_data
+from .data import Corpus, file_digest, prepare_data
 from .training import (
     evaluate,
     load_model,
@@ -37,6 +37,10 @@ def main(argv=None):
     web.add_argument("--shards-per-language", type=int, default=64)
     web.add_argument("--workers", type=int, default=4)
     web.add_argument("--seed", type=int, default=42)
+    benchmarks = commands.add_parser(
+        "fetch-benchmarks", help="日英の選択式ベンチマークを出典付きで取得する"
+    )
+    benchmarks.add_argument("--output", type=Path, default=Path("data/benchmarks"))
     prepare = commands.add_parser(
         "prepare", help="文書を重複除去し、BPEと学習・検証データを作る"
     )
@@ -106,7 +110,20 @@ def main(argv=None):
     generation.add_argument("--temperature", type=float, default=0.8)
     generation.add_argument("--top-k", type=int, default=50)
     generation.add_argument("--seed", type=int, default=42)
-    for command in (evaluation, generation):
+    benchmark = commands.add_parser(
+        "benchmark", help="保存したモデルの正答率を選択式ベンチマークで測る"
+    )
+    benchmark.add_argument("--benchmarks", type=Path, default=Path("data/benchmarks"))
+    benchmark.add_argument(
+        "--tasks", nargs="+", help="測るベンチマーク（既定はすべて）"
+    )
+    benchmark.add_argument(
+        "--limit", type=int, help="各ベンチマークで測る問題数（毎回同じ問題を選ぶ）"
+    )
+    benchmark.add_argument("--batch-tokens", type=int, default=4096)
+    benchmark.add_argument("--threads", type=int, default=4)
+    benchmark.add_argument("--output", type=Path, help="結果を保存するJSONファイル")
+    for command in (evaluation, generation, benchmark):
         command.add_argument(
             "--checkpoint", type=Path, default=Path("runs/bilingual/best.pt")
         )
@@ -139,6 +156,11 @@ def main(argv=None):
                 args.workers,
                 args.seed,
             )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "fetch-benchmarks":
+            from .benchmarks import fetch_benchmarks
+
+            result = fetch_benchmarks(args.output)
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command == "prepare":
             result = prepare_data(
@@ -189,9 +211,39 @@ def main(argv=None):
                 for s, handler in previous.items():
                     signal.signal(s, handler)
         else:
+            if args.command == "benchmark":
+                if args.threads <= 0:
+                    raise ValueError("threads must be positive")
+                torch.set_num_threads(args.threads)
             device = select_device(args.device)
             model, tokenizer, payload = load_model(args.checkpoint, device)
-            if args.command == "evaluate":
+            if args.command == "benchmark":
+                from .benchmarks import evaluate_benchmarks, load_benchmarks
+
+                precision = select_precision(device)
+                result = {
+                    "checkpoint": str(args.checkpoint),
+                    "step": payload["step"],
+                    "tokens_seen": payload["tokens_seen"],
+                    "parameters": sum(p.numel() for p in model.parameters()),
+                    "benchmarks_sha256": file_digest(args.benchmarks / "sources.json"),
+                    "limit": args.limit,
+                    "precision": precision,
+                    "results": evaluate_benchmarks(
+                        model,
+                        tokenizer,
+                        load_benchmarks(args.benchmarks, args.tasks, args.limit),
+                        device,
+                        precision,
+                        args.batch_tokens,
+                    ),
+                }
+                text = json.dumps(result, indent=2)
+                if args.output is not None:
+                    args.output.parent.mkdir(parents=True, exist_ok=True)
+                    args.output.write_text(text + "\n", encoding="utf-8")
+                print(text)
+            elif args.command == "evaluate":
                 corpus = Corpus(args.data)
                 corpus.validate_context(model.config.context)
                 if corpus.fingerprint != payload["dataset_fingerprint"]:
