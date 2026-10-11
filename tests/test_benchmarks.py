@@ -32,6 +32,7 @@ from pretrain.benchmarks import (
 from pretrain.data import file_digest, prepare_data
 from pretrain.model import LanguageModel, ModelConfig
 from pretrain.training import TrainConfig, train
+from scripts import inspect_pretrain
 
 ROWS = {
     "hellaswag": [
@@ -115,6 +116,18 @@ class FixedModel(torch.nn.Module):
         return self.logits.expand(*tokens.shape, -1)
 
 
+class CpuTorch:
+    """Stand in for torch so the GPU inspection script runs on the CPU."""
+
+    cuda = SimpleNamespace(get_device_name=lambda: "CPU")
+
+    def __getattr__(self, name):
+        return getattr(torch, name)
+
+    def device(self, name):
+        return torch.device("cpu")
+
+
 class BenchmarkTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -155,6 +168,31 @@ class BenchmarkTests(unittest.TestCase):
             patch("pretrain.benchmarks.download", side_effect=download),
         ):
             return fetch_benchmarks(output)
+
+    def train_checkpoint(self):
+        for language, text in (("ja", "あいう" * 30), ("en", "abc " * 40)):
+            with (self.root / f"{language}.jsonl").open("w", encoding="utf-8") as file:
+                for index in range(6):
+                    file.write(json.dumps({"text": f"{text}{index}"}) + "\n")
+        prepare_data(
+            self.root / "ja.jsonl", self.root / "en.jsonl", self.root / "data", 258
+        )
+        config = TrainConfig(
+            steps=2,
+            batch_size=2,
+            accumulation_steps=1,
+            warmup_steps=1,
+            eval_batches=1,
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            train(
+                self.root / "data",
+                self.root / "run",
+                ModelConfig(width=24, heads=4, layers=1, context=64),
+                config,
+                torch.device("cpu"),
+                max_steps=1,
+            )
 
     def test_fetch_converts_each_benchmark_to_shared_items_with_provenance(self):
         """取得したファイルを検証し、各ベンチマークを共通の問題形式に変換して出典とともに保存する。"""
@@ -250,29 +288,7 @@ class BenchmarkTests(unittest.TestCase):
 
     def test_benchmark_command_saves_accuracy_for_a_trained_checkpoint(self):
         """学習済みチェックポイントの正答率を、各ベンチマークについて保存する。"""
-        for language, text in (("ja", "あいう" * 30), ("en", "abc " * 40)):
-            with (self.root / f"{language}.jsonl").open("w", encoding="utf-8") as file:
-                for index in range(6):
-                    file.write(json.dumps({"text": f"{text}{index}"}) + "\n")
-        prepare_data(
-            self.root / "ja.jsonl", self.root / "en.jsonl", self.root / "data", 258
-        )
-        config = TrainConfig(
-            steps=2,
-            batch_size=2,
-            accumulation_steps=1,
-            warmup_steps=1,
-            eval_batches=1,
-        )
-        with contextlib.redirect_stdout(io.StringIO()):
-            train(
-                self.root / "data",
-                self.root / "run",
-                ModelConfig(width=24, heads=4, layers=1, context=64),
-                config,
-                torch.device("cpu"),
-                max_steps=1,
-            )
+        self.train_checkpoint()
         self.fetch(self.root / "benchmarks")
         output = self.root / "results.json"
         with contextlib.redirect_stdout(io.StringIO()):
@@ -299,6 +315,39 @@ class BenchmarkTests(unittest.TestCase):
                 metrics["items"], len(ROWS[name]) * len(TASKS[name]["files"])
             )
             self.assertTrue(0 <= metrics["normalized_accuracy"] <= 1)
+
+    def test_inspection_saves_benchmark_accuracy_in_the_summary(self):
+        """学習後の確認で、選んだチェックポイントの正答率を要約に保存する。"""
+        self.train_checkpoint()
+        self.fetch(self.root / "benchmarks")
+        with (
+            patch("scripts.inspect_pretrain.torch", CpuTorch()),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            inspect_pretrain.main(
+                [
+                    "--output",
+                    str(self.root / "run"),
+                    "--data",
+                    str(self.root / "data"),
+                    "--results",
+                    str(self.root / "results"),
+                    "--benchmarks",
+                    str(self.root / "benchmarks"),
+                ]
+            )
+        summary = json.loads(
+            (self.root / "results/summary.json").read_text(encoding="utf-8")
+        )
+        benchmarks = summary["benchmarks"]
+        self.assertEqual(
+            benchmarks["sha256"], file_digest(self.root / "benchmarks/sources.json")
+        )
+        self.assertEqual(set(benchmarks["results"]), set(TASKS))
+        for name, metrics in benchmarks["results"].items():
+            self.assertEqual(
+                metrics["items"], len(ROWS[name]) * len(TASKS[name]["files"])
+            )
 
 
 if __name__ == "__main__":

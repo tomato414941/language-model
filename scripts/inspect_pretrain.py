@@ -5,6 +5,7 @@ from pathlib import Path
 
 import torch
 
+from pretrain.benchmarks import evaluate_benchmarks, load_benchmarks
 from pretrain.data import Corpus, file_digest
 from pretrain.training import (
     atomic_save,
@@ -22,6 +23,7 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--results", type=Path, required=True)
+    parser.add_argument("--benchmarks", type=Path)
     args = parser.parse_args(argv)
     root, results = args.output, args.results
     results.mkdir(parents=True, exist_ok=True)
@@ -34,6 +36,19 @@ def main(argv=None):
     if corpus.fingerprint != saved["dataset_fingerprint"]:
         raise ValueError("inspection requires the checkpoint's held-out dataset")
     validation = evaluate(model, corpus, device, "bfloat16", batches=16, batch_size=4)
+    benchmarks = None
+    if args.benchmarks is not None:
+        benchmarks = {
+            "sha256": file_digest(args.benchmarks / "sources.json"),
+            "results": evaluate_benchmarks(
+                model,
+                tokenizer,
+                load_benchmarks(args.benchmarks),
+                device,
+                "bfloat16",
+                batch_tokens=16384,
+            ),
+        }
     prompts = {
         "ja": ["# 日本\n日本は", "# 地球\n地球は", "# 機械学習\n機械学習は"],
         "en": [
@@ -77,6 +92,7 @@ def main(argv=None):
         "selected_checkpoint_step": saved["step"],
         "selected_checkpoint_tokens_seen": saved["tokens_seen"],
         "validation": validation,
+        "benchmarks": benchmarks,
         "parameters": sum(p.numel() for p in model.parameters()),
         "precision": last["precision"],
         "skipped_updates": last["skipped_updates"],
