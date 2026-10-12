@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import signal
 from pathlib import Path
 
@@ -96,6 +97,14 @@ def main(argv=None):
         help="学習計画を維持し、指定ステップで一旦保存して終了する",
     )
     training.add_argument("--threads", type=int, default=4)
+    training.add_argument(
+        "--hub-repo",
+        default=os.environ.get("HF_MODEL_REPO"),
+        help="学習段階の終了時にチェックポイントを保存するHFリポジトリ",
+    )
+    training.add_argument(
+        "--hub-run-id", help="HFに保存する学習段階の名前（既定は出力ディレクトリ名）"
+    )
     evaluation = commands.add_parser(
         "evaluate", help="保存したモデルの検証損失を言語ごとに測る"
     )
@@ -210,6 +219,16 @@ def main(argv=None):
             finally:
                 for s, handler in previous.items():
                     signal.signal(s, handler)
+            if args.hub_repo:
+                from .hub import publish_training_run
+
+                result = publish_training_run(
+                    args.output, args.hub_repo, args.hub_run_id
+                )
+                print(
+                    json.dumps({"event": "hub_saved", **result}, ensure_ascii=False),
+                    flush=True,
+                )
         else:
             if args.command == "benchmark":
                 if args.threads <= 0:

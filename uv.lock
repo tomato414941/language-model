@@ -352,6 +352,9 @@ corpus = [
     { name = "huggingface-hub" },
     { name = "pyarrow" },
 ]
+hub = [
+    { name = "huggingface-hub" },
+]
 train = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'extra-14-language-model-train') or (extra == 'extra-14-language-model-train' and extra == 'extra-14-language-model-train-cpu')" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'extra-14-language-model-train') or (extra == 'extra-14-language-model-train' and extra == 'extra-14-language-model-train-cpu')" },
@@ -375,6 +378,7 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.143.0" },
     { name = "huggingface-hub", marker = "extra == 'corpus'", specifier = ">=0.35,<2" },
+    { name = "huggingface-hub", marker = "extra == 'hub'", specifier = ">=0.35,<2" },
     { name = "numpy", marker = "extra == 'train'", specifier = ">=2.2,<3" },
     { name = "numpy", marker = "extra == 'train-cpu'", specifier = ">=2.2,<3" },
     { name = "pyarrow", marker = "extra == 'corpus'", specifier = ">=21,<30" },
@@ -385,7 +389,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'train-cpu'", specifier = ">=2.6,<3", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "language-model", extra = "train-cpu" } },
     { name = "uvicorn", specifier = ">=0.54.0" },
 ]
-provides-extras = ["train", "train-cpu", "corpus"]
+provides-extras = ["train", "train-cpu", "corpus", "hub"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "httpx2", specifier = ">=2.13.1" }]
