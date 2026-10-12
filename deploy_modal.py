@@ -64,6 +64,12 @@ app = modal.App("language-model-api")
 
 @app.function(
     image=image,
+    env={
+        "MODEL_ID": MODEL_ID,
+        "HF_MODEL_REPO": MODEL_REPO,
+        "HF_MODEL_RUN_ID": MODEL_RUN,
+        "HF_MODEL_REVISION": MODEL_REVISION,
+    },
     secrets=[
         modal.Secret.from_name(
             "language-model-api-key", required_keys=["MODEL_API_KEY"]
