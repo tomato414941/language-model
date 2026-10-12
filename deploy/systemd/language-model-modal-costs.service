@@ -1,0 +1,11 @@
+[Unit]
+Description=Check actual Modal billing totals
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/language-model
+Environment=MODAL_PROFILE=tomato414941
+ExecStart=%h/projects/language-model/.venv/bin/python %h/projects/language-model/scripts/modal_costs.py --workspace tomato414941 --output %h/projects/language-model/runs/modal-costs.json
+TimeoutStartSec=90
+Nice=19
+UMask=0077

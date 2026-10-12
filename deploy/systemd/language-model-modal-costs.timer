@@ -1,0 +1,10 @@
+[Unit]
+Description=Check Modal costs once a day
+
+[Timer]
+OnCalendar=*-*-* 00:15:00 UTC
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

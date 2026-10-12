@@ -905,7 +905,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.143.0" },
     { name = "huggingface-hub", marker = "extra == 'corpus'", specifier = ">=0.35,<2" },
     { name = "huggingface-hub", marker = "extra == 'hub'", specifier = ">=0.35,<2" },
-    { name = "modal", marker = "extra == 'deploy'", specifier = ">=1.4.2,<2" },
+    { name = "modal", marker = "extra == 'deploy'", specifier = ">=1.6.1,<2" },
     { name = "numpy", marker = "extra == 'train'", specifier = ">=2.2,<3" },
     { name = "numpy", marker = "extra == 'train-cpu'", specifier = ">=2.2,<3" },
     { name = "pyarrow", marker = "extra == 'corpus'", specifier = ">=21,<30" },
