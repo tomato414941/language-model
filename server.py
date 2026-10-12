@@ -1,4 +1,4 @@
-"""Serve the trained character model with FastAPI."""
+"""Serve locally trained models with FastAPI and the Responses API."""
 
 import os
 import secrets
@@ -12,9 +12,17 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.datastructures import Headers
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from model import load_model
+from responses_api import (
+    APIError,
+    install_routes,
+)
+from responses_api import (
+    validation_error as response_validation_error,
+)
 
 CHECKPOINT = Path(__file__).parent / "checkpoints" / "names.json"
 CONTEXT_LENGTH = 16
@@ -86,18 +94,29 @@ class GenerationBodyLimit:
         if (
             scope["type"] != "http"
             or scope["method"] != "POST"
-            or scope["path"] != "/generate"
+            or scope["path"] not in ("/generate", "/v1/responses")
         ):
             await self.app(scope, receive, send)
             return
         content_type = (
             Headers(scope=scope).get("content-type", "").split(";")[0].strip().lower()
         )
+        responses = scope["path"] == "/v1/responses"
+        limit = 65536 if responses else MAX_BODY_BYTES
         if content_type != "application/json":
-            await JSONResponse(
-                status_code=415,
-                content={"detail": "Use Content-Type: application/json."},
-            )(scope, receive, send)
+            response = (
+                APIError(
+                    "Use Content-Type: application/json.",
+                    code="invalid_content_type",
+                    status=415,
+                ).response()
+                if responses
+                else JSONResponse(
+                    status_code=415,
+                    content={"detail": "Use Content-Type: application/json."},
+                )
+            )
+            await response(scope, receive, send)
             return
         body = bytearray()
         while True:
@@ -105,11 +124,20 @@ class GenerationBodyLimit:
             if message["type"] == "http.disconnect":
                 return
             body.extend(message.get("body", b""))
-            if len(body) > MAX_BODY_BYTES:
-                await JSONResponse(
-                    status_code=413,
-                    content={"detail": "Send a JSON body of at most 4096 bytes."},
-                )(scope, receive, send)
+            if len(body) > limit:
+                response = (
+                    APIError(
+                        "Send a JSON body of at most 65536 bytes.",
+                        code="request_too_large",
+                        status=413,
+                    ).response()
+                    if responses
+                    else JSONResponse(
+                        status_code=413,
+                        content={"detail": "Send a JSON body of at most 4096 bytes."},
+                    )
+                )
+                await response(scope, receive, send)
                 return
             if not message.get("more_body", False):
                 break
@@ -125,7 +153,7 @@ class GenerationBodyLimit:
         await self.app(scope, receive_body, send)
 
 
-def create_app(checkpoint: Path = CHECKPOINT) -> FastAPI:
+def create_app(checkpoint: Path = CHECKPOINT, *, response_settings=None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.model = load_model(checkpoint)
@@ -133,16 +161,18 @@ def create_app(checkpoint: Path = CHECKPOINT) -> FastAPI:
         try:
             yield
         finally:
+            app.state.responses.backend = None
             del app.state.model
             del app.state.capacity
 
     app = FastAPI(
-        title="Tiny Names GPT",
-        description="Generate names with a small character language model.",
+        title="Language Model API",
+        description="Generate text with a model trained from scratch using the Responses API.",
         version="0.1.0",
         lifespan=lifespan,
     )
     app.add_middleware(GenerationBodyLimit)
+    install_routes(app, response_settings)
 
     @app.middleware("http")
     async def prevent_caching(request: Request, call_next):
@@ -152,12 +182,28 @@ def create_app(checkpoint: Path = CHECKPOINT) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, error: RequestValidationError):
+        if request.url.path.startswith("/v1/"):
+            return response_validation_error(error)
         # Keep errors JSON-safe even when the supplied number is NaN or infinity.
         details = [
             {key: item[key] for key in ("loc", "msg", "type")}
             for item in error.errors()
         ]
         return JSONResponse(status_code=422, content={"detail": details})
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(request: Request, error: StarletteHTTPException):
+        if request.url.path.startswith("/v1/"):
+            return APIError(
+                str(error.detail),
+                code="not_found" if error.status_code == 404 else "invalid_request",
+                status=error.status_code,
+            ).response()
+        return JSONResponse(
+            status_code=error.status_code,
+            content={"detail": error.detail},
+            headers=error.headers,
+        )
 
     @app.get("/healthz", summary="Check service health")
     async def health() -> HealthResponse:

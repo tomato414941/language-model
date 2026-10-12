@@ -191,6 +191,26 @@ class LanguageModel(nn.Module):
         temperature=0.8,
         top_k=50,
         seed=42,
+        top_p=1.0,
+    ):
+        generated = self.sample_tokens(
+            tokenizer, prompt, max_new_tokens, temperature, top_k, seed, top_p
+        )
+        eos = tokenizer.token_to_id("<|eos|>")
+        return prompt + tokenizer.decode(
+            [token for token in generated if token != eos], skip_special_tokens=True
+        )
+
+    def sample_tokens(
+        self,
+        tokenizer,
+        prompt="",
+        max_new_tokens=128,
+        temperature=0.8,
+        top_k=50,
+        seed=42,
+        top_p=1.0,
+        stop_requested=None,
     ):
         if type(max_new_tokens) is not int or max_new_tokens <= 0:
             raise ValueError("max_new_tokens must be a positive integer")
@@ -198,33 +218,43 @@ class LanguageModel(nn.Module):
             raise ValueError("temperature must be finite and nonnegative")
         if type(top_k) is not int or top_k < 0:
             raise ValueError("top_k must be a nonnegative integer")
+        if not math.isfinite(top_p) or not 0 < top_p <= 1:
+            raise ValueError("top_p must be finite and within (0, 1]")
         device = self.embedding.weight.device
         bos = tokenizer.token_to_id("<|bos|>")
         eos = tokenizer.token_to_id("<|eos|>")
         tokens = [bos, *tokenizer.encode(prompt, add_special_tokens=False).ids]
-        generated = []
         generator = torch.Generator(device=device).manual_seed(seed)
         was_training = self.training
         self.eval()
         try:
             for _ in range(max_new_tokens):
+                if stop_requested is not None and stop_requested():
+                    break
                 window = torch.tensor([tokens[-self.config.context :]], device=device)
-                logits = self(window)[0, -1].float()
-                logits[bos] = -torch.inf
-                if temperature == 0:
-                    token = logits.argmax().item()
-                else:
-                    logits = logits / temperature
-                    if top_k:
-                        cutoff = logits.topk(min(top_k, logits.numel())).values[-1]
-                        logits = logits.masked_fill(logits < cutoff, -torch.inf)
-                    token = torch.multinomial(
-                        logits.softmax(-1), 1, generator=generator
-                    ).item()
+                # Keep inference mode local to each step when a caller streams tokens.
+                with torch.inference_mode():
+                    logits = self(window)[0, -1].float()
+                    logits[bos] = -torch.inf
+                    if temperature == 0:
+                        token = logits.argmax().item()
+                    else:
+                        logits = logits / temperature
+                        if top_k:
+                            cutoff = logits.topk(min(top_k, logits.numel())).values[-1]
+                            logits = logits.masked_fill(logits < cutoff, -torch.inf)
+                        if top_p < 1:
+                            ordered, indices = logits.sort(descending=True)
+                            excluded = ordered.softmax(-1).cumsum(-1) > top_p
+                            excluded[1:] = excluded[:-1].clone()
+                            excluded[0] = False
+                            logits[indices[excluded]] = -torch.inf
+                        token = torch.multinomial(
+                            logits.softmax(-1), 1, generator=generator
+                        ).item()
+                yield token
                 if token == eos:
                     break
                 tokens.append(token)
-                generated.append(token)
         finally:
             self.train(was_training)
-        return prompt + tokenizer.decode(generated, skip_special_tokens=True)

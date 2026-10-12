@@ -30,4 +30,5 @@ explicit = true
 [dependency-groups]
 dev = [
     "httpx2>=2.13.1",
+    "openai>=2,<4",
 ]
