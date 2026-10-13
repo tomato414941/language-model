@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 from tokenizers import Tokenizer
 
-from .data import LANGUAGES, Corpus, file_digest
+from .data import LANGUAGES, file_digest, open_corpus
 from .model import LanguageModel, ModelConfig
 
 
@@ -207,7 +207,7 @@ def train(
 ):
     if resume is not None and initialize_from is not None:
         raise ValueError("choose resume or initialize_from for a new training phase")
-    corpus = Corpus(data)
+    corpus = open_corpus(data)
     corpus.validate_context(model_config.context)
     precision = select_precision(device, precision)
     output = Path(output)

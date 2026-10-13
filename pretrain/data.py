@@ -252,6 +252,27 @@ def prepare_data(
             shutil.rmtree(staging)
 
 
+def batch_languages(batch_size, generator, language=None):
+    if language:
+        return [language] * batch_size
+    return [
+        LANGUAGES[i]
+        for i in torch.randint(
+            len(LANGUAGES), (batch_size,), generator=generator
+        ).tolist()
+    ]
+
+
+def open_corpus(path):
+    """Open prepared pretraining text or packed instruction conversations."""
+    manifest = json.loads((Path(path) / "manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("kind") == "instructions":
+        from .instructions import InstructionCorpus
+
+        return InstructionCorpus(path)
+    return Corpus(path)
+
+
 class Corpus:
     def __init__(self, path):
         self.path = Path(path)
@@ -296,18 +317,8 @@ class Corpus:
                     )
 
     def batch(self, split, batch_size, context, generator, device, language=None):
-        languages = (
-            [language] * batch_size
-            if language
-            else [
-                LANGUAGES[i]
-                for i in torch.randint(
-                    len(LANGUAGES), (batch_size,), generator=generator
-                ).tolist()
-            ]
-        )
         windows = []
-        for selected in languages:
+        for selected in batch_languages(batch_size, generator, language):
             stream = self.streams[split][selected]
             start = torch.randint(
                 len(stream) - context, (1,), generator=generator

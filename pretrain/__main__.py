@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 
-from .data import Corpus, file_digest, prepare_data
+from .data import file_digest, open_corpus, prepare_data
 from .training import (
     evaluate,
     load_model,
@@ -42,6 +42,28 @@ def main(argv=None):
         "fetch-benchmarks", help="日英の選択式ベンチマークを出典付きで取得する"
     )
     benchmarks.add_argument("--output", type=Path, default=Path("data/benchmarks"))
+    instructions = commands.add_parser(
+        "fetch-instructions", help="日英の指示データを出典付きで取得する"
+    )
+    instructions.add_argument(
+        "--output", type=Path, default=Path("data/instructions-source")
+    )
+    tuning = commands.add_parser(
+        "prepare-instructions",
+        help="指示データをAPIと同じ会話形式にし、回答部分を学習対象として詰める",
+    )
+    tuning.add_argument("--source", type=Path, default=Path("data/instructions-source"))
+    tuning.add_argument("--tokenizer", type=Path, required=True)
+    tuning.add_argument("--output", type=Path, default=Path("data/instructions"))
+    tuning.add_argument("--context", type=int, default=2048)
+    tuning.add_argument("--validation-conversations", type=int, default=1000)
+    tuning.add_argument(
+        "--tokens-per-language", type=int, help="各言語の学習用会話のトークン数の上限"
+    )
+    tuning.add_argument(
+        "--benchmarks", type=Path, help="このベンチマークの問題を含む会話を除く"
+    )
+    tuning.add_argument("--seed", type=int, default=42)
     prepare = commands.add_parser(
         "prepare", help="文書を重複除去し、BPEと学習・検証データを作る"
     )
@@ -132,7 +154,12 @@ def main(argv=None):
     benchmark.add_argument("--batch-tokens", type=int, default=4096)
     benchmark.add_argument("--threads", type=int, default=4)
     benchmark.add_argument("--output", type=Path, help="結果を保存するJSONファイル")
-    for command in (evaluation, generation, benchmark):
+    chat = commands.add_parser(
+        "chat-samples", help="決まった質問への回答をAPIと同じ会話形式で生成する"
+    )
+    chat.add_argument("--max-new-tokens", type=int, default=256)
+    chat.add_argument("--output", type=Path, help="結果を保存するJSONファイル")
+    for command in (evaluation, generation, benchmark, chat):
         command.add_argument(
             "--checkpoint", type=Path, default=Path("runs/bilingual/best.pt")
         )
@@ -170,6 +197,25 @@ def main(argv=None):
             from .benchmarks import fetch_benchmarks
 
             result = fetch_benchmarks(args.output)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "fetch-instructions":
+            from .instructions import fetch_instructions
+
+            result = fetch_instructions(args.output)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "prepare-instructions":
+            from .instructions import prepare_instructions
+
+            result = prepare_instructions(
+                args.source,
+                args.output,
+                args.tokenizer,
+                args.context,
+                args.validation_conversations,
+                args.tokens_per_language,
+                args.benchmarks,
+                args.seed,
+            )
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command == "prepare":
             result = prepare_data(
@@ -262,8 +308,27 @@ def main(argv=None):
                     args.output.parent.mkdir(parents=True, exist_ok=True)
                     args.output.write_text(text + "\n", encoding="utf-8")
                 print(text)
+            elif args.command == "chat-samples":
+                from .instructions import chat_samples
+
+                result = {
+                    "checkpoint": str(args.checkpoint),
+                    "step": payload["step"],
+                    **chat_samples(
+                        model,
+                        tokenizer,
+                        device,
+                        select_precision(device),
+                        args.max_new_tokens,
+                    ),
+                }
+                text = json.dumps(result, ensure_ascii=False, indent=2)
+                if args.output is not None:
+                    args.output.parent.mkdir(parents=True, exist_ok=True)
+                    args.output.write_text(text + "\n", encoding="utf-8")
+                print(text)
             elif args.command == "evaluate":
-                corpus = Corpus(args.data)
+                corpus = open_corpus(args.data)
                 corpus.validate_context(model.config.context)
                 if corpus.fingerprint != payload["dataset_fingerprint"]:
                     raise ValueError(

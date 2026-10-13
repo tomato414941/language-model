@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 
 from pretrain.benchmarks import evaluate_benchmarks, load_benchmarks
-from pretrain.data import Corpus, file_digest
+from pretrain.data import file_digest, open_corpus
 from pretrain.training import (
     atomic_save,
     autocast,
@@ -32,7 +32,7 @@ def main(argv=None):
     selected = root / "best.pt" if (root / "best.pt").exists() else root / "last.pt"
     model, tokenizer, saved = load_model(selected, device)
     last = load_checkpoint(root / "last.pt")
-    corpus = Corpus(args.data)
+    corpus = open_corpus(args.data)
     if corpus.fingerprint != saved["dataset_fingerprint"]:
         raise ValueError("inspection requires the checkpoint's held-out dataset")
     validation = evaluate(model, corpus, device, "bfloat16", batches=16, batch_size=4)
