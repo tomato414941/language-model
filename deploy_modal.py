@@ -8,9 +8,9 @@ import modal
 
 ROOT = Path(__file__).parent
 MODEL_REPO = os.environ.get("HF_MODEL_REPO", "tomato414941/language-model")
-MODEL_RUN = os.environ.get("HF_MODEL_RUN_ID", "bilingual-v2-1b")
+MODEL_RUN = os.environ.get("HF_MODEL_RUN_ID", "instructions-v2")
 MODEL_REVISION = os.environ.get(
-    "HF_MODEL_REVISION", "d7aa43a7e0467493ebc6d519d4608a1dcbb0e04a"
+    "HF_MODEL_REVISION", "1b6a794d17085b380d51ff51380d24689937b645"
 )
 MODEL_ID = os.environ.get("MODEL_ID", MODEL_RUN)
 MODEL_DIRECTORY = "/opt/models"
