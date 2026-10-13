@@ -276,6 +276,35 @@ class InstructionTests(unittest.TestCase):
             any("電車" in text or "とてもとても" in text for text in texts)
         )
 
+    def test_preparation_drops_conversations_with_a_reply_over_the_limit(self):
+        """どれか1つの回答でも上限のトークン数を超える会話は除き、上限以内の会話は残す。"""
+        items = conversations()
+        limit = max(
+            int(mask[1:-1].sum())
+            for _, mask in encode_conversations(self.tokenizer, items["ja"])
+        )
+        long_reply = "答え1です。" * 2
+        items["ja"] += [
+            exchange("長く答えて。", long_reply),
+            [
+                *exchange("長く答えて。", long_reply),
+                *exchange("短く。", "答え2です。"),
+            ],
+        ]
+        corpus = InstructionCorpus(self.prepare(items, max_reply_tokens=limit))
+        self.assertEqual(corpus.manifest["max_reply_tokens"], limit)
+        stats = corpus.manifest["conversations"]
+        self.assertEqual(
+            (stats["ja"]["long_replies"], stats["en"]["long_replies"]), (2, 0)
+        )
+        self.assertEqual(stats["ja"]["train"] + stats["ja"]["validation"], 12)
+        texts = [
+            text
+            for split in ("train", "validation")
+            for text, _ in self.rows(corpus, split, "ja")
+        ]
+        self.assertFalse(any("長く答えて" in text for text in texts))
+
     def test_training_requires_the_context_the_rows_were_packed_for(self):
         """詰めたときと違う文脈長のモデルでは学習を始めない。"""
         data = self.prepare(conversations())

@@ -324,6 +324,12 @@ def encode_conversations(tokenizer, conversations):
     return examples
 
 
+def reply_lengths(mask):
+    """Count the tokens of each reply from its run in the mask, without the final EOS."""
+    edges = np.flatnonzero(np.diff(np.concatenate(([0], mask[:-1], [0]))))
+    return edges[1::2] - edges[::2]
+
+
 def pack_rows(examples, width, open_limit=64):
     """Place whole conversations in fixed-width rows so none is cut at a row edge."""
     rows = []
@@ -370,6 +376,7 @@ def prepare_instructions(
     tokens_per_language=None,
     benchmarks=None,
     seed=42,
+    max_reply_tokens=None,
 ):
     for name, value in (
         ("context", context),
@@ -377,10 +384,12 @@ def prepare_instructions(
     ):
         if type(value) is not int or value <= 0:
             raise ValueError(f"{name} must be a positive integer")
-    if tokens_per_language is not None and (
-        type(tokens_per_language) is not int or tokens_per_language <= 0
+    for name, value in (
+        ("tokens_per_language", tokens_per_language),
+        ("max_reply_tokens", max_reply_tokens),
     ):
-        raise ValueError("tokens_per_language must be a positive integer")
+        if value is not None and (type(value) is not int or value <= 0):
+            raise ValueError(f"{name} must be a positive integer")
     source, output = Path(source), Path(output)
     if output.exists():
         raise ValueError("output already exists; select a new dataset directory")
@@ -415,13 +424,22 @@ def prepare_instructions(
             else None,
             "validation_conversations": validation_conversations,
             "tokens_per_language": tokens_per_language,
+            "max_reply_tokens": max_reply_tokens,
             "conversations": {},
             "files": {},
         }
         seen = set()
         for language in LANGUAGES:
             stats = dict.fromkeys(
-                ("malformed", "duplicates", "contaminated", "too_long", "unused"), 0
+                (
+                    "malformed",
+                    "duplicates",
+                    "contaminated",
+                    "too_long",
+                    "long_replies",
+                    "unused",
+                ),
+                0,
             )
             conversations = {}
             with (source / f"{language}.jsonl").open(encoding="utf-8") as lines:
@@ -462,6 +480,11 @@ def prepare_instructions(
                 for example in encode_conversations(tokenizer, chunk) if chunk else []:
                     if len(example[0]) > context + 1:
                         stats["too_long"] += 1
+                    elif (
+                        max_reply_tokens is not None
+                        and reply_lengths(example[1]).max() > max_reply_tokens
+                    ):
+                        stats["long_replies"] += 1
                     elif len(splits["validation"]) < validation_conversations:
                         splits["validation"].append(example)
                     elif (

@@ -64,6 +64,11 @@ def main(argv=None):
         "--benchmarks", type=Path, help="このベンチマークの問題を含む会話を除く"
     )
     tuning.add_argument("--seed", type=int, default=42)
+    tuning.add_argument(
+        "--max-reply-tokens",
+        type=int,
+        help="どれかの回答がこのトークン数を超える会話を除く",
+    )
     prepare = commands.add_parser(
         "prepare", help="文書を重複除去し、BPEと学習・検証データを作る"
     )
@@ -215,6 +220,7 @@ def main(argv=None):
                 args.tokens_per_language,
                 args.benchmarks,
                 args.seed,
+                args.max_reply_tokens,
             )
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command == "prepare":
