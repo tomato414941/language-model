@@ -165,22 +165,74 @@ class InstructionTests(unittest.TestCase):
             *exchange("色は？", "赤です。"),
             *exchange("What about the sky?", "It is blue."),
         ]
-        request = ResponseRequest.model_validate(
-            {"model": "test", "input": messages[:-1]}
-        )
         text, replies = conversation_text(messages)
-        self.assertEqual(text[: replies[-1][0]], request.prompt())
-        self.assertEqual(chat_prompt(messages[:-1]), request.prompt())
         tokens, mask = encode_conversations(self.tokenizer, [messages])[0]
         reply_starts = np.flatnonzero((mask[1:] == 1) & (mask[:-1] == 0)) + 1
         self.assertEqual(len(reply_starts), 2)
-        self.assertEqual(
-            tokens[: reply_starts[-1]].tolist(),
-            [
-                self.tokenizer.token_to_id("<|bos|>"),
-                *self.tokenizer.encode(request.prompt(), add_special_tokens=False).ids,
-            ],
-        )
+        indices = [
+            index
+            for index, message in enumerate(messages)
+            if message["role"] == "assistant"
+        ]
+        for reply, index in enumerate(indices):
+            history = messages[:index]
+            cases = (
+                {"input": history},
+                {"input": history[1:], "instructions": messages[0]["content"]},
+                {
+                    "input": [
+                        {"role": "developer", "content": messages[0]["content"]},
+                        *history[1:],
+                    ]
+                },
+            )
+            for fields in cases:
+                with self.subTest(reply=reply, fields=fields):
+                    request = ResponseRequest.model_validate(
+                        {"model": "test", **fields}
+                    )
+                    self.assertEqual(text[: replies[reply][0]], request.prompt())
+                    self.assertEqual(chat_prompt(history), request.prompt())
+                    self.assertEqual(
+                        tokens[: reply_starts[reply]].tolist(),
+                        [
+                            self.tokenizer.token_to_id("<|bos|>"),
+                            *self.tokenizer.encode(
+                                request.prompt(), add_special_tokens=False
+                            ).ids,
+                        ],
+                    )
+
+    def test_string_input_matches_the_trained_user_turn_with_optional_instructions(
+        self,
+    ):
+        """Serializes string inputs and instructions to the trained conversation prefix."""
+        for content in ("  色は？\n", "What about the sky?\n\n"):
+            for instructions in (None, "丁寧に答える。"):
+                with self.subTest(content=content, instructions=instructions):
+                    messages = (
+                        [{"role": "system", "content": instructions}]
+                        if instructions
+                        else []
+                    ) + exchange(content, "回答です。")
+                    text, replies = conversation_text(messages)
+                    request = ResponseRequest(
+                        model="test", input=content, instructions=instructions
+                    )
+                    self.assertEqual(request.prompt(), text[: replies[0][0]])
+                    tokens, mask = encode_conversations(self.tokenizer, [messages])[0]
+                    reply_start = (
+                        np.flatnonzero((mask[1:] == 1) & (mask[:-1] == 0))[0] + 1
+                    )
+                    self.assertEqual(
+                        tokens[:reply_start].tolist(),
+                        [
+                            self.tokenizer.token_to_id("<|bos|>"),
+                            *self.tokenizer.encode(
+                                request.prompt(), add_special_tokens=False
+                            ).ids,
+                        ],
+                    )
 
     def test_preparation_learns_only_replies_and_the_final_end_token(self):
         """利用者の発言は学習対象から外し、回答と会話の最後の終了記号だけを学習する。"""

@@ -136,7 +136,9 @@ class ResponsesTests(unittest.TestCase):
         )
         self.assertEqual(response["metadata"], {"purpose": "test"})
         self.assertEqual(response["usage"]["output_tokens"], 4)
-        expected = 1 + len(self.tokenizer.encode("日本語 English").ids)
+        expected = 1 + len(
+            self.tokenizer.encode("User: 日本語 English\n\nAssistant:").ids
+        )
         self.assertEqual(response["usage"]["input_tokens"], expected)
         self.assertEqual(response["usage"]["total_tokens"], expected + 4)
 
@@ -159,9 +161,13 @@ class ResponsesTests(unittest.TestCase):
         self.assertEqual(second.status_code, 200, second.text)
         self.assertEqual(second.json()["instructions"], "Continue in Japanese.")
         self.assertEqual(second.json()["output"][0]["content"][0]["text"], "aaaa")
-        self.assertGreater(
+        prompt = (
+            "System: Continue in Japanese.\n\nUser: 日本語\n\n"
+            "Assistant: aaaa\n\nUser: English\n\nAssistant:"
+        )
+        self.assertEqual(
             second.json()["usage"]["input_tokens"],
-            first.json()["usage"]["input_tokens"],
+            1 + len(self.tokenizer.encode(prompt).ids),
         )
 
     def test_reports_completion_when_the_model_emits_eos(self):
@@ -432,16 +438,44 @@ class ResponsesTests(unittest.TestCase):
         """Lists models and retrieves generated text and usage through the official SDK."""
         sdk, _ = self.sdk()
         self.assertEqual(sdk.models.list().data[0].id, "test-model")
-        response = sdk.responses.create(
-            model="test-model",
-            input="日本語 English",
-            max_output_tokens=4,
-            temperature=0,
-            store=False,
+        prompt = "System: Continue in Japanese.\n\nUser: 日本語 English\n\nAssistant:"
+        cases = (
+            {"input": "日本語 English", "instructions": "Continue in Japanese."},
+            {
+                "input": [
+                    {"role": "system", "content": "Continue in Japanese."},
+                    {"role": "user", "content": "日本語 English"},
+                ]
+            },
+            {
+                "input": [
+                    {"role": "developer", "content": "Continue in Japanese."},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "日本語"},
+                            {"type": "input_text", "text": " English"},
+                        ],
+                    },
+                ]
+            },
         )
-        self.assertEqual(response.output_text, "aaaa")
-        self.assertEqual(response.usage.output_tokens, 4)
-        self.assertEqual(response.status, "incomplete")
+        for fields in cases:
+            with self.subTest(fields=fields):
+                response = sdk.responses.create(
+                    model="test-model",
+                    max_output_tokens=4,
+                    temperature=0,
+                    store=False,
+                    **fields,
+                )
+                self.assertEqual(response.output_text, "aaaa")
+                self.assertEqual(response.usage.output_tokens, 4)
+                self.assertEqual(
+                    response.usage.input_tokens,
+                    1 + len(self.tokenizer.encode(prompt).ids),
+                )
+                self.assertEqual(response.status, "incomplete")
         with self.assertRaises(openai.BadRequestError):
             sdk.responses.create(model="test-model", input="hello", store=True)
 
@@ -469,6 +503,7 @@ class ResponsesTests(unittest.TestCase):
             sdk.responses.stream(
                 model="test-model",
                 input="日本語 English",
+                instructions="Continue in Japanese.",
                 max_output_tokens=8,
                 temperature=0,
                 store=False,
@@ -484,6 +519,10 @@ class ResponsesTests(unittest.TestCase):
         self.assertEqual(final.output_text, text)
         self.assertEqual(final.status, "completed")
         self.assertEqual(final.usage.output_tokens, 5)
+        prompt = "System: Continue in Japanese.\n\nUser: 日本語 English\n\nAssistant:"
+        self.assertEqual(
+            final.usage.input_tokens, 1 + len(self.tokenizer.encode(prompt).ids)
+        )
 
     def test_reports_streamed_token_limits_through_the_official_sdk(self):
         """Returns streamed text and an incomplete response when the token budget is used."""

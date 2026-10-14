@@ -17,6 +17,8 @@ from fastapi.security import HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from starlette.background import BackgroundTask
 
+from pretrain.conversation import chat_prompt
+
 
 class APIError(Exception):
     def __init__(
@@ -122,26 +124,32 @@ class ResponseRequest(InputSchema):
                     name,
                     "unsupported_parameter",
                 )
-        if isinstance(self.input, str):
-            prompt = self.input
-        else:
-            messages = []
-            for index, message in enumerate(self.input):
-                if isinstance(message.content, str):
-                    content = message.content
-                else:
-                    for part in message.content:
-                        if part.type == "output_text" and message.role != "assistant":
-                            raise APIError(
-                                "Use input_text for user, system and developer messages.",
-                                "input." + str(index) + ".content",
-                            )
-                    content = "".join(part.text for part in message.content)
-                messages.append(message.role.capitalize() + ": " + content)
-            prompt = "\n\n".join([*messages, "Assistant:"])
+        messages = []
         if self.instructions:
-            prompt = self.instructions + "\n\n" + prompt
-        return prompt
+            messages.append({"role": "system", "content": self.instructions})
+        inputs = (
+            [InputMessage(role="user", content=self.input)]
+            if isinstance(self.input, str)
+            else self.input
+        )
+        for index, message in enumerate(inputs):
+            if isinstance(message.content, str):
+                content = message.content
+            else:
+                for part in message.content:
+                    if part.type == "output_text" and message.role != "assistant":
+                        raise APIError(
+                            "Use input_text for user, system and developer messages.",
+                            "input." + str(index) + ".content",
+                        )
+                content = "".join(part.text for part in message.content)
+            messages.append(
+                {
+                    "role": "system" if message.role == "developer" else message.role,
+                    "content": content,
+                }
+            )
+        return chat_prompt(messages)
 
 
 class OutputText(BaseModel):
