@@ -72,7 +72,7 @@ app = modal.App("language-model-api")
     },
     secrets=[
         modal.Secret.from_name(
-            "language-model-api-key", required_keys=["MODEL_API_KEY"]
+            "language-model-api-key", required_keys=["LANGUAGE_MODEL_API_KEY"]
         )
     ],
     cpu=(1, 1),
@@ -89,9 +89,11 @@ def api():
     from responses_api import ModelSettings
     from server import create_app
 
-    api_key = os.environ.get("MODEL_API_KEY")
+    api_key = os.environ.get("LANGUAGE_MODEL_API_KEY")
     if not api_key:
-        raise ValueError("Set MODEL_API_KEY in the language-model-api-key secret")
+        raise ValueError(
+            "Set LANGUAGE_MODEL_API_KEY in the language-model-api-key secret"
+        )
     return create_app(
         response_settings=ModelSettings(
             model_id=MODEL_ID,

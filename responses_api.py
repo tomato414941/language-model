@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import anyio
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from starlette.background import BackgroundTask
 
@@ -230,7 +231,7 @@ class ModelSettings:
             device=os.environ.get("MODEL_DEVICE", "cpu"),
             threads=int(os.environ.get("MODEL_THREADS", "1")),
             max_output_tokens=int(os.environ.get("MODEL_MAX_OUTPUT_TOKENS", "512")),
-            api_key=os.environ.get("MODEL_API_KEY"),
+            api_key=os.environ.get("LANGUAGE_MODEL_API_KEY"),
         )
 
 
@@ -453,12 +454,23 @@ class ResponseSession:
 def install_routes(app: FastAPI, settings=None):
     service = ResponseService(settings or ModelSettings.from_env())
     app.state.responses = service
+    access_key = HTTPBearer(
+        scheme_name="LanguageModelAPIKey",
+        description="言語モデルAPIのアクセスキーを入力してください。",
+        bearerFormat="API key",
+        auto_error=False,
+    )
+    authentication = [Depends(access_key)] if service.settings.api_key else []
 
     @app.exception_handler(APIError)
     async def api_error(request, error):
         return error.response()
 
-    @app.get("/v1/models", summary="List available text models")
+    @app.get(
+        "/v1/models",
+        summary="List available text models",
+        dependencies=authentication,
+    )
     def models(request: Request):
         service.authorize(request)
         return {
@@ -476,6 +488,7 @@ def install_routes(app: FastAPI, settings=None):
     @app.post(
         "/v1/responses",
         response_model=Response,
+        dependencies=authentication,
         summary="Create a text response",
         description="Stateless text generation with JSON or Responses SSE events. Supports string inputs, text messages and instructions. Use store=false. Images, tools and stored conversations are not supported.",
         responses={

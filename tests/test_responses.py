@@ -327,10 +327,17 @@ class ResponsesTests(unittest.TestCase):
         self.assertEqual(self.post().status_code, 200)
 
     def test_authenticates_model_and_response_requests_with_the_configured_key(self):
-        """Authenticates model listing and generation using the configured key."""
-        settings = ModelSettings(
-            model_id="test-model", checkpoint=self.checkpoint, api_key="test-secret"
-        )
+        """Authenticates model listing and generation using the environment access key."""
+        with patch.dict(
+            "os.environ",
+            {
+                "MODEL_ID": "test-model",
+                "MODEL_CHECKPOINT": str(self.checkpoint),
+                "LANGUAGE_MODEL_API_KEY": "test-secret",
+            },
+            clear=True,
+        ):
+            settings = ModelSettings.from_env()
         with TestClient(create_app(response_settings=settings)) as client:
             self.assertEqual(client.get("/v1/models").status_code, 401)
             self.assertEqual(
@@ -354,6 +361,21 @@ class ResponsesTests(unittest.TestCase):
                 client.post("/v1/responses", json=payload, headers=headers).status_code,
                 200,
             )
+
+    def test_documents_bearer_authentication_for_browser_api_requests(self):
+        """Publishes named Bearer authentication for protected browser API requests."""
+        settings = ModelSettings(
+            model_id="test-model", checkpoint=self.checkpoint, api_key="test-secret"
+        )
+        with TestClient(create_app(response_settings=settings)) as client:
+            specification = client.get("/openapi.json").json()
+            for path, method in (("/v1/models", "get"), ("/v1/responses", "post")):
+                operation = specification["paths"][path][method]
+                scheme_name = next(iter(operation["security"][0]))
+                scheme = specification["components"]["securitySchemes"][scheme_name]
+                self.assertEqual(scheme["type"], "http")
+                self.assertEqual(scheme["scheme"], "bearer")
+                self.assertIn("言語モデルAPIのアクセスキー", scheme["description"])
 
     def test_loads_a_pinned_hub_checkpoint_and_serves_its_revision(self):
         """Restores a pinned HF checkpoint and returns its revision and generated text."""
