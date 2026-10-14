@@ -491,6 +491,25 @@ def install_routes(app: FastAPI, settings=None):
         dependencies=authentication,
         summary="Create a text response",
         description="Stateless text generation with JSON or Responses SSE events. Supports string inputs, text messages and instructions. Use store=false. Images, tools and stored conversations are not supported.",
+        openapi_extra={
+            "requestBody": {
+                "content": {
+                    "application/json": {
+                        "example": {
+                            "model": service.settings.model_id,
+                            "input": [
+                                {"role": "user", "content": "日本の首都はどこですか？"}
+                            ],
+                            "max_output_tokens": min(
+                                64, service.settings.max_output_tokens
+                            ),
+                            "temperature": 0,
+                            "store": False,
+                        }
+                    }
+                }
+            }
+        },
         responses={
             200: {"content": {"text/event-stream": {"schema": {"type": "string"}}}}
         },

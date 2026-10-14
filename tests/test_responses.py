@@ -363,7 +363,7 @@ class ResponsesTests(unittest.TestCase):
             )
 
     def test_documents_bearer_authentication_for_browser_api_requests(self):
-        """Publishes named Bearer authentication for protected browser API requests."""
+        """Publishes Bearer authentication and a usable browser generation example."""
         settings = ModelSettings(
             model_id="test-model", checkpoint=self.checkpoint, api_key="test-secret"
         )
@@ -376,6 +376,15 @@ class ResponsesTests(unittest.TestCase):
                 self.assertEqual(scheme["type"], "http")
                 self.assertEqual(scheme["scheme"], "bearer")
                 self.assertIn("言語モデルAPIのアクセスキー", scheme["description"])
+            example = specification["paths"]["/v1/responses"]["post"]["requestBody"][
+                "content"
+            ]["application/json"]["example"]
+            response = client.post(
+                "/v1/responses",
+                json=example,
+                headers={"Authorization": "Bearer test-secret"},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
 
     def test_loads_a_pinned_hub_checkpoint_and_serves_its_revision(self):
         """Restores a pinned HF checkpoint and returns its revision and generated text."""
