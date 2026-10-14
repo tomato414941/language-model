@@ -5,11 +5,9 @@ from pathlib import Path
 
 import torch
 
-from pretrain.benchmarks import evaluate_benchmarks, load_benchmarks
 from pretrain.data import file_digest, open_corpus
 from pretrain.training import (
     atomic_save,
-    autocast,
     evaluate,
     load_checkpoint,
     load_model,
@@ -23,7 +21,7 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--results", type=Path, required=True)
-    parser.add_argument("--benchmarks", type=Path)
+    parser.add_argument("--benchmark-tasks", nargs="+")
     args = parser.parse_args(argv)
     root, results = args.output, args.results
     results.mkdir(parents=True, exist_ok=True)
@@ -37,50 +35,17 @@ def main(argv=None):
         raise ValueError("inspection requires the checkpoint's held-out dataset")
     validation = evaluate(model, corpus, device, "bfloat16", batches=16, batch_size=4)
     benchmarks = None
-    if args.benchmarks is not None:
-        benchmarks = {
-            "sha256": file_digest(args.benchmarks / "sources.json"),
-            "results": evaluate_benchmarks(
-                model,
-                tokenizer,
-                load_benchmarks(args.benchmarks),
-                device,
-                "bfloat16",
-                batch_tokens=16384,
-            ),
-        }
-    prompts = {
-        "ja": ["# 日本\n日本は", "# 地球\n地球は", "# 機械学習\n機械学習は"],
-        "en": [
-            "# Japan\nJapan is",
-            "# Earth\nThe Earth is",
-            "# Machine learning\nMachine learning is",
-        ],
-    }
-    samples = []
-    for language, items in prompts.items():
-        for prompt in items:
-            with autocast(device, "bfloat16"):
-                text = model.generate(tokenizer, prompt, max_new_tokens=96, seed=42)
-            continuation = " ".join(text[len(prompt) :].split())
-            grams = [
-                continuation[i : i + 8] for i in range(max(0, len(continuation) - 7))
-            ]
-            samples.append(
-                {
-                    "language": language,
-                    "prompt": prompt,
-                    "text": text,
-                    "repeated_character_8gram_fraction": 1
-                    - len(set(grams)) / len(grams)
-                    if grams
-                    else 0,
-                    "replacement_characters": continuation.count("\ufffd"),
-                }
-            )
-    (results / "samples.json").write_text(
-        json.dumps(samples, ensure_ascii=False, indent=2) + "\n"
-    )
+    if args.benchmark_tasks is not None:
+        from pretrain.evaluation import evaluate_benchmarks
+
+        benchmarks = evaluate_benchmarks(
+            model,
+            tokenizer,
+            device,
+            "bfloat16",
+            batch_tokens=16384,
+            tasks=args.benchmark_tasks,
+        )
     excluded = {"optimizer", "scaler", "sampling_rng", "torch_rng", "cuda_rng"}
     atomic_save(
         {key: value for key, value in saved.items() if key not in excluded},

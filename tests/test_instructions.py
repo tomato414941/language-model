@@ -18,11 +18,10 @@ if any(
 
 import numpy as np
 import pyarrow
-from pyarrow import parquet
 import torch
+from pyarrow import parquet
 from tokenizers import Tokenizer
 
-from pretrain.__main__ import main
 from pretrain.data import LANGUAGES, file_digest, prepare_data
 from pretrain.instructions import (
     InstructionCorpus,
@@ -342,32 +341,25 @@ class InstructionTests(unittest.TestCase):
                 initialize_from=self.root / "base/last.pt",
             )
         self.assertLess(result["validation"]["loss"], before["loss"] * 0.5)
-        output = self.root / "chat.json"
-        prompts = {"ja": ["質問3は？"], "en": ["What is item 3?"]}
-        with (
-            patch("pretrain.instructions.CHAT_PROMPTS", prompts),
-            contextlib.redirect_stdout(io.StringIO()),
-        ):
-            main(
-                [
-                    "chat-samples",
-                    "--checkpoint",
-                    str(self.root / "tuned/last.pt"),
-                    "--device",
-                    "cpu",
-                    "--max-new-tokens",
-                    "24",
-                    "--output",
-                    str(output),
-                ]
-            )
-        samples = json.loads(output.read_text(encoding="utf-8"))["samples"]
-        self.assertEqual(
-            [sample["question"] for sample in samples], ["質問3は？", "What is item 3?"]
+        model, tokenizer, _ = load_model(
+            self.root / "tuned/last.pt", torch.device("cpu")
         )
-        self.assertRegex(samples[0]["reply"], r"^答え\d+です。$")
-        self.assertRegex(samples[1]["reply"], r"^It is answer \d+\.$")
-        self.assertTrue(all(sample["finished"] for sample in samples))
+        for question, expected in (
+            ("質問3は？", r"^答え\d+です。$"),
+            ("What is item 3?", r"^It is answer \d+\.$"),
+        ):
+            tokens = list(
+                model.sample_tokens(
+                    tokenizer,
+                    chat_prompt([{"role": "user", "content": question}]),
+                    max_new_tokens=24,
+                    temperature=0,
+                )
+            )
+            self.assertEqual(tokens[-1], tokenizer.token_to_id("<|eos|>"))
+            self.assertRegex(
+                tokenizer.decode(tokens, skip_special_tokens=True).strip(), expected
+            )
 
 
 class FetchTests(unittest.TestCase):

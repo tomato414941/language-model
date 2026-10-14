@@ -12,7 +12,7 @@ if [[ ! -x "$project_root/.tools/uv" ]]; then
     https://astral.sh/uv/0.10.12/install.sh --output "$installer"
   UV_INSTALL_DIR="$project_root/.tools" UV_NO_MODIFY_PATH=1 sh "$installer"
 fi
-"$project_root/.tools/uv" sync --frozen --extra train --extra hub
+"$project_root/.tools/uv" sync --frozen --extra train --extra hub --extra eval
 "$project_root/.tools/uv" run --no-sync python - <<'PY'
 import json
 import torch

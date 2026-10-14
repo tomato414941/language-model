@@ -12,24 +12,24 @@ from unittest.mock import patch
 
 if any(
     importlib.util.find_spec(name) is None
-    for name in ("numpy", "torch", "tokenizers", "pyarrow")
+    for name in ("numpy", "torch", "tokenizers", "pyarrow", "lm_eval")
 ):
-    raise unittest.SkipTest("Install training and corpus dependencies")
+    raise unittest.SkipTest("Install training, corpus and evaluation dependencies")
 
 import pyarrow as arrow
 import torch
+from datasets import Dataset, DatasetDict
 from pyarrow import parquet
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 
 from pretrain.__main__ import main
 from pretrain.benchmarks import (
     TASKS,
-    choice_log_likelihoods,
-    evaluate_benchmarks,
     fetch_benchmarks,
     load_benchmarks,
 )
 from pretrain.data import file_digest, prepare_data
+from pretrain.evaluation import DEFAULT_TASKS, NativeLM, evaluate_benchmarks
 from pretrain.model import LanguageModel, ModelConfig
 from pretrain.training import TrainConfig, train
 from scripts import inspect_pretrain
@@ -104,12 +104,28 @@ def byte_tokenizer():
     return tokenizer
 
 
+def benchmark_dataset(path, name=None, **kwargs):
+    """Supply source records while using the harness's real task definitions."""
+    task = {
+        "Rowan/hellaswag": "hellaswag",
+        "allenai/ai2_arc": "arc_easy",
+        "json": "jcommonsenseqa",
+    }[path]
+    rows = ROWS[task]
+    train = [{**rows[index % len(rows)], ID_FIELDS[task]: index} for index in range(6)]
+    return DatasetDict(
+        train=Dataset.from_list(train),
+        validation=Dataset.from_list(rows if task != "arc_easy" else rows[:1]),
+        test=Dataset.from_list(rows),
+    )
+
+
 class FixedModel(torch.nn.Module):
     """Predict the same next-token distribution at every position."""
 
-    def __init__(self, probabilities):
+    def __init__(self, probabilities, context=256):
         super().__init__()
-        self.config = SimpleNamespace(context=16)
+        self.config = SimpleNamespace(context=context)
         self.register_buffer("logits", probabilities.log())
 
     def forward(self, tokens):
@@ -236,69 +252,135 @@ class BenchmarkTests(unittest.TestCase):
             load_benchmarks(output, ["arc_easy"])
 
     def test_choice_likelihoods_match_whether_scored_together_or_alone(self):
-        """選択肢の尤度を、まとめて計算しても1件ずつ計算しても同じ値で返す。"""
+        """Returns the same likelihoods when requests share a batch or run alone."""
         torch.manual_seed(0)
         config = ModelConfig(
             width=24, heads=4, kv_heads=2, layers=2, context=32, architecture="llama"
         )
         model = LanguageModel(258, config)
-        items = [
-            {
-                "context": "Question: why?\nAnswer:",
-                "choices": [" a", " bcd"],
-                "label": 0,
-            },
-            {
-                "context": "質問：なぜ？\n回答：",
-                "choices": ["絵本", "地図", "辞書"],
-                "label": 2,
-            },
+        requests = [
+            SimpleNamespace(args=(context, choice))
+            for context, choices in (
+                ("Question: why?\nAnswer:", [" a", " bcd"]),
+                ("質問：なぜ？\n回答：", ["絵本", "地図", "辞書"]),
+            )
+            for choice in choices
         ]
         device = torch.device("cpu")
-        together = choice_log_likelihoods(model, byte_tokenizer(), items, device)
-        alone = choice_log_likelihoods(
-            model, byte_tokenizer(), items, device, batch_tokens=1
+        together = NativeLM(model, byte_tokenizer(), device).loglikelihood(
+            requests, disable_tqdm=True
+        )
+        alone = NativeLM(model, byte_tokenizer(), device, batch_tokens=1).loglikelihood(
+            requests, disable_tqdm=True
         )
         for expected, actual in zip(together, alone):
-            for a, b in zip(expected, actual):
-                self.assertAlmostEqual(a, b, places=4)
+            self.assertAlmostEqual(expected[0], actual[0], places=4)
+            self.assertEqual(expected[1], actual[1])
 
-    def test_counts_the_most_likely_choice_and_reports_chance_and_error(self):
-        """最も確からしい選択肢を回答として数え、偶然の正答率と誤差を添えて報告する。"""
+    def test_scores_continuations_and_rolling_documents_with_native_probabilities(self):
+        """Scores every requested token and reports whether it is greedy."""
         tokenizer = byte_tokenizer()
         probabilities = torch.full((258,), 0.2 / 256)
         probabilities[tokenizer.token_to_id("a")] = 0.5
         probabilities[tokenizer.token_to_id("b")] = 0.3
-        items = [
-            {"context": "x", "choices": ["a", "b"], "label": 0},
-            {"context": "x", "choices": ["a", "b"], "label": 1},
-            # Per character "aa" is more likely than "b", but not in total.
-            {"context": "x", "choices": ["aa", "b", "c"], "label": 0},
-        ]
-        result = evaluate_benchmarks(
-            FixedModel(probabilities), tokenizer, {"toy": items}, torch.device("cpu")
-        )["toy"]
-        self.assertEqual(result["items"], 3)
-        self.assertAlmostEqual(result["chance"], (1 / 2 + 1 / 2 + 1 / 3) / 3)
-        self.assertAlmostEqual(result["accuracy"], 1 / 3)
-        self.assertAlmostEqual(result["normalized_accuracy"], 2 / 3)
-        self.assertAlmostEqual(
-            result["normalized_accuracy_stderr"], math.sqrt(2 / 3 * 1 / 3 / 3)
+        backend = NativeLM(
+            FixedModel(probabilities, context=16), tokenizer, torch.device("cpu")
+        )
+        result = backend.loglikelihood(
+            [SimpleNamespace(args=("", "a")), SimpleNamespace(args=("x", "bb"))],
+            disable_tqdm=True,
+        )
+        self.assertAlmostEqual(result[0][0], math.log(0.5), places=5)
+        self.assertTrue(result[0][1])
+        self.assertAlmostEqual(result[1][0], 2 * math.log(0.3), places=5)
+        self.assertFalse(result[1][1])
+        documents = backend.loglikelihood_rolling(
+            [SimpleNamespace(args=("a" * 35,)), SimpleNamespace(args=("",))]
+        )
+        self.assertAlmostEqual(documents[0], 35 * math.log(0.5), places=4)
+        self.assertEqual(documents[1], 0)
+
+    def test_generation_stops_at_the_requested_sequence_and_model_end_token(self):
+        """Returns native greedy continuations up to the requested stop or EOS."""
+        tokenizer = byte_tokenizer()
+        model = LanguageModel(258, ModelConfig(width=8, heads=2, layers=1, context=32))
+        backend = NativeLM(model, tokenizer, torch.device("cpu"))
+
+        def sample(*args, **kwargs):
+            yield from tokenizer.encode("日本語 STOP suffix").ids
+            yield tokenizer.token_to_id("<|eos|>")
+
+        with patch.object(model, "sample_tokens", side_effect=sample):
+            stopped, ended = backend.generate_until(
+                [
+                    SimpleNamespace(args=("x", {"until": ["STOP"]})),
+                    SimpleNamespace(args=("x", {"until": []})),
+                ]
+            )
+        self.assertEqual(stopped, "日本語 ")
+        self.assertEqual(ended, "日本語 STOP suffix")
+
+    def test_standard_tasks_use_held_out_splits_and_published_fewshot_counts(self):
+        """Uses published evaluation splits, examples and metrics."""
+        with patch(
+            "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
+        ):
+            result = evaluate_benchmarks(
+                FixedModel(torch.full((258,), 1 / 258)),
+                byte_tokenizer(),
+                torch.device("cpu"),
+            )
+        self.assertEqual(result["framework"]["name"], "lm-evaluation-harness")
+        self.assertEqual(result["framework"]["version"], "0.4.13")
+        self.assertEqual(result["evaluation_scope"], "full")
+        self.assertEqual(result["n-samples"]["arc_easy"]["original"], 2)
+        self.assertEqual(result["n-samples"]["hellaswag"]["original"], 3)
+        self.assertEqual(
+            result["n-samples"]["ja_leaderboard_jcommonsenseqa"]["original"], 2
+        )
+        configs = result["configs"]
+        self.assertEqual(configs["arc_easy"]["test_split"], "test")
+        self.assertEqual(configs["hellaswag"]["validation_split"], "validation")
+        self.assertEqual(
+            configs["ja_leaderboard_jcommonsenseqa"]["validation_split"], "validation"
+        )
+        self.assertEqual(result["n-shot"]["ja_leaderboard_jcommonsenseqa"], 3)
+        for name in DEFAULT_TASKS:
+            self.assertIn("acc,none", result["results"][name])
+            self.assertEqual(result["versions"][name], 1.0)
+
+    def test_limited_standard_evaluation_is_reported_as_a_smoke_check(self):
+        """Records the limited scope and item count for a smoke check."""
+        with patch(
+            "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
+        ):
+            result = evaluate_benchmarks(
+                FixedModel(torch.full((258,), 1 / 258)),
+                byte_tokenizer(),
+                torch.device("cpu"),
+                tasks=["arc_easy"],
+                limit=1,
+            )
+        self.assertEqual(result["evaluation_scope"], "smoke")
+        self.assertEqual(
+            result["n-samples"]["arc_easy"], {"original": 2, "effective": 1}
         )
 
-    def test_benchmark_command_saves_accuracy_for_a_trained_checkpoint(self):
-        """学習済みチェックポイントの正答率を、各ベンチマークについて保存する。"""
+    def test_benchmark_command_saves_standard_results_for_a_native_checkpoint(self):
+        """Saves standard task results and the evaluated checkpoint's identity."""
         self.train_checkpoint()
-        self.fetch(self.root / "benchmarks")
         output = self.root / "results.json"
-        with contextlib.redirect_stdout(io.StringIO()):
+        with (
+            patch(
+                "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
             main(
                 [
                     "benchmark",
                     "--checkpoint",
                     str(self.root / "run/last.pt"),
-                    "--benchmarks",
-                    str(self.root / "benchmarks"),
                     "--device",
                     "cpu",
                     "--threads",
@@ -308,20 +390,22 @@ class BenchmarkTests(unittest.TestCase):
                 ]
             )
         result = json.loads(output.read_text(encoding="utf-8"))
-        self.assertEqual(result["step"], 1)
-        self.assertEqual(set(result["results"]), set(TASKS))
-        for name, metrics in result["results"].items():
-            self.assertEqual(
-                metrics["items"], len(ROWS[name]) * len(TASKS[name]["files"])
-            )
-            self.assertTrue(0 <= metrics["normalized_accuracy"] <= 1)
+        self.assertEqual(result["checkpoint"]["step"], 1)
+        self.assertEqual(
+            result["checkpoint"]["sha256"], file_digest(self.root / "run/last.pt")
+        )
+        self.assertEqual(set(result["results"]), set(DEFAULT_TASKS))
+        for metrics in result["results"].values():
+            self.assertTrue(0 <= metrics["acc,none"] <= 1)
 
-    def test_inspection_saves_benchmark_accuracy_in_the_summary(self):
-        """学習後の確認で、選んだチェックポイントの正答率を要約に保存する。"""
+    def test_inspection_saves_standard_benchmark_results_in_the_summary(self):
+        """Exports the selected checkpoint with its standard benchmark results."""
         self.train_checkpoint()
-        self.fetch(self.root / "benchmarks")
         with (
             patch("scripts.inspect_pretrain.torch", CpuTorch()),
+            patch(
+                "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
+            ),
             contextlib.redirect_stdout(io.StringIO()),
         ):
             inspect_pretrain.main(
@@ -332,22 +416,18 @@ class BenchmarkTests(unittest.TestCase):
                     str(self.root / "data"),
                     "--results",
                     str(self.root / "results"),
-                    "--benchmarks",
-                    str(self.root / "benchmarks"),
+                    "--benchmark-tasks",
+                    *DEFAULT_TASKS,
                 ]
             )
         summary = json.loads(
             (self.root / "results/summary.json").read_text(encoding="utf-8")
         )
         benchmarks = summary["benchmarks"]
-        self.assertEqual(
-            benchmarks["sha256"], file_digest(self.root / "benchmarks/sources.json")
-        )
-        self.assertEqual(set(benchmarks["results"]), set(TASKS))
-        for name, metrics in benchmarks["results"].items():
-            self.assertEqual(
-                metrics["items"], len(ROWS[name]) * len(TASKS[name]["files"])
-            )
+        self.assertEqual(benchmarks["framework"]["version"], "0.4.13")
+        self.assertEqual(set(benchmarks["results"]), set(DEFAULT_TASKS))
+        for metrics in benchmarks["results"].values():
+            self.assertTrue(0 <= metrics["acc,none"] <= 1)
 
 
 if __name__ == "__main__":

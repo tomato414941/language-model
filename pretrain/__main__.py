@@ -39,7 +39,8 @@ def main(argv=None):
     web.add_argument("--workers", type=int, default=4)
     web.add_argument("--seed", type=int, default=42)
     benchmarks = commands.add_parser(
-        "fetch-benchmarks", help="日英の選択式ベンチマークを出典付きで取得する"
+        "fetch-benchmarks",
+        help="標準ベンチマークの問題を学習データの混入除去用に取得する",
     )
     benchmarks.add_argument("--output", type=Path, default=Path("data/benchmarks"))
     instructions = commands.add_parser(
@@ -147,24 +148,20 @@ def main(argv=None):
     generation.add_argument("--top-k", type=int, default=50)
     generation.add_argument("--seed", type=int, default=42)
     benchmark = commands.add_parser(
-        "benchmark", help="保存したモデルの正答率を選択式ベンチマークで測る"
-    )
-    benchmark.add_argument("--benchmarks", type=Path, default=Path("data/benchmarks"))
-    benchmark.add_argument(
-        "--tasks", nargs="+", help="測るベンチマーク（既定はすべて）"
+        "benchmark", help="保存したモデルをLM Evaluation Harnessの標準タスクで評価する"
     )
     benchmark.add_argument(
-        "--limit", type=int, help="各ベンチマークで測る問題数（毎回同じ問題を選ぶ）"
+        "--tasks",
+        nargs="+",
+        help="標準タスク名（既定はHellaSwag・ARC Easy・JCommonsenseQA）",
+    )
+    benchmark.add_argument(
+        "--limit", type=int, help="動作確認で各タスクに使う問題数（正式な評価は全問）"
     )
     benchmark.add_argument("--batch-tokens", type=int, default=4096)
     benchmark.add_argument("--threads", type=int, default=4)
     benchmark.add_argument("--output", type=Path, help="結果を保存するJSONファイル")
-    chat = commands.add_parser(
-        "chat-samples", help="決まった質問への回答をAPIと同じ会話形式で生成する"
-    )
-    chat.add_argument("--max-new-tokens", type=int, default=256)
-    chat.add_argument("--output", type=Path, help="結果を保存するJSONファイル")
-    for command in (evaluation, generation, benchmark, chat):
+    for command in (evaluation, generation, benchmark):
         command.add_argument(
             "--checkpoint", type=Path, default=Path("runs/bilingual/best.pt")
         )
@@ -289,46 +286,27 @@ def main(argv=None):
             device = select_device(args.device)
             model, tokenizer, payload = load_model(args.checkpoint, device)
             if args.command == "benchmark":
-                from .benchmarks import evaluate_benchmarks, load_benchmarks
+                from .evaluation import evaluate_benchmarks
 
                 precision = select_precision(device)
-                result = {
+                result = evaluate_benchmarks(
+                    model,
+                    tokenizer,
+                    device,
+                    precision,
+                    args.batch_tokens,
+                    args.tasks,
+                    args.limit,
+                )
+                result["checkpoint"] = {
                     "checkpoint": str(args.checkpoint),
+                    "sha256": file_digest(args.checkpoint),
                     "step": payload["step"],
                     "tokens_seen": payload["tokens_seen"],
                     "parameters": sum(p.numel() for p in model.parameters()),
-                    "benchmarks_sha256": file_digest(args.benchmarks / "sources.json"),
-                    "limit": args.limit,
                     "precision": precision,
-                    "results": evaluate_benchmarks(
-                        model,
-                        tokenizer,
-                        load_benchmarks(args.benchmarks, args.tasks, args.limit),
-                        device,
-                        precision,
-                        args.batch_tokens,
-                    ),
                 }
                 text = json.dumps(result, indent=2)
-                if args.output is not None:
-                    args.output.parent.mkdir(parents=True, exist_ok=True)
-                    args.output.write_text(text + "\n", encoding="utf-8")
-                print(text)
-            elif args.command == "chat-samples":
-                from .instructions import chat_samples
-
-                result = {
-                    "checkpoint": str(args.checkpoint),
-                    "step": payload["step"],
-                    **chat_samples(
-                        model,
-                        tokenizer,
-                        device,
-                        select_precision(device),
-                        args.max_new_tokens,
-                    ),
-                }
-                text = json.dumps(result, ensure_ascii=False, indent=2)
                 if args.output is not None:
                     args.output.parent.mkdir(parents=True, exist_ok=True)
                     args.output.write_text(text + "\n", encoding="utf-8")
@@ -364,7 +342,14 @@ def main(argv=None):
                         args.seed,
                     )
                 )
-    except (OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
+    except (
+        ImportError,
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        RuntimeError,
+    ) as error:
         parser.error(str(error))
 
 

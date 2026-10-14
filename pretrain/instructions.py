@@ -17,7 +17,6 @@ from tokenizers import Tokenizer
 
 from .benchmarks import SOURCE_URL, load_benchmarks
 from .data import BOS, EOS, LANGUAGES, TOKEN_DTYPE, batch_languages, file_digest
-from .training import autocast
 
 MASK_DTYPE = np.dtype("u1")
 ROLE_LABELS = {"system": "System", "user": "User", "assistant": "Assistant"}
@@ -80,32 +79,6 @@ SOURCES = {
             "data/train-00001-of-00002.parquet": "b55d65dc16c8e8006b685983e1a7a661e92729ae7a949e84a73c7de4ec5497ee",
         },
     },
-}
-CHAT_PROMPTS = {
-    "ja": [
-        "日本の首都はどこですか？",
-        "富士山について簡単に説明してください。",
-        "健康的な朝ごはんの例を3つ挙げてください。",
-        "「ありがとう」を英語に翻訳してください。",
-        "雨の日に家でできる楽しいことを教えてください。",
-        "光合成とは何ですか？子どもにもわかるように説明してください。",
-        "初めてプログラミングを学ぶ人へのアドバイスをください。",
-        "1から10までの数字をすべて足すといくつですか？",
-        "短い自己紹介文を書いてください。",
-        "猫と犬の違いを教えてください。",
-    ],
-    "en": [
-        "What is the capital of France?",
-        "Explain what a rainbow is in simple terms.",
-        "Give me three tips for staying focused while studying.",
-        'Translate "good morning" into Japanese.',
-        "Write a short poem about the ocean.",
-        "What are the benefits of regular exercise?",
-        "How do I make a cup of tea?",
-        "What is 12 plus 15?",
-        "Summarize the story of Cinderella in two sentences.",
-        "What is the difference between weather and climate?",
-    ],
 }
 # A conversation containing the middle of a benchmark question is dropped.
 KEY_WIDTH = {"ja": 12, "en": 24}
@@ -600,32 +573,3 @@ class InstructionCorpus:
             inputs.to(device, non_blocking=cuda),
             targets.to(device, non_blocking=cuda),
         )
-
-
-def chat_samples(model, tokenizer, device, precision, max_new_tokens=256, prompts=None):
-    """Answer fixed questions through the API transcript and note whether replies end."""
-    eos = tokenizer.token_to_id(EOS)
-    settings = {"temperature": 0.7, "top_p": 0.9, "seed": 42}
-    samples = []
-    for language, questions in (prompts or CHAT_PROMPTS).items():
-        for question in questions:
-            prompt = chat_prompt([{"role": "user", "content": question}])
-            with autocast(device, precision):
-                tokens = list(
-                    model.sample_tokens(
-                        tokenizer, prompt, max_new_tokens, top_k=0, **settings
-                    )
-                )
-            samples.append(
-                {
-                    "language": language,
-                    "question": question,
-                    "reply": tokenizer.decode(
-                        [token for token in tokens if token != eos],
-                        skip_special_tokens=True,
-                    ).strip(),
-                    "finished": bool(tokens) and tokens[-1] == eos,
-                    "output_tokens": len(tokens),
-                }
-            )
-    return {**settings, "max_new_tokens": max_new_tokens, "samples": samples}

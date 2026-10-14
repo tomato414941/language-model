@@ -1,7 +1,6 @@
 import hashlib
 import io
 import json
-import math
 import os
 import random
 import re
@@ -11,13 +10,11 @@ import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
-import torch
-
-from .data import BOS, file_digest
-from .training import autocast
+from .data import file_digest
 
 SOURCE_URL = "https://huggingface.co/datasets/{repository}/resolve/{revision}/{path}"
-# Zero-shot evaluation never trains on these items, so every labeled split counts.
+# Collect all splits to exclude benchmark questions from instruction training.
+# Evaluation uses the harness's held-out splits in pretrain.evaluation.
 TASKS = {
     "hellaswag": {
         "language": "en",
@@ -173,92 +170,3 @@ def load_benchmarks(path, tasks=None, limit=None):
             items = [items[index] for index in sorted(selected)]
         benchmarks[name] = items
     return benchmarks
-
-
-@torch.inference_mode()
-def choice_log_likelihoods(
-    model, tokenizer, items, device, precision="float32", batch_tokens=4096
-):
-    """Return the log-likelihood of every choice following its context."""
-    if type(batch_tokens) is not int or batch_tokens <= 0:
-        raise ValueError("batch_tokens must be a positive integer")
-    bos = tokenizer.token_to_id(BOS)
-    requests = []
-    for item_index, item in enumerate(items):
-        context = [
-            bos,
-            *tokenizer.encode(item["context"], add_special_tokens=False).ids,
-        ]
-        for choice_index, choice in enumerate(item["choices"]):
-            continuation = tokenizer.encode(choice, add_special_tokens=False).ids
-            if not 0 < len(continuation) <= model.config.context:
-                raise ValueError("each choice must fit within the context length")
-            tokens = (context + continuation)[-(model.config.context + 1) :]
-            requests.append((item_index, choice_index, tokens, len(continuation)))
-    scores = [[0.0] * len(item["choices"]) for item in items]
-    # Similar lengths share a batch; right padding never reaches earlier tokens.
-    order = sorted(range(len(requests)), key=lambda index: -len(requests[index][2]))
-    was_training = model.training
-    model.eval()
-    try:
-        start = 0
-        while start < len(order):
-            width = len(requests[order[start]][2]) - 1
-            batch = [
-                requests[index]
-                for index in order[start : start + max(1, batch_tokens // width)]
-            ]
-            start += len(batch)
-            inputs = torch.zeros((len(batch), width), dtype=torch.long)
-            for row, (_, _, tokens, _) in enumerate(batch):
-                inputs[row, : len(tokens) - 1] = torch.tensor(tokens[:-1])
-            with autocast(device, precision):
-                logits = model(inputs.to(device))
-            log_probabilities = logits.float().log_softmax(-1)
-            for row, (item_index, choice_index, tokens, length) in enumerate(batch):
-                end = len(tokens) - 1
-                targets = torch.tensor(tokens[-length:], device=device)
-                scores[item_index][choice_index] = (
-                    log_probabilities[row, end - length : end]
-                    .gather(-1, targets[:, None])
-                    .sum()
-                    .item()
-                )
-    finally:
-        model.train(was_training)
-    return scores
-
-
-def evaluate_benchmarks(
-    model, tokenizer, benchmarks, device, precision="float32", batch_tokens=4096
-):
-    results = {}
-    for name, items in benchmarks.items():
-        if not items:
-            raise ValueError(f"{name} has no items")
-        scores = choice_log_likelihoods(
-            model, tokenizer, items, device, precision, batch_tokens
-        )
-        correct = normalized = 0
-        for item, values in zip(items, scores):
-            # Per-character scores keep longer answers from losing by length alone.
-            per_character = [
-                value / len(choice) for value, choice in zip(values, item["choices"])
-            ]
-            correct += max(range(len(values)), key=values.__getitem__) == item["label"]
-            normalized += (
-                max(range(len(values)), key=per_character.__getitem__) == item["label"]
-            )
-        count = len(items)
-        accuracy, normalized_accuracy = correct / count, normalized / count
-        results[name] = {
-            "items": count,
-            "chance": sum(1 / len(item["choices"]) for item in items) / count,
-            "normalized_accuracy": normalized_accuracy,
-            "normalized_accuracy_stderr": math.sqrt(
-                normalized_accuracy * (1 - normalized_accuracy) / count
-            ),
-            "accuracy": accuracy,
-            "accuracy_stderr": math.sqrt(accuracy * (1 - accuracy) / count),
-        }
-    return results
