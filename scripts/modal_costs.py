@@ -19,7 +19,11 @@ def json_value(value):
 
 
 def make_report(workspace, summary, rates, checked_at, previous=None):
-    hourly = rates["cpu_hour_cost"] + 2 * rates["mem_gib_hour_cost"]
+    hourly = (
+        rates["gpu_hour_cost_t4"]
+        + rates["cpu_hour_cost"]
+        + 2 * rates["mem_gib_hour_cost"]
+    )
     billing = json.loads(json.dumps(asdict(summary), default=json_value))
     delta = None
     if (
@@ -36,6 +40,7 @@ def make_report(workspace, summary, rates, checked_at, previous=None):
         "billed_cost_change_usd": str(delta) if delta is not None else None,
         "billed_cost_increased": delta > 0 if delta is not None else False,
         "compute_scenarios_before_adjustments": {
+            "gpu": "T4",
             "physical_cpu_cores": 1,
             "memory_gib": 2,
             "days": 30,

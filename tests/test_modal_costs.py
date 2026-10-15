@@ -29,6 +29,7 @@ class ModalCostTests(unittest.TestCase):
             billed_cost=Decimal(0),
         )
         self.rates = {
+            "gpu_hour_cost_t4": Decimal("0.59000"),
             "cpu_hour_cost": Decimal("0.04730"),
             "mem_gib_hour_cost": Decimal("0.00800"),
         }
@@ -48,16 +49,16 @@ class ModalCostTests(unittest.TestCase):
         )
 
     def test_calculates_monthly_compute_scenarios_from_current_rates(self):
-        """Calculates compute scenarios using exact CPU and memory prices."""
+        """Calculates compute scenarios using exact GPU, CPU and memory prices."""
         scenarios = self.report()["compute_scenarios_before_adjustments"]
-        self.assertEqual(Decimal(scenarios["hourly_usd"]), Decimal("0.06330"))
+        self.assertEqual(Decimal(scenarios["hourly_usd"]), Decimal("0.65330"))
         self.assertEqual(
             Decimal(scenarios["monthly_usd_by_daily_billed_hours"]["1"]),
-            Decimal("1.899"),
+            Decimal("19.599"),
         )
         self.assertEqual(
             Decimal(scenarios["monthly_usd_by_daily_billed_hours"]["24"]),
-            Decimal("45.576"),
+            Decimal("470.376"),
         )
 
     def test_reports_increases_in_billed_cost_within_a_billing_cycle(self):
