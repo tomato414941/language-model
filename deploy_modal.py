@@ -1,4 +1,4 @@
-"""Deploy the native Responses API on demand using Modal CPUs."""
+"""Deploy the native Responses API on demand using a Modal GPU."""
 
 import os
 import re
@@ -35,7 +35,7 @@ image = (
     modal.Image.debian_slim(python_version="3.11")
     .uv_sync(
         str(ROOT),
-        extras=["train-cpu", "hub"],
+        extras=["train", "hub"],
         extra_options="--no-dev",
         uv_version="0.10.12",
     )
@@ -75,6 +75,7 @@ app = modal.App("language-model-api")
             "language-model-api-key", required_keys=["LANGUAGE_MODEL_API_KEY"]
         )
     ],
+    gpu="T4",
     cpu=(1, 1),
     memory=(2048, 3072),
     min_containers=0,
@@ -98,7 +99,7 @@ def api():
         response_settings=ModelSettings(
             model_id=MODEL_ID,
             checkpoint=Path(MODEL_DIRECTORY) / "runs" / MODEL_RUN / "model.pt",
-            device="cpu",
+            device="cuda",
             threads=1,
             api_key=api_key,
         )
