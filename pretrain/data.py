@@ -279,9 +279,9 @@ class Corpus:
         self.manifest = json.loads(
             (self.path / "manifest.json").read_text(encoding="utf-8")
         )
-        if (
-            self.manifest.get("version") != 1
-            or self.manifest.get("dtype") != TOKEN_DTYPE.str
+        if self.manifest.get("version") != 1 or self.manifest.get("dtype") not in (
+            "<u2",
+            TOKEN_DTYPE.str,
         ):
             raise ValueError("unsupported dataset format")
         tokenizer_path = self.path / "tokenizer.json"
@@ -291,19 +291,20 @@ class Corpus:
         if self.tokenizer.get_vocab_size() != self.manifest["vocabulary_size"]:
             raise ValueError("dataset vocabulary does not match the tokenizer")
         self.streams = {}
+        dtype = np.dtype(self.manifest["dtype"])
+        if self.manifest["vocabulary_size"] > np.iinfo(dtype).max + 1:
+            raise ValueError("dataset token dtype cannot represent its vocabulary")
         for split in ("train", "validation"):
             self.streams[split] = {}
             for language in LANGUAGES:
                 filename = f"{split}_{language}.bin"
                 metadata = self.manifest["files"][filename]
                 path = self.path / filename
-                if path.stat().st_size != metadata["tokens"] * TOKEN_DTYPE.itemsize:
+                if path.stat().st_size != metadata["tokens"] * dtype.itemsize:
                     raise ValueError(f"dataset token count does not match: {filename}")
                 if file_digest(path) != metadata["sha256"]:
                     raise ValueError(f"dataset checksum does not match: {filename}")
-                self.streams[split][language] = np.memmap(
-                    path, mode="r", dtype=TOKEN_DTYPE
-                )
+                self.streams[split][language] = np.memmap(path, mode="r", dtype=dtype)
         self.fingerprint = hashlib.sha256(
             json.dumps(self.manifest, sort_keys=True).encode()
         ).hexdigest()

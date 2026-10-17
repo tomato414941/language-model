@@ -95,6 +95,8 @@ IFEVAL_ROWS = [
         "kwargs": [{"num_words": None}],
     }
 ]
+ROWS["ifeval"] = IFEVAL_ROWS
+ID_FIELDS["ifeval"] = "key"
 
 
 def byte_tokenizer():
@@ -179,7 +181,12 @@ class BenchmarkTests(unittest.TestCase):
                     for row in ROWS[name]
                 ]
                 buffer = io.BytesIO()
-                parquet.write_table(arrow.Table.from_pylist(rows), buffer)
+                if path.endswith(".jsonl"):
+                    buffer.write(
+                        "".join(json.dumps(row) + "\n" for row in rows).encode()
+                    )
+                else:
+                    parquet.write_table(arrow.Table.from_pylist(rows), buffer)
                 url = f"{task['repository']}/resolve/{task['revision']}/{path}"
                 self.files[url] = buffer.getvalue()
                 files[path] = hashlib.sha256(buffer.getvalue()).hexdigest()
@@ -236,6 +243,7 @@ class BenchmarkTests(unittest.TestCase):
             benchmarks["arc_easy"][1]["choices"], [" iron", " water", " salt"]
         )
         self.assertEqual(benchmarks["jcommonsenseqa"][0]["choices"][2], "絵本")
+        self.assertEqual(benchmarks["ifeval"][0]["context"], IFEVAL_ROWS[0]["prompt"])
         for name, task in self.tasks.items():
             metadata = manifest["tasks"][name]
             self.assertEqual(metadata["revision"], task["revision"])

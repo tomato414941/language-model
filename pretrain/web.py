@@ -25,7 +25,7 @@ SOURCES = {
     "en": {
         "repository": "HuggingFaceFW/fineweb-edu",
         "revision": "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9",
-        "prefix": "sample/10BT/",
+        "prefix": "data/",
         "language": "en",
         "quality_field": "score",
         "selection": "Seeded sample of FineWeb-Edu, educational score >= 3",

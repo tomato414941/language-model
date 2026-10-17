@@ -46,6 +46,15 @@ TASKS = {
             "data/validation-00000-of-00001.parquet": "b72e6c05535a7ccde7b66f8a721c3b0707e67097a7f33bab626195354180994f",
         },
     },
+    "ifeval": {
+        "language": "en",
+        "repository": "google/IFEval",
+        "revision": "966cd89545d6b6acfd7638bc708b98261ca58e84",
+        "license": "Apache-2.0",
+        "files": {
+            "ifeval_input_data.jsonl": "6a85310ca8ce15eff755aa08a3a4ff931c7e273e7515ebb3c492ea85fd8288f2",
+        },
+    },
 }
 
 
@@ -83,10 +92,15 @@ def jcommonsenseqa_item(row):
     }
 
 
+def ifeval_item(row):
+    return {"id": str(row["key"]), "context": row["prompt"]}
+
+
 CONVERTERS = {
     "hellaswag": hellaswag_item,
     "arc_easy": arc_item,
     "jcommonsenseqa": jcommonsenseqa_item,
+    "ifeval": ifeval_item,
 }
 
 
@@ -117,13 +131,24 @@ def fetch_benchmarks(output):
                 data = download(SOURCE_URL.format(path=path, **task))
                 if hashlib.sha256(data).hexdigest() != expected:
                     raise ValueError(f"{name} source checksum does not match: {path}")
-                rows = parquet.read_table(io.BytesIO(data)).to_pylist()
+                rows = (
+                    [
+                        json.loads(line)
+                        for line in data.decode("utf-8").splitlines()
+                        if line.strip()
+                    ]
+                    if path.endswith(".jsonl")
+                    else parquet.read_table(io.BytesIO(data)).to_pylist()
+                )
                 items.extend(CONVERTERS[name](row) for row in rows)
             if len({item["id"] for item in items}) != len(items):
                 raise ValueError(f"{name} items need unique identifiers")
             for item in items:
-                if not 0 <= item["label"] < len(item["choices"]) or not all(
-                    choice.strip() for choice in item["choices"]
+                if not isinstance(item["context"], str) or not item["context"].strip():
+                    raise ValueError(f"{name} item {item['id']} is malformed")
+                if "choices" in item and (
+                    not 0 <= item["label"] < len(item["choices"])
+                    or not all(choice.strip() for choice in item["choices"])
                 ):
                     raise ValueError(f"{name} item {item['id']} is malformed")
             filename = f"{name}.jsonl"

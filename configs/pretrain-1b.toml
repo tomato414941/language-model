@@ -1,0 +1,88 @@
+training_config = "bilingual-1b.toml"
+training_tokens = 30_000_000_000
+seed = 42
+
+[tokenizer]
+vocabulary_size = 32768
+bytes_per_language = 67_108_864
+
+[corpus]
+validation_tokens_per_language = 5_000_000
+validation_fraction = 0.001
+minimum_characters = 300
+maximum_characters = 100000
+
+[evaluation]
+framework = "lm-eval"
+version = "0.4.13"
+base_tasks = ["hellaswag", "arc_easy", "ja_leaderboard_jcommonsenseqa"]
+instruction_tasks = ["ifeval"]
+
+[sft]
+epochs = 2
+learning_rate = 0.00002
+min_learning_rate = 0.000002
+batch_size = 4
+accumulation_steps = 8
+validation_conversations_per_language = 1000
+max_reply_tokens = 1024
+
+[[sources]]
+id = "ja-web"
+language = "ja"
+repository = "epfml/FineWeb2-HQ"
+revision = "c0c06e94fd3a44ae9e802b2b0fc533817601eb5e"
+prefix = "jpn_Jpan/"
+kind = "web"
+source_language = "jpn"
+quality_field = "quality_score"
+share = 45
+license = "ODC-By-1.0"
+terms_url = "https://commoncrawl.org/terms-of-use"
+
+[[sources]]
+id = "ja-wiki"
+language = "ja"
+repository = "HuggingFaceFW/finewiki"
+revision = "8bd13e72e6a002407649b3e898535f42ceb1aeb9"
+prefix = "data/jawiki/"
+kind = "wiki"
+share = 5
+license = "CC-BY-SA-4.0"
+terms_url = "https://dumps.wikimedia.org/legal.html"
+
+[[sources]]
+id = "en-web"
+language = "en"
+repository = "HuggingFaceFW/fineweb-edu"
+revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+prefix = "data/"
+kind = "web"
+source_language = "en"
+quality_field = "score"
+minimum_quality = 3.0
+share = 40
+license = "ODC-By-1.0"
+terms_url = "https://commoncrawl.org/terms-of-use"
+
+[[sources]]
+id = "en-math"
+language = "en"
+repository = "HuggingFaceTB/finemath"
+revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+prefix = "finemath-4plus/"
+kind = "math"
+share = 5
+license = "ODC-By-1.0"
+terms_url = "https://commoncrawl.org/terms-of-use"
+
+[[sources]]
+id = "en-wiki"
+language = "en"
+repository = "HuggingFaceFW/finewiki"
+revision = "8bd13e72e6a002407649b3e898535f42ceb1aeb9"
+prefix = "data/enwiki/"
+kind = "wiki"
+share = 5
+license = "CC-BY-SA-4.0"
+terms_url = "https://dumps.wikimedia.org/legal.html"

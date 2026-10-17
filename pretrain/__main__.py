@@ -22,6 +22,17 @@ def main(argv=None):
         description="日本語・英語の言語モデルをゼロから学習する"
     )
     commands = parser.add_subparsers(dest="command", required=True)
+    recipe = commands.add_parser(
+        "recipe",
+        help="日英の学習計画を確認し、語彙・コーパス・指示学習の設定を準備する",
+    )
+    recipe.add_argument("--config", type=Path, default=Path("configs/pretrain-1b.toml"))
+    recipe.add_argument("--workdir", type=Path, default=Path("data/pretrain-1b"))
+    recipe.add_argument(
+        "--stage",
+        choices=("inspect", "tokenizer", "corpus", "validate", "sft-config"),
+        default="inspect",
+    )
     wikipedia = commands.add_parser(
         "fetch-wikipedia", help="日本語・英語のWikipedia本文を出典付きで取得する"
     )
@@ -170,7 +181,39 @@ def main(argv=None):
         )
     args = parser.parse_args(argv)
     try:
-        if args.command == "fetch-wikipedia":
+        if args.command == "recipe":
+            from .recipe import (
+                inspect_recipe,
+                prepare_corpus,
+                prepare_tokenizer,
+                validate_corpus,
+                write_sft_config,
+            )
+
+            if args.stage == "inspect":
+                result = inspect_recipe(args.config, args.workdir)
+            elif args.stage == "tokenizer":
+                result = prepare_tokenizer(
+                    args.config, args.workdir / "tokenizer", args.workdir / "benchmarks"
+                )
+            elif args.stage == "corpus":
+                result = prepare_corpus(
+                    args.config,
+                    args.workdir / "tokenizer",
+                    args.workdir / "corpus",
+                    args.workdir / "benchmarks",
+                )
+            elif args.stage == "validate":
+                result = validate_corpus(args.config, args.workdir / "corpus")
+            else:
+                result = write_sft_config(
+                    args.config,
+                    args.workdir / "instructions",
+                    args.workdir / "tokenizer",
+                    args.workdir / "sft.toml",
+                )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "fetch-wikipedia":
             from .wikipedia import fetch_wikipedia
 
             print(
