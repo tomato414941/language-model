@@ -87,6 +87,14 @@ ROWS = {
     ],
 }
 ID_FIELDS = {"hellaswag": "ind", "arc_easy": "id", "jcommonsenseqa": "q_id"}
+IFEVAL_ROWS = [
+    {
+        "key": 1,
+        "prompt": "Describe rain without using commas.",
+        "instruction_id_list": ["punctuation:no_comma"],
+        "kwargs": [{"num_words": None}],
+    }
+]
 
 
 def byte_tokenizer():
@@ -106,6 +114,8 @@ def byte_tokenizer():
 
 def benchmark_dataset(path, name=None, **kwargs):
     """Supply source records while using the harness's real task definitions."""
+    if path == "google/IFEval":
+        return DatasetDict(train=Dataset.from_list(IFEVAL_ROWS))
     task = {
         "Rowan/hellaswag": "hellaswag",
         "allenai/ai2_arc": "arc_easy",
@@ -306,11 +316,10 @@ class BenchmarkTests(unittest.TestCase):
         model = LanguageModel(258, ModelConfig(width=8, heads=2, layers=1, context=32))
         backend = NativeLM(model, tokenizer, torch.device("cpu"))
 
-        def sample(*args, **kwargs):
-            yield from tokenizer.encode("日本語 STOP suffix").ids
-            yield tokenizer.token_to_id("<|eos|>")
+        def continuations(sequences, *args, **kwargs):
+            return [tokenizer.encode("日本語 STOP suffix").ids for _ in sequences]
 
-        with patch.object(model, "sample_tokens", side_effect=sample):
+        with patch.object(model, "continue_greedily", side_effect=continuations):
             stopped, ended = backend.generate_until(
                 [
                     SimpleNamespace(args=("x", {"until": ["STOP"]})),
@@ -348,6 +357,45 @@ class BenchmarkTests(unittest.TestCase):
         for name in DEFAULT_TASKS:
             self.assertIn("acc,none", result["results"][name])
             self.assertEqual(result["versions"][name], 1.0)
+
+    def test_instruction_following_asks_in_the_conversation_format(self):
+        """Asks IFEval in the conversation format and keeps published choice prompts."""
+        tokenizer = byte_tokenizer()
+        model = LanguageModel(258, ModelConfig(width=8, heads=2, layers=1, context=64))
+        asked, limits = [], []
+
+        def reply(sequences, max_new_tokens, *args, **kwargs):
+            asked.extend(
+                tokenizer.decode(sequence, skip_special_tokens=True)
+                for sequence in sequences
+            )
+            limits.append(max_new_tokens)
+            return [tokenizer.encode("Rain falls softly.").ids for _ in sequences]
+
+        encode = NativeLM.tok_encode
+        with (
+            patch(
+                "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
+            ),
+            # Keep the test offline; the replies here need no sentence splitter.
+            patch("nltk.download"),
+            patch.object(model, "continue_greedily", side_effect=reply),
+            patch.object(
+                NativeLM, "tok_encode", autospec=True, side_effect=encode
+            ) as encoded,
+        ):
+            result = evaluate_benchmarks(
+                model, tokenizer, torch.device("cpu"), tasks=["arc_easy", "ifeval"]
+            )
+        prompt = "User: Describe rain without using commas.\n\nAssistant:"
+        self.assertEqual(asked, [prompt])
+        self.assertEqual(limits, [1280])
+        texts = [call.args[1] for call in encoded.call_args_list]
+        self.assertEqual([text for text in texts if "User:" in text], [prompt])
+        self.assertIn("Question: Which gas do plants take in?\nAnswer:", texts)
+        self.assertEqual(result["results"]["ifeval"]["prompt_level_strict_acc,none"], 1)
+        self.assertIn("acc,none", result["results"]["arc_easy"])
+        self.assertEqual(result["conversation_format_tasks"], ["ifeval"])
 
     def test_limited_standard_evaluation_is_reported_as_a_smoke_check(self):
         """Records the limited scope and item count for a smoke check."""

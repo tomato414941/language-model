@@ -151,6 +151,47 @@ class PretrainingTests(unittest.TestCase):
                 parameter, resumed["model"][name], rtol=0, atol=0
             )
 
+    def test_batched_greedy_continuations_match_generating_each_prompt_alone(self):
+        """長さの違う入力をまとめて貪欲生成しても、1件ずつ生成したときと同じトークンを返す。"""
+        tokenizer = self.corpus.tokenizer
+        bos, eos = tokenizer.token_to_id("<|bos|>"), tokenizer.token_to_id("<|eos|>")
+        prompts = ["日本語とEnglish", "abc", "あいう終わり"]
+        sequences = [
+            [bos, *tokenizer.encode(prompt, add_special_tokens=False).ids]
+            for prompt in prompts
+        ]
+        for config in (
+            ModelConfig(width=24, heads=4, layers=2, context=64),
+            ModelConfig(
+                width=24,
+                heads=4,
+                kv_heads=2,
+                layers=2,
+                context=64,
+                architecture="llama",
+                intermediate_size=64,
+            ),
+        ):
+            torch.manual_seed(3)
+            model = LanguageModel(258, config).eval()
+            # Larger weights make each prediction depend on the earlier positions.
+            with torch.no_grad():
+                for parameter in model.parameters():
+                    parameter.normal_(std=0.3)
+            alone = [
+                [
+                    token
+                    for token in model.sample_tokens(
+                        tokenizer, prompt, 20, temperature=0, top_k=0
+                    )
+                    if token != eos
+                ]
+                for prompt in prompts
+            ]
+            self.assertEqual(
+                model.continue_greedily(sequences, 20, eos, banned=[bos]), alone
+            )
+
     def test_checkpoint_restores_predictions_and_seeded_long_prompt_generation(self):
         """保存した重みと語彙を復元し、長い日英の接頭辞を保って再現可能に生成する。"""
         self.run_training("generation", max_steps=2)

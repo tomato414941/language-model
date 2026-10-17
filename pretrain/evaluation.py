@@ -14,10 +14,22 @@ try:
 except ImportError as error:
     raise ImportError("Install evaluation dependencies with --extra eval") from error
 
+from .conversation import chat_prompt
 from .data import BOS, EOS
 from .training import autocast
 
 DEFAULT_TASKS = ("hellaswag", "arc_easy", "ja_leaderboard_jcommonsenseqa")
+# These tasks ask in the conversation format that the API serves.
+CONVERSATION_TASKS = ("ifeval",)
+RESULT_SECTIONS = (
+    "results",
+    "group_subtasks",
+    "configs",
+    "versions",
+    "n-shot",
+    "higher_is_better",
+    "n-samples",
+)
 JCOMMONSENSEQA_URL = (
     "https://raw.githubusercontent.com/yahoojapan/JGLUE/refs/tags/v1.2.0/"
     "datasets/jcommonsenseqa-v1.2/{split}-v1.2.json"
@@ -48,6 +60,17 @@ class NativeLM(TemplateLM):
     @property
     def prefix_token_id(self):
         return self.tokenizer.token_to_id(BOS)
+
+    @property
+    def tokenizer_name(self):
+        return "native-conversation"
+
+    def apply_chat_template(self, chat_history, add_generation_prompt=True):
+        if not add_generation_prompt:
+            raise ValueError(
+                "the conversation format does not continue a started reply"
+            )
+        return chat_prompt(chat_history)
 
     def tok_encode(self, string, add_special_tokens=None, **kwargs):
         tokens = self.tokenizer.encode(string, add_special_tokens=False).ids
@@ -114,36 +137,47 @@ class NativeLM(TemplateLM):
         return results
 
     def generate_until(self, requests, disable_tqdm=False):
-        results = []
+        prompts, limits, stops = [], [], []
         for request in requests:
             prompt, options = request.args
             if options.get("do_sample") or options.get("temperature", 0) != 0:
                 raise ValueError("evaluation generation uses greedy decoding")
-            limit = options.get("max_gen_toks", 256)
-            stops = options.get("until", [])
-            if isinstance(stops, str):
-                stops = [stops]
-            generated, text = [], ""
-            tokens = self.model.sample_tokens(
-                self.tokenizer, prompt, limit, temperature=0, top_k=0
-            )
-            try:
-                with autocast(self.device, self.precision):
-                    for token in tokens:
-                        if token == self.eot_token_id:
-                            break
-                        generated.append(token)
-                        text = self.tokenizer.decode(
-                            generated, skip_special_tokens=True
-                        )
-                        endings = [text.index(stop) for stop in stops if stop in text]
-                        if endings:
-                            text = text[: min(endings)]
-                            break
-            finally:
-                tokens.close()
-            results.append(text)
-            self.cache_hook.add_partial("generate_until", request.args, text)
+            until = options.get("until", [])
+            prompts.append(self.tok_encode(prompt))
+            limits.append(options.get("max_gen_toks", 256))
+            stops.append([until] if isinstance(until, str) else until)
+        # Decode prompts with the same limit together, longest first, within batch_tokens.
+        order = sorted(
+            range(len(requests)),
+            key=lambda index: (-limits[index], -len(prompts[index])),
+        )
+        results = [None] * len(requests)
+        start = 0
+        while start < len(order):
+            first = order[start]
+            rows = max(1, self.batch_tokens // (len(prompts[first]) + limits[first]))
+            batch = [
+                index
+                for index in order[start : start + rows]
+                if limits[index] == limits[first]
+            ]
+            start += len(batch)
+            with autocast(self.device, self.precision):
+                continuations = self.model.continue_greedily(
+                    [prompts[index] for index in batch],
+                    limits[first],
+                    self.eot_token_id,
+                    banned=[self.prefix_token_id],
+                )
+            for index, continuation in zip(batch, continuations):
+                text = self.tokenizer.decode(continuation, skip_special_tokens=True)
+                endings = [text.index(stop) for stop in stops[index] if stop in text]
+                if endings:
+                    text = text[: min(endings)]
+                results[index] = text
+                self.cache_hook.add_partial(
+                    "generate_until", requests[index].args, text
+                )
         return results
 
 
@@ -163,7 +197,7 @@ def evaluate_benchmarks(
     selected = list(DEFAULT_TASKS if tasks is None else tasks)
     if not selected:
         raise ValueError("select at least one evaluation task")
-    loaded = []
+    loaded = {}
     for name in selected:
         if name not in manager.all_subtasks:
             raise ValueError(f"unknown harness task: {name}")
@@ -183,16 +217,35 @@ def evaluate_benchmarks(
                 },
             )
             config["metadata"]["config_source"] = str(path)
-            loaded.append(ConfigurableTask(config=config))
+            loaded[name] = ConfigurableTask(config=config)
         else:
-            loaded.append(name)
-    result = evaluator.simple_evaluate(
-        model=NativeLM(model, tokenizer, device, precision, batch_tokens),
-        tasks=loaded,
-        task_manager=manager,
-        limit=limit,
-        log_samples=False,
-    )
+            loaded[name] = name
+    backend = NativeLM(model, tokenizer, device, precision, batch_tokens)
+    result = None
+    for conversation in (False, True):
+        group = [
+            task
+            for name, task in loaded.items()
+            if (name in CONVERSATION_TASKS) == conversation
+        ]
+        if not group:
+            continue
+        part = evaluator.simple_evaluate(
+            model=backend,
+            tasks=group,
+            task_manager=manager,
+            limit=limit,
+            log_samples=False,
+            apply_chat_template=conversation,
+        )
+        if result is None:
+            result = part
+        else:
+            for section in RESULT_SECTIONS:
+                result[section].update(part[section])
+    result["conversation_format_tasks"] = [
+        name for name in loaded if name in CONVERSATION_TASKS
+    ]
     result["framework"] = {
         "name": "lm-evaluation-harness",
         "version": version("lm_eval"),

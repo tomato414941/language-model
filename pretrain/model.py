@@ -57,10 +57,11 @@ class Rotary(nn.Module):
         )
         self.register_buffer("frequencies", frequencies, persistent=False)
 
-    def forward(self, query, key):
-        positions = torch.arange(query.shape[-2], device=query.device).float()
-        angles = torch.outer(positions, self.frequencies.float())
-        angles = torch.cat((angles, angles), dim=-1)[None, None]
+    def forward(self, query, key, positions=None):
+        if positions is None:
+            positions = torch.arange(query.shape[-2], device=query.device)[None]
+        angles = positions.float()[..., None] * self.frequencies.float()
+        angles = torch.cat((angles, angles), dim=-1)[:, None]
         cosine, sine = angles.cos().to(query.dtype), angles.sin().to(query.dtype)
 
         def rotate(value):
@@ -91,7 +92,7 @@ class LlamaBlock(nn.Module):
         self.up = nn.Linear(config.width, intermediate, bias=False)
         self.down = nn.Linear(intermediate, config.width, bias=False)
 
-    def forward(self, hidden):
+    def forward(self, hidden, positions=None, mask=None, cache=None):
         batch, length, width = hidden.shape
         normalized = self.norm_attention(hidden)
         query = self.query(normalized).view(batch, length, self.heads, self.head_width)
@@ -100,9 +101,16 @@ class LlamaBlock(nn.Module):
             tensor.view(batch, length, self.kv_heads, self.head_width).transpose(1, 2)
             for tensor in (key, value)
         ]
-        query, key = self.rotary(query.transpose(1, 2), key)
+        query, key = self.rotary(query.transpose(1, 2), key, positions)
+        if cache is not None:
+            key, value = cache.extend(key, value)
         attended = F.scaled_dot_product_attention(
-            query, key, value, is_causal=True, enable_gqa=self.heads != self.kv_heads
+            query,
+            key,
+            value,
+            attn_mask=mask,
+            is_causal=mask is None,
+            enable_gqa=self.heads != self.kv_heads,
         )
         attended = attended.transpose(1, 2).contiguous().view(batch, length, width)
         hidden = hidden + self.attention_output(attended)
@@ -124,17 +132,38 @@ class Block(nn.Module):
             nn.Linear(4 * config.width, config.width, bias=False),
         )
 
-    def forward(self, hidden):
+    def forward(self, hidden, positions=None, mask=None, cache=None):
         batch, length, width = hidden.shape
         q, k, v = self.qkv(self.norm_attention(hidden)).chunk(3, dim=-1)
         q, k, v = [
             x.view(batch, length, self.heads, width // self.heads).transpose(1, 2)
             for x in (q, k, v)
         ]
-        attended = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        if cache is not None:
+            k, v = cache.extend(k, v)
+        attended = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=mask, is_causal=mask is None
+        )
         attended = attended.transpose(1, 2).contiguous().view(batch, length, width)
         hidden = hidden + self.attention_output(attended)
         return hidden + self.mlp(self.norm_mlp(hidden))
+
+
+class KeyValueCache:
+    """Keep one layer's keys and values so later steps process only new positions."""
+
+    def __init__(self, size):
+        self.size, self.length, self.keys, self.values = size, 0, None, None
+
+    def extend(self, key, value):
+        if self.keys is None:
+            shape = (*key.shape[:2], self.size, key.shape[-1])
+            self.keys, self.values = key.new_empty(shape), value.new_empty(shape)
+        end = self.length + key.shape[2]
+        self.keys[:, :, self.length : end] = key
+        self.values[:, :, self.length : end] = value
+        self.length = end
+        return self.keys[:, :, :end], self.values[:, :, :end]
 
 
 class LanguageModel(nn.Module):
@@ -258,3 +287,69 @@ class LanguageModel(nn.Module):
                 tokens.append(token)
         finally:
             self.train(was_training)
+
+    @torch.inference_mode()
+    def continue_greedily(self, sequences, max_new_tokens, end, banned=()):
+        """Return each sequence's greedy continuation before `end`, decoding all at once."""
+        if type(max_new_tokens) is not int or max_new_tokens <= 0:
+            raise ValueError("max_new_tokens must be a positive integer")
+        if not sequences or not all(sequences):
+            raise ValueError("provide at least one nonempty token sequence")
+        longest = max(map(len, sequences))
+        # The input of the last step occupies the final cached position.
+        size = longest + max_new_tokens - 1
+        if size > self.config.context:
+            raise ValueError(
+                "sequences and new tokens must fit within the context length"
+            )
+        device = self.embedding.weight.device
+        padding = torch.tensor(
+            [longest - len(sequence) for sequence in sequences], device=device
+        )
+        # Shorter sequences are padded on the left with their first token, then masked.
+        tokens = torch.tensor(
+            [
+                [sequence[0]] * (longest - len(sequence)) + sequence
+                for sequence in sequences
+            ],
+            device=device,
+        )
+        banned = torch.tensor(list(banned), dtype=torch.long, device=device)
+        steps = torch.arange(size, device=device)
+        real = steps >= padding[:, None]
+        caches = [KeyValueCache(size) for _ in self.blocks]
+        continuations = [[] for _ in sequences]
+        active = [True] * len(sequences)
+        start = 0
+        was_training = self.training
+        self.eval()
+        try:
+            for step in range(max_new_tokens):
+                stop = start + tokens.shape[1]
+                queries, keys = steps[start:stop], steps[:stop]
+                # Padding positions attend to themselves so that every row stays finite.
+                mask = ((keys <= queries[:, None]) & real[:, None, :stop]) | (
+                    keys == queries[:, None]
+                )
+                positions = (queries - padding[:, None]).clamp(min=0)
+                hidden = self.embedding(tokens)
+                if self.position is not None:
+                    hidden = hidden + self.position(positions)
+                for block, cache in zip(self.blocks, caches):
+                    hidden = block(hidden, positions, mask[:, None], cache)
+                logits = F.linear(self.norm(hidden[:, -1]), self.embedding.weight)
+                logits = logits.float()
+                logits[:, banned] = -torch.inf
+                chosen = logits.argmax(-1)
+                for row, token in enumerate(chosen.tolist()):
+                    if active[row]:
+                        if token == end:
+                            active[row] = False
+                        else:
+                            continuations[row].append(token)
+                if not any(active) or step == max_new_tokens - 1:
+                    break
+                tokens, start = chosen[:, None], stop
+        finally:
+            self.train(was_training)
+        return continuations

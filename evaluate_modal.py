@@ -33,6 +33,8 @@ image = (
         extra_options="--no-dev",
         uv_version="0.10.12",
     )
+    # IFEval counts sentences with NLTK's Punkt data; keep it in the image.
+    .run_commands("python -m nltk.downloader -d /usr/local/share/nltk_data punkt_tab")
     .add_local_file(
         ROOT / "pretrain/__init__.py", "/root/pretrain/__init__.py", copy=True
     )
@@ -62,7 +64,7 @@ app = modal.App("language-model-evaluation")
     memory=(8192, 8192),
     max_containers=1,
     scaledown_window=2,
-    timeout=3600,
+    timeout=7200,
     retries=0,
     env={"TOKENIZERS_PARALLELISM": "false"},
 )
@@ -70,7 +72,11 @@ def evaluate():
     import torch
 
     from pretrain.data import file_digest
-    from pretrain.evaluation import evaluate_benchmarks
+    from pretrain.evaluation import (
+        CONVERSATION_TASKS,
+        DEFAULT_TASKS,
+        evaluate_benchmarks,
+    )
     from pretrain.training import load_model, select_device
 
     started = perf_counter()
@@ -90,7 +96,12 @@ def evaluate():
         flush=True,
     )
     result = evaluate_benchmarks(
-        model, tokenizer, device, precision="bfloat16", batch_tokens=16384
+        model,
+        tokenizer,
+        device,
+        precision="bfloat16",
+        batch_tokens=16384,
+        tasks=[*DEFAULT_TASKS, *CONVERSATION_TASKS],
     )
     result["checkpoint"] = {
         "repository": MODEL_REPO,
@@ -107,6 +118,7 @@ def evaluate():
         "precision": "bfloat16",
         "torch_version": str(torch.__version__),
         "evaluation_source_sha256": file_digest(ROOT / "pretrain/evaluation.py"),
+        "model_source_sha256": file_digest(ROOT / "pretrain/model.py"),
         "elapsed_seconds": perf_counter() - started,
         "completed_at": datetime.now(UTC).isoformat(),
     }
