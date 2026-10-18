@@ -1,0 +1,36 @@
+# Continue the 115M bilingual model on new documents: a stable phase at the
+# peak learning rate, then a decay phase on the highest-quality sources.
+# The stable phase's last checkpoint is the point to extend from later.
+training_config = "bilingual-v4.toml"
+sources = "sources.toml"
+seed = 42
+initialize_from = "runs/bilingual-v3-3b/model.pt"
+
+[tokenizer]
+vocabulary_size = 16384
+reuse_from = "data/bilingual-v3/tokenizer.json"
+reuse_sha256 = "c0db70b68a3817198e7412b0dae5b6c6ed55e4ba41256700e55c6c80b597e141"
+
+[corpus]
+validation_tokens_per_language = 2_000_000
+validation_fraction = 0.003
+minimum_characters = 300
+maximum_characters = 100000
+
+[evaluation]
+framework = "lm-eval"
+version = "0.4.13"
+base_tasks = ["hellaswag", "arc_easy", "ja_leaderboard_jcommonsenseqa"]
+instruction_tasks = ["ifeval"]
+
+# The Japanese web source is provisional until the probe-v4 comparison.
+[[corpora]]
+name = "stable"
+training_tokens = 3_840_000_000
+mix = { ja-climblab = 45, ja-wiki = 5, en-web = 27, en-dclm = 18, en-wiki = 5 }
+
+[[corpora]]
+name = "decay"
+training_tokens = 960_000_000
+validation_tokens_per_language = 1_000_000
+mix = { ja-climblab-top = 35, ja-wiki = 12, ja-aozora = 3, en-edu-top = 20, en-cosmopedia = 15, en-wiki = 10, en-dclm = 5 }

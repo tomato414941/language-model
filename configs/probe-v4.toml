@@ -1,0 +1,49 @@
+# Compare Japanese web sources with short annealing runs from the 115M model.
+# Each alternative trains on its own corpus; all are measured on the shared
+# reference corpus, which draws evenly from every candidate.
+training_config = "bilingual-v4-probe.toml"
+sources = "sources.toml"
+seed = 42
+initialize_from = "runs/bilingual-v3-3b/model.pt"
+
+[tokenizer]
+vocabulary_size = 16384
+reuse_from = "data/bilingual-v3/tokenizer.json"
+reuse_sha256 = "c0db70b68a3817198e7412b0dae5b6c6ed55e4ba41256700e55c6c80b597e141"
+
+[corpus]
+validation_tokens_per_language = 1_000_000
+validation_fraction = 0.003
+minimum_characters = 300
+maximum_characters = 100000
+
+[evaluation]
+framework = "lm-eval"
+version = "0.4.13"
+base_tasks = ["hellaswag", "arc_easy", "ja_leaderboard_jcommonsenseqa"]
+instruction_tasks = ["ifeval"]
+
+[[corpora]]
+name = "climblab"
+purpose = "alternative"
+training_tokens = 150_000_000
+mix = { ja-climblab = 50, en-web = 30, en-dclm = 20 }
+
+[[corpora]]
+name = "edu"
+purpose = "alternative"
+training_tokens = 150_000_000
+mix = { ja-edu = 50, en-web = 30, en-dclm = 20 }
+
+[[corpora]]
+name = "hq"
+purpose = "alternative"
+training_tokens = 150_000_000
+mix = { ja-hq = 50, en-web = 30, en-dclm = 20 }
+
+[[corpora]]
+name = "reference"
+purpose = "evaluation"
+training_tokens = 1_000_000
+validation_tokens_per_language = 2_000_000
+mix = { ja-climblab = 15, ja-edu = 15, ja-hq = 15, ja-wiki = 5, en-web = 30, en-dclm = 20 }

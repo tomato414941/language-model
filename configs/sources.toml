@@ -1,0 +1,166 @@
+# Pretraining text sources shared by every recipe. Add a source here and use it
+# from a recipe's corpus mix; no code change is needed for a new dataset.
+#
+# Each source reads the files under `prefix` at a pinned dataset commit and keeps
+# a document only when every filter passes:
+#   equal       field equals the value
+#   minimum     numeric field is at least the value
+#   maximum     numeric field is at most the value
+#   any_minimum at least one listed numeric field reaches its value
+# Field names may reach into nested records with dots, such as "meta.name".
+
+[[sources]]
+id = "ja-climblab"
+language = "ja"
+repository = "KantaHayashiAI/ClimbLab-Ja"
+revision = "2ed8cdb4a280e5c8875494f30d871db3406922ea"
+prefix = "train-"
+license = "ODC-By-1.0; source texts CC-BY-4.0, CC-BY-SA-3.0 or ODC-By-1.0"
+terms_url = "https://huggingface.co/datasets/KantaHayashiAI/ClimbLab-Ja/blob/main/LICENSES.md"
+minimum = { quality = 4, advertisement = 3 }
+any_minimum = { informational_value = 4, educational_value = 4, cultural_value = 4, creative_value = 4 }
+
+[[sources]]
+id = "ja-climblab-top"
+language = "ja"
+repository = "KantaHayashiAI/ClimbLab-Ja"
+revision = "2ed8cdb4a280e5c8875494f30d871db3406922ea"
+prefix = "train-"
+license = "ODC-By-1.0; source texts CC-BY-4.0, CC-BY-SA-3.0 or ODC-By-1.0"
+terms_url = "https://huggingface.co/datasets/KantaHayashiAI/ClimbLab-Ja/blob/main/LICENSES.md"
+minimum = { quality = 5, advertisement = 3 }
+any_minimum = { informational_value = 4, educational_value = 4, cultural_value = 4, creative_value = 4 }
+
+[[sources]]
+id = "ja-edu"
+language = "ja"
+repository = "hotchpotch/fineweb-2-edu-japanese"
+revision = "180ca004c6a89b590daaad86cb062a07a5353c69"
+prefix = "data/train-"
+license = "ODC-By-1.0"
+terms_url = "https://commoncrawl.org/terms-of-use"
+equal = { language = "jpn" }
+minimum = { language_score = 0.8, score = 3.0 }
+
+[[sources]]
+id = "ja-edu-top"
+language = "ja"
+repository = "hotchpotch/fineweb-2-edu-japanese"
+revision = "180ca004c6a89b590daaad86cb062a07a5353c69"
+prefix = "data/train-"
+license = "ODC-By-1.0"
+terms_url = "https://commoncrawl.org/terms-of-use"
+equal = { language = "jpn" }
+minimum = { language_score = 0.8, score = 3.3 }
+
+[[sources]]
+id = "ja-hq"
+language = "ja"
+repository = "epfml/FineWeb2-HQ"
+revision = "c0c06e94fd3a44ae9e802b2b0fc533817601eb5e"
+prefix = "jpn_Jpan/"
+license = "ODC-By-1.0"
+terms_url = "https://commoncrawl.org/terms-of-use"
+equal = { language = "jpn" }
+minimum = { language_score = 0.8, quality_score = 0.18 }
+# Shards sampled for the earlier bilingual-v2 and bilingual-v3 corpora.
+exclude_files_from = "previous-shards.toml"
+
+[[sources]]
+id = "ja-hq-top"
+language = "ja"
+repository = "epfml/FineWeb2-HQ"
+revision = "c0c06e94fd3a44ae9e802b2b0fc533817601eb5e"
+prefix = "jpn_Jpan/"
+license = "ODC-By-1.0"
+terms_url = "https://commoncrawl.org/terms-of-use"
+equal = { language = "jpn" }
+minimum = { language_score = 0.8, quality_score = 0.6 }
+exclude_files_from = "previous-shards.toml"
+
+[[sources]]
+id = "ja-wiki"
+language = "ja"
+repository = "HuggingFaceFW/finewiki"
+revision = "8bd13e72e6a002407649b3e898535f42ceb1aeb9"
+prefix = "data/jawiki/"
+license = "CC-BY-SA-4.0"
+terms_url = "https://dumps.wikimedia.org/legal.html"
+equal = { in_language = "ja" }
+
+[[sources]]
+id = "ja-aozora"
+language = "ja"
+repository = "globis-university/aozorabunko-clean"
+revision = "42a9c9c0f1d67e6a5554d9bea4201973dc9b049c"
+prefix = "aozorabunko-dedupe-clean"
+format = "jsonl.gz"
+license = "Public domain works; dataset CC-BY-4.0"
+terms_url = "https://huggingface.co/datasets/globis-university/aozorabunko-clean"
+# Modern orthography only, and only works and people without copyright.
+equal = { "meta.文字遣い種別" = "新字新仮名", "meta.作品著作権フラグ" = "なし", "meta.人物著作権フラグ" = "なし" }
+maximum_characters = 2000000
+
+[[sources]]
+id = "en-web"
+language = "en"
+repository = "HuggingFaceFW/fineweb-edu"
+revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+prefix = "data/"
+license = "ODC-By-1.0"
+terms_url = "https://commoncrawl.org/terms-of-use"
+equal = { language = "en" }
+minimum = { language_score = 0.8, score = 3.0 }
+
+[[sources]]
+id = "en-edu-top"
+language = "en"
+repository = "HuggingFaceFW/fineweb-edu"
+revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+prefix = "data/"
+license = "ODC-By-1.0"
+terms_url = "https://commoncrawl.org/terms-of-use"
+equal = { language = "en" }
+minimum = { language_score = 0.8, int_score = 4 }
+
+[[sources]]
+id = "en-dclm"
+language = "en"
+repository = "mlfoundations/dclm-baseline-1.0"
+revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+prefix = "global-shard_"
+format = "jsonl.zst"
+license = "CC-BY-4.0"
+terms_url = "https://commoncrawl.org/terms-of-use"
+minimum = { "language_id_whole_page_fasttext.en" = 0.8 }
+
+[[sources]]
+id = "en-cosmopedia"
+language = "en"
+repository = "HuggingFaceTB/smollm-corpus"
+revision = "3ba9d605774198c5868892d7a8deda78031a781f"
+prefix = "cosmopedia-v2/"
+# Generated by Mixtral-8x7B-Instruct-v0.1, which is released under Apache-2.0.
+license = "ODC-By-1.0"
+terms_url = "https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus"
+
+[[sources]]
+id = "en-math"
+language = "en"
+repository = "HuggingFaceTB/finemath"
+revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+prefix = "finemath-4plus/"
+license = "ODC-By-1.0"
+terms_url = "https://commoncrawl.org/terms-of-use"
+equal = { language = "en" }
+minimum = { language_score = 0.8 }
+
+[[sources]]
+id = "en-wiki"
+language = "en"
+repository = "HuggingFaceFW/finewiki"
+revision = "8bd13e72e6a002407649b3e898535f42ceb1aeb9"
+prefix = "data/enwiki/"
+license = "CC-BY-SA-4.0"
+terms_url = "https://dumps.wikimedia.org/legal.html"
+equal = { in_language = "en" }

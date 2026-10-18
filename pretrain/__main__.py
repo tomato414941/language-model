@@ -133,6 +133,11 @@ def main(argv=None):
         help="保存したモデルの重みから新しい学習段階を開始する",
     )
     training.add_argument(
+        "--continue-from",
+        type=Path,
+        help="保存した重み・最適化の状態・ステップを引き継ぎ、別のデータで学習を続ける",
+    )
+    training.add_argument(
         "--max-steps",
         type=int,
         help="学習計画を維持し、指定ステップで一旦保存して終了する",
@@ -151,6 +156,11 @@ def main(argv=None):
     )
     evaluation.add_argument("--data", type=Path, default=Path("data/bilingual"))
     evaluation.add_argument("--batches", type=int, default=16)
+    evaluation.add_argument(
+        "--other-data",
+        action="store_true",
+        help="学習に使ったものとは別の、同じ語彙のデータで測る",
+    )
     evaluation.add_argument("--batch-size", type=int, default=8)
     generation = commands.add_parser(
         "generate", help="保存したモデルから文章を生成する"
@@ -203,11 +213,11 @@ def main(argv=None):
                 result = prepare_corpus(
                     args.config,
                     workdir / "tokenizer",
-                    workdir / "corpus",
+                    workdir,
                     workdir / "benchmarks",
                 )
             elif args.stage == "validate":
-                result = validate_corpus(args.config, workdir / "corpus")
+                result = validate_corpus(args.config, workdir)
             else:
                 result = write_sft_config(
                     args.config,
@@ -310,6 +320,7 @@ def main(argv=None):
                     args.max_steps,
                     lambda: stopped,
                     args.initialize_from,
+                    args.continue_from,
                 )
             finally:
                 for s, handler in previous.items():
@@ -360,7 +371,10 @@ def main(argv=None):
             elif args.command == "evaluate":
                 corpus = open_corpus(args.data)
                 corpus.validate_context(model.config.context)
-                if corpus.fingerprint != payload["dataset_fingerprint"]:
+                if args.other_data:
+                    if corpus.tokenizer.to_str() != tokenizer.to_str():
+                        raise ValueError("evaluation data needs the model's tokenizer")
+                elif corpus.fingerprint != payload["dataset_fingerprint"]:
                     raise ValueError(
                         "evaluation requires the checkpoint's held-out dataset"
                     )

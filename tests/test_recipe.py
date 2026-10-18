@@ -35,11 +35,13 @@ from pretrain.recipe import (
     BenchmarkFilter,
     accepted_documents,
     document_digest,
+    document_text,
     inspect_recipe,
     iter_source,
     prepare_corpus,
     prepare_tokenizer,
     read_recipe,
+    recipe_fingerprint,
     validate_corpus,
     validation_document,
     write_sft_config,
@@ -47,6 +49,27 @@ from pretrain.recipe import (
 from pretrain.training import load_checkpoint, read_config, train
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def nested(name, value):
+    for part in reversed(name.split(".")[1:]):
+        value = {part: value}
+    return name.split(".")[0], value
+
+
+def passing_row(source, **row):
+    """Build a document that every filter of the source accepts."""
+    conditions = [
+        *source.get("equal", {}).items(),
+        *source.get("minimum", {}).items(),
+        *list(source.get("any_minimum", {}).items())[:1],
+    ]
+    for name, value in conditions:
+        key, value = nested(name, value)
+        if isinstance(value, dict) and isinstance(row.get(key), dict):
+            value = {**row[key], **value}
+        row[key] = value
+    return row
 
 
 class RecipeTests(unittest.TestCase):
@@ -59,6 +82,8 @@ class RecipeTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.recipe_path = self.root / "recipe.toml"
+        for name in ("sources.toml", "previous-shards.toml"):
+            (self.root / name).write_text((ROOT / "configs" / name).read_text())
         text = (ROOT / "configs/pretrain-1b.toml").read_text()
         for old, new in (
             ("bilingual-1b.toml", "training.toml"),
@@ -103,21 +128,16 @@ class RecipeTests(unittest.TestCase):
                 if language == "ja"
                 else "An explanation of natural science and history. "
             ) * 20
-            rows = []
-            for index in range(100):
-                row = {
-                    "text": f"{text} {source['id']}:{index}",
-                    "url": f"https://example.org/{source['id']}/{index}",
-                    "id": f"{source['id']}:{index}",
-                    "source_file": source["prefix"] + "fixture.parquet",
-                    "language": source.get("source_language", language),
-                    "in_language": language,
-                    "language_score": 0.99,
-                }
-                if "quality_field" in source:
-                    row[source["quality_field"]] = 0.9 if language == "ja" else 4.0
-                rows.append(row)
-            self.rows[source["id"]] = rows
+            self.rows[source["id"]] = [
+                passing_row(
+                    source,
+                    text=f"{text} {source['id']}:{index}",
+                    url=f"https://example.org/{source['id']}/{index}",
+                    id=f"{source['id']}:{index}",
+                    source_file=source["prefix"] + "fixture.parquet",
+                )
+                for index in range(100)
+            ]
         self.source_patch = patch(
             "pretrain.recipe.iter_source",
             side_effect=lambda source, seed: iter(self.rows[source["id"]]),
@@ -129,9 +149,7 @@ class RecipeTests(unittest.TestCase):
         tokenizer = self.root / "tokenizer"
         prepare_tokenizer(self.recipe_path, tokenizer, self.benchmarks)
         with contextlib.redirect_stdout(io.StringIO()):
-            prepare_corpus(
-                self.recipe_path, tokenizer, self.root / "corpus", self.benchmarks
-            )
+            prepare_corpus(self.recipe_path, tokenizer, self.root, self.benchmarks)
         return Corpus(self.root / "corpus")
 
     def test_学習計画のモデル規模と混合比と実行手順を表示する(self):
@@ -213,7 +231,7 @@ class RecipeTests(unittest.TestCase):
 
     def test_各データ源の割当を満たす日英コーパスを作成する(self):
         corpus = self.prepare()
-        result = validate_corpus(self.recipe_path, self.root / "corpus")
+        result = validate_corpus(self.recipe_path, self.root)
         self.assertTrue(result["ready"])
         for source in corpus.manifest["sources"].values():
             for split, target in source["targets"].items():
@@ -260,7 +278,7 @@ class RecipeTests(unittest.TestCase):
         filter_ = BenchmarkFilter(self.benchmarks)
         with sqlite3.connect(":memory:") as database:
             database.execute("CREATE TABLE documents (digest BLOB PRIMARY KEY)")
-            source = next(s for s in self.recipe["sources"] if s["id"] == "ja-web")
+            source = next(s for s in self.recipe["sources"] if s["id"] == "ja-hq")
             documents = list(
                 accepted_documents(
                     source,
@@ -281,16 +299,14 @@ class RecipeTests(unittest.TestCase):
 
     def test_同じ設定から同じ語彙とトークン列を再現する(self):
         first = self.prepare()
-        second_tokenizer = self.root / "second-tokenizer"
+        second_root = self.root / "second"
+        second_tokenizer = second_root / "tokenizer"
         prepare_tokenizer(self.recipe_path, second_tokenizer, self.benchmarks)
         with contextlib.redirect_stdout(io.StringIO()):
             prepare_corpus(
-                self.recipe_path,
-                second_tokenizer,
-                self.root / "second-corpus",
-                self.benchmarks,
+                self.recipe_path, second_tokenizer, second_root, self.benchmarks
             )
-        second = Corpus(self.root / "second-corpus")
+        second = Corpus(second_root / "corpus")
         self.assertEqual(first.fingerprint, second.fingerprint)
         for split in ("train", "validation"):
             for language in ("ja", "en"):
@@ -300,17 +316,14 @@ class RecipeTests(unittest.TestCase):
 
     def test_必要量に満たないデータ源を通知する(self):
         prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)
-        self.rows["ja-web"] = []
+        self.rows["ja-hq"] = []
         with self.assertRaisesRegex(ValueError, "short of the tokenizer sample budget"):
             prepare_tokenizer(
                 self.recipe_path, self.root / "second-tokenizer", self.benchmarks
             )
         with self.assertRaisesRegex(ValueError, "short of its clean corpus budget"):
             prepare_corpus(
-                self.recipe_path,
-                self.root / "tokenizer",
-                self.root / "corpus",
-                self.benchmarks,
+                self.recipe_path, self.root / "tokenizer", self.root, self.benchmarks
             )
 
     def test_変更されたコーパスの出典を検知する(self):
@@ -318,7 +331,7 @@ class RecipeTests(unittest.TestCase):
         with (self.root / "corpus/documents.jsonl").open("a") as output:
             output.write("changed\n")
         with self.assertRaisesRegex(ValueError, "provenance checksum"):
-            validate_corpus(self.recipe_path, self.root / "corpus")
+            validate_corpus(self.recipe_path, self.root)
 
     def test_圧縮したトークン列で学習を保存し同じ更新から再開する(self):
         self.prepare()
@@ -437,6 +450,202 @@ class RecipeTests(unittest.TestCase):
             document_digest(rows[0]["text"], 42),
             document_digest("  " + rows[0]["text"].replace(" ", "\n ") + "  ", 42),
         )
+
+    def phase_recipe(self, extra=""):
+        """A two-phase recipe that reuses the fixture's tokenizer and sources."""
+        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)
+        (self.root / "phases.toml").write_text(
+            '[model]\narchitecture="llama"\nwidth=24\nheads=4\nkv_heads=2\nlayers=1\nintermediate_size=64\ncontext=128\n'
+            "[training]\nsteps=6\nbatch_size=2\naccumulation_steps=1\nwarmup_steps=1\neval_batches=1\n"
+            'schedule="wsd"\ndecay_steps=2\nsampling="sequential"\n'
+        )
+        path = self.root / "phased.toml"
+        digest = file_digest(self.root / "tokenizer/tokenizer.json")
+        path.write_text(
+            f"""training_config = "phases.toml"
+sources = "sources.toml"
+seed = 42
+{extra}
+[tokenizer]
+vocabulary_size = 258
+reuse_from = "{self.root / "tokenizer/tokenizer.json"}"
+reuse_sha256 = "{digest}"
+
+[corpus]
+validation_tokens_per_language = 200
+validation_fraction = 0.25
+minimum_characters = 50
+maximum_characters = 100000
+
+[evaluation]
+framework = "lm-eval"
+base_tasks = ["arc_easy"]
+
+[[corpora]]
+name = "stable"
+training_tokens = 1000
+mix = {{ ja-hq = 45, ja-wiki = 5, en-web = 50 }}
+
+[[corpora]]
+name = "decay"
+training_tokens = 500
+mix = {{ ja-hq = 25, ja-wiki = 25, en-web = 25, en-wiki = 25 }}
+"""
+        )
+        return path
+
+    def test_データ源ごとの条件に合う文書だけを残す(self):
+        source = {
+            "id": "fixture",
+            "language": "ja",
+            "equal": {"meta.kind": "modern"},
+            "minimum": {"quality": 4},
+            "maximum": {"advertisement": 2},
+            "any_minimum": {"educational": 4, "cultural": 4},
+            "maximum_characters": 400,
+        }
+        corpus = self.recipe["corpus"]
+        text = "日本語の文章です。" * 20
+        row = {
+            "text": text,
+            "meta": {"kind": "modern"},
+            "quality": 4,
+            "advertisement": 1,
+            "educational": 1,
+            "cultural": 5,
+        }
+        self.assertEqual(document_text(row, source, corpus), text)
+        for change in (
+            {"meta": {"kind": "old"}},
+            {"meta": None},
+            {"quality": 3},
+            {"quality": float("nan")},
+            {"advertisement": 3},
+            {"cultural": 1},
+            {"text": text * 3},
+        ):
+            self.assertIsNone(document_text({**row, **change}, source, corpus))
+
+    def test_カタログに足したデータ源は既存の計画を変えない(self):
+        before = recipe_fingerprint(self.recipe_path)
+        with (self.root / "sources.toml").open("a") as catalog:
+            catalog.write(
+                '\n[[sources]]\nid = "en-new"\nlanguage = "en"\nrepository = "org/new"\n'
+                f'revision = "{"0" * 40}"\nprefix = "data/"\nlicense = "CC0-1.0"\n'
+                'terms_url = "https://example.org/terms"\n'
+            )
+        self.assertEqual(recipe_fingerprint(self.recipe_path), before)
+        with (self.root / "sources.toml").open("a") as catalog:
+            catalog.write("minimun = { score = 3 }\n")
+        with self.assertRaisesRegex(ValueError, "unknown fields"):
+            read_recipe(self.recipe_path)
+
+    def test_記録した語彙を再利用し異なる語彙を拒否する(self):
+        recipe = self.phase_recipe()
+        prepare_tokenizer(recipe, self.root / "reused", self.benchmarks)
+        self.assertEqual(
+            file_digest(self.root / "reused/tokenizer.json"),
+            file_digest(self.root / "tokenizer/tokenizer.json"),
+        )
+        text = recipe.read_text()
+        start = text.index('reuse_sha256 = "') + len('reuse_sha256 = "')
+        recipe.write_text(text[:start] + "0" * 64 + text[start + 64 :])
+        with self.assertRaisesRegex(ValueError, "does not match its checksum"):
+            prepare_tokenizer(recipe, self.root / "rejected", self.benchmarks)
+
+    def test_段階ごとのコーパスを重複なく作り段階をつなぐ手順を示す(self):
+        recipe = self.phase_recipe('initialize_from = "runs/base/model.pt"\n')
+        prepare_tokenizer(recipe, self.root / "phased/tokenizer", self.benchmarks)
+        with contextlib.redirect_stdout(io.StringIO()):
+            manifests = prepare_corpus(
+                recipe,
+                self.root / "phased/tokenizer",
+                self.root / "phased",
+                self.benchmarks,
+            )
+        self.assertEqual(set(manifests), {"stable", "decay"})
+        self.assertTrue(validate_corpus(recipe, self.root / "phased")["ready"])
+        digests = {
+            name: {
+                json.loads(line)["digest"]
+                for line in (self.root / f"phased/corpus-{name}/documents.jsonl")
+                .read_text()
+                .splitlines()
+            }
+            for name in manifests
+        }
+        self.assertTrue(digests["stable"].isdisjoint(digests["decay"]))
+        commands = [
+            command
+            for command in inspect_recipe(recipe, self.root / "phased")["commands"]
+            if command[3] == "train"
+        ]
+        self.assertEqual(
+            commands[0][commands[0].index("--initialize-from") + 1],
+            "runs/base/model.pt",
+        )
+        self.assertEqual(commands[0][commands[0].index("--max-steps") + 1], "4")
+        self.assertEqual(
+            commands[1][commands[1].index("--continue-from") + 1],
+            "runs/phased-stable/last.pt",
+        )
+        self.assertNotIn("--max-steps", commands[1])
+
+    def test_学習率を下げ始める位置と最後の段階がずれた計画を拒否する(self):
+        recipe = self.phase_recipe()
+        (self.root / "phases.toml").write_text(
+            (self.root / "phases.toml")
+            .read_text()
+            .replace("decay_steps=2", "decay_steps=3")
+        )
+        with self.assertRaisesRegex(ValueError, "begins to decay"):
+            read_recipe(recipe)
+
+    def test_圧縮したJSON行から必要な項目だけを読み取る(self):
+        import gzip
+
+        import zstandard
+
+        rows = [
+            {"text": f"text {index}", "meta": {"kind": "modern"}, "extra": "x" * 100}
+            for index in range(3)
+        ]
+        lines = "".join(json.dumps(row) + "\n" for row in rows).encode()
+        from types import SimpleNamespace
+
+        for form, data in (
+            ("jsonl.gz", gzip.compress(lines)),
+            ("jsonl.zst", zstandard.ZstdCompressor().compress(lines)),
+        ):
+            source = {
+                "id": "fixture",
+                "repository": "org/data",
+                "revision": "0" * 40,
+                "prefix": "part",
+                "format": form,
+                "equal": {"meta.kind": "modern"},
+            }
+            with (
+                patch("huggingface_hub.HfApi") as api,
+                patch("huggingface_hub.HfFileSystem") as filesystem,
+            ):
+                api.return_value.dataset_info.return_value = SimpleNamespace(
+                    sha=source["revision"],
+                    siblings=[
+                        SimpleNamespace(rfilename="part-0." + form),
+                        SimpleNamespace(rfilename="part-1.parquet"),
+                    ],
+                )
+                filesystem.return_value.open.side_effect = lambda *a, data=data, **k: (
+                    io.BytesIO(data)
+                )
+                loaded = list(iter_source(source, 42))
+            self.assertEqual(
+                sorted(row["text"] for row in loaded), [r["text"] for r in rows]
+            )
+            self.assertTrue(all(row["meta"] == {"kind": "modern"} for row in loaded))
+            self.assertTrue(all("extra" not in row for row in loaded))
+            self.assertEqual({row["source_file"] for row in loaded}, {"part-0." + form})
 
 
 if __name__ == "__main__":

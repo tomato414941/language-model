@@ -1,5 +1,5 @@
 training_config = "bilingual-1b.toml"
-training_tokens = 30_000_000_000
+sources = "sources.toml"
 seed = 42
 
 [tokenizer]
@@ -27,62 +27,7 @@ accumulation_steps = 8
 validation_conversations_per_language = 1000
 max_reply_tokens = 1024
 
-[[sources]]
-id = "ja-web"
-language = "ja"
-repository = "epfml/FineWeb2-HQ"
-revision = "c0c06e94fd3a44ae9e802b2b0fc533817601eb5e"
-prefix = "jpn_Jpan/"
-kind = "web"
-source_language = "jpn"
-quality_field = "quality_score"
-share = 45
-license = "ODC-By-1.0"
-terms_url = "https://commoncrawl.org/terms-of-use"
-
-[[sources]]
-id = "ja-wiki"
-language = "ja"
-repository = "HuggingFaceFW/finewiki"
-revision = "8bd13e72e6a002407649b3e898535f42ceb1aeb9"
-prefix = "data/jawiki/"
-kind = "wiki"
-share = 5
-license = "CC-BY-SA-4.0"
-terms_url = "https://dumps.wikimedia.org/legal.html"
-
-[[sources]]
-id = "en-web"
-language = "en"
-repository = "HuggingFaceFW/fineweb-edu"
-revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
-prefix = "data/"
-kind = "web"
-source_language = "en"
-quality_field = "score"
-minimum_quality = 3.0
-share = 40
-license = "ODC-By-1.0"
-terms_url = "https://commoncrawl.org/terms-of-use"
-
-[[sources]]
-id = "en-math"
-language = "en"
-repository = "HuggingFaceTB/finemath"
-revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
-prefix = "finemath-4plus/"
-kind = "math"
-share = 5
-license = "ODC-By-1.0"
-terms_url = "https://commoncrawl.org/terms-of-use"
-
-[[sources]]
-id = "en-wiki"
-language = "en"
-repository = "HuggingFaceFW/finewiki"
-revision = "8bd13e72e6a002407649b3e898535f42ceb1aeb9"
-prefix = "data/enwiki/"
-kind = "wiki"
-share = 5
-license = "CC-BY-SA-4.0"
-terms_url = "https://dumps.wikimedia.org/legal.html"
+[[corpora]]
+name = "main"
+training_tokens = 30_000_000_000
+mix = { ja-hq = 45, ja-wiki = 5, en-web = 40, en-math = 5, en-wiki = 5 }

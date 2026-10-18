@@ -29,6 +29,14 @@ class TrainConfig:
     eval_batches: int = 16
     log_every: int = 10
     seed: int = 42
+    # "cosine" decays over the whole run; "wsd" warms up, holds the peak rate,
+    # and decays linearly over the last decay_steps so a run can be extended
+    # from any checkpoint taken before the decay.
+    schedule: str = "cosine"
+    decay_steps: int = 0
+    # "random" draws windows with replacement; "sequential" reads every window
+    # once per epoch in a seeded order.
+    sampling: str = "random"
 
     def __post_init__(self):
         for field in (
@@ -64,6 +72,16 @@ class TrainConfig:
             raise ValueError("learning_rate and gradient_clip must be positive")
         if self.min_learning_rate > self.learning_rate:
             raise ValueError("min_learning_rate must not exceed learning_rate")
+        if self.schedule not in ("cosine", "wsd"):
+            raise ValueError("schedule must be cosine or wsd")
+        if self.sampling not in ("random", "sequential"):
+            raise ValueError("sampling must be random or sequential")
+        if type(self.decay_steps) is not int or not (
+            0 <= self.decay_steps <= self.steps - self.warmup_steps
+        ):
+            raise ValueError("decay_steps must fit after the warmup")
+        if self.schedule == "wsd" and self.decay_steps == 0:
+            raise ValueError("a wsd schedule needs decay_steps")
 
 
 def read_config(path):
@@ -157,6 +175,14 @@ def evaluate(model, corpus, device, precision="float32", batches=16, batch_size=
 def learning_rate(config, step):
     if step < config.warmup_steps:
         return config.learning_rate * (step + 1) / config.warmup_steps
+    if config.schedule == "wsd":
+        start = config.steps - config.decay_steps
+        if step < start:
+            return config.learning_rate
+        progress = min(1, (step - start + 1) / config.decay_steps)
+        return config.learning_rate - progress * (
+            config.learning_rate - config.min_learning_rate
+        )
     progress = (step - config.warmup_steps) / max(
         1, config.steps - config.warmup_steps - 1
     )
@@ -204,13 +230,25 @@ def train(
     max_steps=None,
     stop_requested=None,
     initialize_from=None,
+    continue_from=None,
 ):
-    if resume is not None and initialize_from is not None:
-        raise ValueError("choose resume or initialize_from for a new training phase")
+    """Train from scratch, or start from an earlier checkpoint.
+
+    resume repeats an interrupted run exactly. initialize_from copies only the
+    weights into a new run. continue_from carries the weights, optimizer and
+    step into a new phase on other data, as long as the learning rate schedule
+    continues without a jump.
+    """
+    if sum(item is not None for item in (resume, initialize_from, continue_from)) > 1:
+        raise ValueError(
+            "choose one of resume, initialize_from or continue_from for a training phase"
+        )
     corpus = open_corpus(data)
     corpus.validate_context(model_config.context)
     precision = select_precision(device, precision)
     output = Path(output)
+    if config.sampling == "sequential" and not hasattr(corpus, "sequential_batch"):
+        raise ValueError("sequential sampling needs a pretraining corpus")
     if resume is None and (output / "last.pt").exists():
         raise ValueError(
             "a checkpoint already exists; use --resume or select a new output directory"
@@ -240,6 +278,7 @@ def train(
     generator = torch.Generator().manual_seed(config.seed)
     step, tokens_seen, best_loss = 0, 0, math.inf
     skipped_updates = 0
+    phase_start = 0
     initialization = None
     if initialize_from is not None:
         saved = load_checkpoint(initialize_from)
@@ -253,6 +292,41 @@ def train(
             "source_step": saved["step"],
             "source_tokens_seen": saved["tokens_seen"],
             "source_dataset_fingerprint": saved["dataset_fingerprint"],
+        }
+    if continue_from is not None:
+        saved = load_checkpoint(continue_from)
+        if ModelConfig(**saved["model_config"]) != model_config:
+            raise ValueError("continuation requires the same model configuration")
+        if Tokenizer.from_str(saved["tokenizer"]).to_str() != corpus.tokenizer.to_str():
+            raise ValueError("continuation requires the same tokenizer")
+        # The new schedule must agree with the rate of the last saved update, so
+        # a decay phase or a longer stable phase picks up without a jump.
+        previous = TrainConfig(**saved["train_config"])
+        last = max(saved["step"] - 1, 0)
+        if not math.isclose(
+            learning_rate(previous, last), learning_rate(config, last), rel_tol=1e-9
+        ):
+            raise ValueError(
+                "continuation must keep the learning rate used up to the saved step; "
+                "use initialize_from to restart the schedule"
+            )
+        model.load_state_dict(saved["model"])
+        optimizer.load_state_dict(saved["optimizer"])
+        for group in optimizer.param_groups:
+            group["fused"] = device.type == "cuda"
+        if saved["precision"] == precision:
+            scaler.load_state_dict(saved["scaler"])
+        step, tokens_seen = saved["step"], saved["tokens_seen"]
+        skipped_updates = saved["skipped_updates"]
+        phase_start = step
+        initialization = {
+            "continued_from": {
+                "checkpoint_sha256": file_digest(continue_from),
+                "step": saved["step"],
+                "tokens_seen": saved["tokens_seen"],
+                "dataset_fingerprint": saved["dataset_fingerprint"],
+            },
+            "earlier": saved.get("initialization"),
         }
     if resume:
         saved = load_checkpoint(resume)
@@ -281,6 +355,7 @@ def train(
             saved["best_loss"],
         )
         skipped_updates = saved["skipped_updates"]
+        phase_start = saved.get("phase_start_step", 0)
         initialization = saved.get("initialization")
     target = min(config.steps, max_steps) if max_steps is not None else config.steps
     if target <= step:
@@ -317,6 +392,7 @@ def train(
             "skipped_updates": skipped_updates,
             "torch_version": str(torch.__version__),
             "initialization": initialization,
+            "phase_start_step": phase_start,
         }
 
     if validation["loss"] < best_loss:
@@ -354,10 +430,24 @@ def train(
             for group in optimizer.param_groups:
                 group["lr"] = rate
             total_loss = 0.0
-            for _ in range(config.accumulation_steps):
-                x, y = corpus.batch(
-                    "train", config.batch_size, model_config.context, generator, device
-                )
+            for micro in range(config.accumulation_steps):
+                if config.sampling == "sequential":
+                    x, y = corpus.sequential_batch(
+                        ((step - phase_start) * config.accumulation_steps + micro)
+                        * config.batch_size,
+                        config.batch_size,
+                        model_config.context,
+                        config.seed,
+                        device,
+                    )
+                else:
+                    x, y = corpus.batch(
+                        "train",
+                        config.batch_size,
+                        model_config.context,
+                        generator,
+                        device,
+                    )
                 with autocast(device, precision):
                     loss = model(x, y)
                 if not torch.isfinite(loss).item():

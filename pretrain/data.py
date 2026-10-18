@@ -327,8 +327,39 @@ class Corpus:
             windows.append(
                 np.asarray(stream[start : start + context + 1], dtype=np.int64)
             )
-        tokens = torch.from_numpy(np.stack(windows))
-        if device.type == "cuda":
-            tokens = tokens.pin_memory()
-        tokens = tokens.to(device, non_blocking=device.type == "cuda")
-        return tokens[:, :-1], tokens[:, 1:]
+        return to_device(windows, device)
+
+    def sequential_batch(self, start, batch_size, context, seed, device):
+        """Read rows start.. of an endless, epoch-by-epoch pass over the windows.
+
+        Rows alternate between languages, and each language visits every
+        context-sized training window once per epoch in a seeded order.
+        """
+        windows = []
+        for row in range(start, start + batch_size):
+            language = LANGUAGES[row % len(LANGUAGES)]
+            stream = self.streams["train"][language]
+            count = (len(stream) - 1) // context
+            epoch, position = divmod(row // len(LANGUAGES), count)
+            cached = getattr(self, "_orders", {}).get(language)
+            if cached is None or cached[0] != epoch:
+                order = np.random.default_rng(
+                    [seed, epoch, LANGUAGES.index(language)]
+                ).permutation(count)
+                self._orders = {
+                    **getattr(self, "_orders", {}),
+                    language: (epoch, order),
+                }
+            begin = int(self._orders[language][1][position]) * context
+            windows.append(
+                np.asarray(stream[begin : begin + context + 1], dtype=np.int64)
+            )
+        return to_device(windows, device)
+
+
+def to_device(windows, device):
+    tokens = torch.from_numpy(np.stack(windows))
+    if device.type == "cuda":
+        tokens = tokens.pin_memory()
+    tokens = tokens.to(device, non_blocking=device.type == "cuda")
+    return tokens[:, :-1], tokens[:, 1:]

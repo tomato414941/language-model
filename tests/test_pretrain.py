@@ -1,6 +1,7 @@
 import contextlib
 import importlib.util
 import io
+import itertools
 import json
 import tempfile
 import unittest
@@ -22,6 +23,7 @@ from pretrain.model import LanguageModel, ModelConfig
 from pretrain.training import (
     TrainConfig,
     evaluate,
+    learning_rate,
     load_checkpoint,
     load_model,
     select_device,
@@ -311,6 +313,112 @@ class PretrainingTests(unittest.TestCase):
         self.assertEqual(
             Corpus(new_data).tokenizer.to_str(), self.corpus.tokenizer.to_str()
         )
+
+    def wsd_config(self, steps=8, **changes):
+        return TrainConfig(
+            **{
+                **self.config(steps).__dict__,
+                "schedule": "wsd",
+                "decay_steps": 2,
+                "sampling": "sequential",
+                **changes,
+            }
+        )
+
+    def test_wsd_schedule_holds_the_peak_and_decays_over_the_last_steps(self):
+        config = self.wsd_config(steps=10, decay_steps=4)
+        rates = [learning_rate(config, step) for step in range(10)]
+        self.assertEqual(rates[1:6], [0.01] * 5)
+        self.assertTrue(all(a > b for a, b in itertools.pairwise(rates[5:])))
+        self.assertAlmostEqual(rates[-1], 0.001)
+        longer = self.wsd_config(steps=20, decay_steps=4)
+        self.assertEqual(learning_rate(longer, 5), learning_rate(config, 5))
+
+    def test_sequential_reading_uses_each_window_once_per_epoch(self):
+        context = 16
+        streams = self.corpus.streams["train"]
+        # Distinct tokens make every window recognizable.
+        streams["ja"], streams["en"] = (
+            np.arange(10 * context + 1),
+            np.arange(7 * context + 5),
+        )
+        counts = {"ja": 10, "en": 7}
+        x, _ = self.corpus.sequential_batch(0, 20, context, 42, torch.device("cpu"))
+        for offset, language in enumerate(("ja", "en")):
+            seen = x[offset::2][: counts[language]]
+            windows = {
+                tuple(np.asarray(streams[language][i * context : (i + 1) * context]))
+                for i in range(counts[language])
+            }
+            self.assertEqual({tuple(row.tolist()) for row in seen}, windows)
+            self.assertEqual(
+                len({tuple(row.tolist()) for row in seen}), counts[language]
+            )
+        again, _ = self.corpus.sequential_batch(3, 4, context, 42, torch.device("cpu"))
+        torch.testing.assert_close(again, x[3:7], rtol=0, atol=0)
+
+    def test_sequential_training_resumes_the_same_updates(self):
+        self.run_training("sequential-continuous", self.wsd_config())
+        self.run_training("sequential-resumed", self.wsd_config(), max_steps=3)
+        self.run_training(
+            "sequential-resumed",
+            self.wsd_config(),
+            resume=self.root / "sequential-resumed/last.pt",
+        )
+        first, second = (
+            load_checkpoint(self.root / name / "last.pt")
+            for name in ("sequential-continuous", "sequential-resumed")
+        )
+        for name, parameter in first["model"].items():
+            torch.testing.assert_close(parameter, second["model"][name], rtol=0, atol=0)
+
+    def test_continuation_carries_the_run_onto_new_data_without_a_rate_jump(self):
+        self.run_training("stable", self.wsd_config(), max_steps=6)
+        stable = load_checkpoint(self.root / "stable/last.pt")
+        new_data = self.root / "decay-data"
+        prepare_data(
+            self.japanese,
+            self.english,
+            new_data,
+            vocabulary_size=258,
+            seed=99,
+            tokenizer_path=self.data / "tokenizer.json",
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = train(
+                new_data,
+                self.root / "decay",
+                self.model_config,
+                self.wsd_config(),
+                torch.device("cpu"),
+                continue_from=self.root / "stable/last.pt",
+            )
+        decayed = load_checkpoint(self.root / "decay/last.pt")
+        self.assertEqual(result["step"], 8)
+        self.assertEqual(decayed["phase_start_step"], 6)
+        self.assertEqual(decayed["tokens_seen"], stable["tokens_seen"] + 2 * 4 * 2 * 16)
+        self.assertEqual(decayed["dataset_fingerprint"], Corpus(new_data).fingerprint)
+        self.assertEqual(decayed["initialization"]["continued_from"]["step"], 6)
+        with contextlib.redirect_stdout(io.StringIO()):
+            extended = train(
+                self.data,
+                self.root / "extended",
+                self.model_config,
+                self.wsd_config(steps=12),
+                torch.device("cpu"),
+                continue_from=self.root / "stable/last.pt",
+                max_steps=7,
+            )
+        self.assertEqual(extended["step"], 7)
+        with self.assertRaisesRegex(ValueError, "keep the learning rate"):
+            train(
+                new_data,
+                self.root / "restarted",
+                self.model_config,
+                self.config(),
+                torch.device("cpu"),
+                continue_from=self.root / "stable/last.pt",
+            )
 
     def test_prepared_data_reports_corruption_before_training(self):
         """改変されたトークンファイルを検出して、データの破損を通知する。"""
