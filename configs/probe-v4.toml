@@ -13,7 +13,6 @@ reuse_sha256 = "c0db70b68a3817198e7412b0dae5b6c6ed55e4ba41256700e55c6c80b597e141
 
 [corpus]
 validation_tokens_per_language = 1_000_000
-validation_fraction = 0.003
 minimum_characters = 300
 maximum_characters = 100000
 

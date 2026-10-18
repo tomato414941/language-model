@@ -135,7 +135,11 @@ def read_recipe(path):
     ):
         if type(value) is not int or value <= 0:
             raise ValueError("corpus and tokenizer budgets must be positive integers")
-    if not 0 < corpus["validation_fraction"] < 0.5:
+    if any(
+        "validation_fraction" in settings
+        and not 0 < settings["validation_fraction"] < 0.5
+        for settings in (corpus, *recipe.get("corpora", []))
+    ):
         raise ValueError("validation_fraction must be between zero and one half")
     if (
         type(corpus["maximum_characters"]) is not int
@@ -230,6 +234,21 @@ def validation_budget(recipe, item):
         "validation_tokens_per_language",
         recipe["corpus"]["validation_tokens_per_language"],
     )
+
+
+def validation_fraction(recipe, item):
+    """The share of documents held out, sized so both splits fill together.
+
+    Every source of a corpus needs validation tokens in the same proportion to
+    its training tokens, so a slightly larger fraction than that proportion
+    fills the validation split just before training, without reading far past
+    either budget.
+    """
+    for settings in (item, recipe["corpus"]):
+        if "validation_fraction" in settings:
+            return settings["validation_fraction"]
+    ratio = 2 * validation_budget(recipe, item) / item["training_tokens"]
+    return min(0.25, 1.25 * ratio / (1 + ratio))
 
 
 def source_targets(recipe, item, share):
@@ -689,8 +708,9 @@ def seen_documents(directory):
 
 
 def accepted_documents(
-    source, recipe, benchmarks, database, stats, training_only=False
+    source, recipe, benchmarks, database, stats, training_fraction=None
 ):
+    """Yield new clean documents; with training_fraction, only training ones."""
     for row in iter_source(source, recipe["seed"]):
         text = document_text(row, source, recipe["corpus"])
         if text is None:
@@ -700,12 +720,9 @@ def accepted_documents(
             stats["contaminated"] += 1
             continue
         digest = document_digest(text, recipe["seed"])
-        split = (
-            "validation"
-            if validation_document(digest, recipe["corpus"]["validation_fraction"])
-            else "train"
-        )
-        if training_only and split != "train":
+        if training_fraction is not None and validation_document(
+            digest, training_fraction
+        ):
             continue
         if (
             database.execute(
@@ -715,7 +732,7 @@ def accepted_documents(
         ):
             stats["duplicates"] += 1
             continue
-        yield text, digest, split, row
+        yield text, digest, row
 
 
 def prepare_tokenizer(recipe_path, output, benchmarks_path):
@@ -769,8 +786,13 @@ def train_tokenizer(recipe, staging, stack, benchmarks_path):
         stats = Counter()
         language = source["language"]
         target = recipe["tokenizer"]["bytes_per_language"] * share // 50
-        for text, _, _, _ in accepted_documents(
-            source, recipe, benchmarks, database, stats, training_only=True
+        for text, _, _ in accepted_documents(
+            source,
+            recipe,
+            benchmarks,
+            database,
+            stats,
+            training_fraction=validation_fraction(recipe, first),
         ):
             destinations[language].write(
                 json.dumps({"text": text}, ensure_ascii=False) + "\n"
@@ -844,15 +866,30 @@ def prepare_corpus(recipe_path, tokenizer_directory, workdir, benchmarks_path):
         tempfile.TemporaryDirectory(dir=workdir) as scratch,
         closing(seen_documents(scratch)) as database,
     ):
+        # A source shared by several corpora keeps reading where the previous
+        # corpus stopped instead of skipping its documents again.
+        streams = {}
+
+        def documents(source_id):
+            if source_id not in streams:
+                scanned = Counter()
+                streams[source_id] = (
+                    accepted_documents(
+                        sources[source_id], recipe, benchmarks, database, scanned
+                    ),
+                    scanned,
+                )
+            return streams[source_id]
+
         for item in recipe["corpora"]:
             manifests[item["name"]] = write_corpus(
                 recipe,
                 item,
                 sources,
+                documents,
                 tokenizer,
                 tokenizer_directory,
                 tokenizer_manifest,
-                benchmarks,
                 benchmark_digest,
                 fingerprint,
                 database,
@@ -865,10 +902,10 @@ def write_corpus(
     recipe,
     item,
     sources,
+    documents,
     tokenizer,
     tokenizer_directory,
     tokenizer_manifest,
-    benchmarks,
     benchmark_digest,
     fingerprint,
     database,
@@ -890,18 +927,25 @@ def write_corpus(
         counts = {language: Counter() for language in LANGUAGES}
         tokens = Counter()
         used = {}
+        fraction = validation_fraction(recipe, item)
         for source_id, share in item["mix"].items():
             source = sources[source_id]
             language = source["language"]
             targets = source_targets(recipe, item, share)
             stats = Counter()
             shards = set()
-            documents = accepted_documents(source, recipe, benchmarks, database, stats)
-            while chunk := list(itertools.islice(documents, 64)):
+            stream, scanned = documents(source_id)
+            before = Counter(scanned)
+            while chunk := list(itertools.islice(stream, 64)):
                 encodings = tokenizer.encode_batch(
                     [entry[0] for entry in chunk], add_special_tokens=False
                 )
-                for (_, digest, split, row), encoding in zip(chunk, encodings):
+                for (_, digest, row), encoding in zip(chunk, encodings):
+                    split = (
+                        "validation"
+                        if validation_document(digest, fraction)
+                        else "train"
+                    )
                     if stats[f"{split}_tokens"] >= targets[split]:
                         continue
                     encoded = np.asarray([bos, *encoding.ids, eos], dtype=dtype)
@@ -932,6 +976,7 @@ def write_corpus(
                     break
                 database.commit()
             database.commit()
+            stats.update(scanned - before)
             if any(
                 stats[f"{split}_tokens"] < target for split, target in targets.items()
             ):

@@ -44,6 +44,7 @@ from pretrain.recipe import (
     recipe_fingerprint,
     validate_corpus,
     validation_document,
+    validation_fraction,
     write_sft_config,
 )
 from pretrain.training import load_checkpoint, read_config, train
@@ -286,15 +287,12 @@ class RecipeTests(unittest.TestCase):
                     filter_,
                     database,
                     Counter(),
-                    training_only=True,
+                    training_fraction=0.25,
                 )
             )
         self.assertTrue(documents)
         self.assertTrue(
-            all(
-                split == "train" and not validation_document(digest, 0.25)
-                for _, digest, split, _ in documents
-            )
+            all(not validation_document(digest, 0.25) for _, digest, _ in documents)
         )
 
     def test_同じ設定から同じ語彙とトークン列を再現する(self):
@@ -473,7 +471,6 @@ reuse_sha256 = "{digest}"
 
 [corpus]
 validation_tokens_per_language = 200
-validation_fraction = 0.25
 minimum_characters = 50
 maximum_characters = 100000
 
@@ -575,6 +572,11 @@ mix = {{ ja-hq = 25, ja-wiki = 25, en-web = 25, en-wiki = 25 }}
             for name in manifests
         }
         self.assertTrue(digests["stable"].isdisjoint(digests["decay"]))
+        # The decay corpus continues each shared source instead of rereading it.
+        for source in ("ja-hq", "en-web"):
+            self.assertNotIn(
+                "duplicates", manifests["decay"]["sources"][source]["statistics"]
+            )
         commands = [
             command
             for command in inspect_recipe(recipe, self.root / "phased")["commands"]
@@ -590,6 +592,18 @@ mix = {{ ja-hq = 25, ja-wiki = 25, en-web = 25, en-wiki = 25 }}
             "runs/phased-stable/last.pt",
         )
         self.assertNotIn("--max-steps", commands[1])
+
+    def test_検証用の割合を学習量と検証量の比から決める(self):
+        recipe = read_recipe(self.phase_recipe())
+        stable, decay = recipe["corpora"]
+        larger = {**stable, "training_tokens": 100_000}
+        self.assertAlmostEqual(
+            validation_fraction(recipe, larger), 1.25 * 0.004 / 1.004
+        )
+        self.assertEqual(validation_fraction(recipe, decay), 0.25)
+        self.assertEqual(
+            validation_fraction(recipe, {**stable, "validation_fraction": 0.1}), 0.1
+        )
 
     def test_学習率を下げ始める位置と最後の段階がずれた計画を拒否する(self):
         recipe = self.phase_recipe()
