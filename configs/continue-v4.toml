@@ -22,7 +22,8 @@ version = "0.4.13"
 base_tasks = ["hellaswag", "arc_easy", "ja_leaderboard_jcommonsenseqa"]
 instruction_tasks = ["ifeval"]
 
-# The Japanese web source is provisional until the probe-v4 comparison.
+# probe-v4 chose ClimbLab-Ja: the lowest Japanese reference loss of the three
+# Japanese web candidates at the same English data.
 [[corpora]]
 name = "stable"
 training_tokens = 3_840_000_000
