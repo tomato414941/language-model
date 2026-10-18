@@ -123,6 +123,12 @@ def inspect_recipe(path, workdir):
             ).parameters()
         )
     workdir = Path(workdir)
+    pretraining_output = Path("runs") / Path(path).stem
+    instruction_output = pretraining_output.with_name(
+        Path(path).stem.replace("pretrain-", "instructions-", 1)
+        if Path(path).stem.startswith("pretrain-")
+        else "instructions-" + Path(path).stem
+    )
     commands = [
         [
             "python",
@@ -157,7 +163,7 @@ def inspect_recipe(path, workdir):
             "--data",
             str(workdir / "corpus"),
             "--output",
-            "runs/pretrain-1b",
+            str(pretraining_output),
             "--device",
             "cuda",
             "--precision",
@@ -169,7 +175,7 @@ def inspect_recipe(path, workdir):
             "pretrain",
             "benchmark",
             "--checkpoint",
-            "runs/pretrain-1b/best.pt",
+            str(pretraining_output / "best.pt"),
             "--device",
             "cuda",
             "--tasks",
@@ -225,9 +231,9 @@ def inspect_recipe(path, workdir):
             "--data",
             str(workdir / "instructions"),
             "--output",
-            "runs/instructions-1b",
+            str(instruction_output),
             "--initialize-from",
-            "runs/pretrain-1b/best.pt",
+            str(pretraining_output / "best.pt"),
             "--device",
             "cuda",
             "--precision",
@@ -239,7 +245,7 @@ def inspect_recipe(path, workdir):
             "pretrain",
             "benchmark",
             "--checkpoint",
-            "runs/instructions-1b/best.pt",
+            str(instruction_output / "best.pt"),
             "--device",
             "cuda",
             "--tasks",

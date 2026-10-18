@@ -161,6 +161,56 @@ class RecipeTests(unittest.TestCase):
             )
         self.assertEqual(json.loads(output.getvalue())["nominal_training_tokens"], 2000)
 
+    def test_縮小した学習計画を既定として学習量と保存先を表示する(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            main(["recipe"])
+        plan = json.loads(output.getvalue())
+        self.assertEqual(plan["parameters"], 537_982_464)
+        self.assertEqual(plan["nominal_training_tokens"], 15_000_000_000)
+        self.assertEqual(plan["scheduled_training_tokens"], 15_000_403_968)
+        self.assertEqual(plan["minimum_packed_bytes"], 30_020_000_000)
+        self.assertEqual(
+            sum(s["training_tokens"] for s in plan["sources"] if s["language"] == "ja"),
+            7_500_000_000,
+        )
+        self.assertEqual(plan["model"]["context"], 4096)
+        training = [command for command in plan["commands"] if command[3] == "train"]
+        self.assertEqual(
+            training[0][training[0].index("--config") + 1],
+            "configs/bilingual-500m.toml",
+        )
+        self.assertEqual(
+            training[0][training[0].index("--data") + 1], "data/pretrain-500m/corpus"
+        )
+        self.assertEqual(
+            training[0][training[0].index("--output") + 1], "runs/pretrain-500m"
+        )
+        self.assertEqual(
+            training[1][training[1].index("--initialize-from") + 1],
+            "runs/pretrain-500m/best.pt",
+        )
+        self.assertEqual(
+            training[1][training[1].index("--output") + 1], "runs/instructions-500m"
+        )
+
+    def test_指定した学習計画に合わせてデータと重みの保存先を選択する(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            main(["recipe", "--config", str(ROOT / "configs/pretrain-1b.toml")])
+        plan = json.loads(output.getvalue())
+        training = [command for command in plan["commands"] if command[3] == "train"]
+        self.assertEqual(
+            training[0][training[0].index("--data") + 1], "data/pretrain-1b/corpus"
+        )
+        self.assertEqual(
+            training[0][training[0].index("--output") + 1], "runs/pretrain-1b"
+        )
+        self.assertEqual(
+            training[1][training[1].index("--initialize-from") + 1],
+            "runs/pretrain-1b/best.pt",
+        )
+
     def test_各データ源の割当を満たす日英コーパスを作成する(self):
         corpus = self.prepare()
         result = validate_corpus(self.recipe_path, self.root / "corpus")

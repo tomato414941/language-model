@@ -26,8 +26,10 @@ def main(argv=None):
         "recipe",
         help="日英の学習計画を確認し、語彙・コーパス・指示学習の設定を準備する",
     )
-    recipe.add_argument("--config", type=Path, default=Path("configs/pretrain-1b.toml"))
-    recipe.add_argument("--workdir", type=Path, default=Path("data/pretrain-1b"))
+    recipe.add_argument(
+        "--config", type=Path, default=Path("configs/pretrain-500m.toml")
+    )
+    recipe.add_argument("--workdir", type=Path)
     recipe.add_argument(
         "--stage",
         choices=("inspect", "tokenizer", "corpus", "validate", "sft-config"),
@@ -190,27 +192,28 @@ def main(argv=None):
                 write_sft_config,
             )
 
+            workdir = args.workdir or Path("data") / args.config.stem
             if args.stage == "inspect":
-                result = inspect_recipe(args.config, args.workdir)
+                result = inspect_recipe(args.config, workdir)
             elif args.stage == "tokenizer":
                 result = prepare_tokenizer(
-                    args.config, args.workdir / "tokenizer", args.workdir / "benchmarks"
+                    args.config, workdir / "tokenizer", workdir / "benchmarks"
                 )
             elif args.stage == "corpus":
                 result = prepare_corpus(
                     args.config,
-                    args.workdir / "tokenizer",
-                    args.workdir / "corpus",
-                    args.workdir / "benchmarks",
+                    workdir / "tokenizer",
+                    workdir / "corpus",
+                    workdir / "benchmarks",
                 )
             elif args.stage == "validate":
-                result = validate_corpus(args.config, args.workdir / "corpus")
+                result = validate_corpus(args.config, workdir / "corpus")
             else:
                 result = write_sft_config(
                     args.config,
-                    args.workdir / "instructions",
-                    args.workdir / "tokenizer",
-                    args.workdir / "sft.toml",
+                    workdir / "instructions",
+                    workdir / "tokenizer",
+                    workdir / "sft.toml",
                 )
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command == "fetch-wikipedia":
