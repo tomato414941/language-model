@@ -9,7 +9,7 @@ context = 2048
 rope_theta = 10000.0
 
 [training]
-steps = 146485
+steps = 305176
 batch_size = 4
 accumulation_steps = 4
 learning_rate = 0.0004
@@ -23,5 +23,5 @@ eval_batches = 16
 log_every = 50
 seed = 42
 schedule = "wsd"
-decay_steps = 29297
+decay_steps = 61035
 sampling = "sequential"
