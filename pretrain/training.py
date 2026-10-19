@@ -7,10 +7,11 @@ from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+import numpy as np
 import torch
 from tokenizers import Tokenizer
 
-from .data import LANGUAGES, file_digest, open_corpus
+from .data import LANGUAGES, file_digest, open_corpus, to_device
 from .model import LanguageModel, ModelConfig
 
 
@@ -34,6 +35,9 @@ class TrainConfig:
     # from any checkpoint taken before the decay.
     schedule: str = "cosine"
     decay_steps: int = 0
+    # The shape of the wsd decay: "linear", or "1-sqrt", which falls faster at
+    # first and spends more of the decay near the final rate.
+    decay_shape: str = "linear"
     # "random" draws windows with replacement; "sequential" reads every window
     # once per epoch in a seeded order.
     sampling: str = "random"
@@ -82,6 +86,10 @@ class TrainConfig:
             raise ValueError("decay_steps must fit after the warmup")
         if self.schedule == "wsd" and self.decay_steps == 0:
             raise ValueError("a wsd schedule needs decay_steps")
+        if self.decay_shape not in ("linear", "1-sqrt"):
+            raise ValueError("decay_shape must be linear or 1-sqrt")
+        if self.schedule != "wsd" and self.decay_shape != "linear":
+            raise ValueError("decay_shape applies to a wsd schedule")
 
 
 def read_config(path):
@@ -172,6 +180,61 @@ def evaluate(model, corpus, device, precision="float32", batches=16, batch_size=
     return result
 
 
+@torch.inference_mode()
+def evaluate_windows(
+    model, corpus, device, precision="float32", batch_size=8, limit=None
+):
+    """Measure the loss over every context-sized window of each validation stream.
+
+    The windows follow one another from the start of the stream, so every
+    model measured on the same data predicts exactly the same tokens. limit
+    keeps the first windows of a long stream; its documents are stored in
+    digest order, so the first windows sample its documents evenly.
+    """
+    if batch_size <= 0 or (limit is not None and limit <= 0):
+        raise ValueError("evaluation batch_size and window limit must be positive")
+    context = model.config.context
+    was_training = model.training
+    model.eval()
+    result = {}
+    try:
+        for language in LANGUAGES:
+            stream = corpus.streams["validation"][language]
+            count = (len(stream) - 1) // context
+            if limit is not None:
+                count = min(count, limit)
+            total = 0.0
+            for first in range(0, count, batch_size):
+                x, y = to_device(
+                    [
+                        np.asarray(
+                            stream[index * context : (index + 1) * context + 1],
+                            dtype=np.int64,
+                        )
+                        for index in range(first, min(first + batch_size, count))
+                    ],
+                    device,
+                )
+                with autocast(device, precision):
+                    loss = model(x, y)
+                value = loss.item()
+                if not math.isfinite(value):
+                    raise RuntimeError("validation loss is not finite")
+                total += value * y.numel()
+            loss = total / (count * context)
+            result[language] = {
+                "loss": loss,
+                "perplexity": math.exp(min(loss, 700)),
+                "evaluated_tokens": count * context,
+            }
+    finally:
+        model.train(was_training)
+    result["loss"] = sum(result[language]["loss"] for language in LANGUAGES) / len(
+        LANGUAGES
+    )
+    return result
+
+
 def learning_rate(config, step):
     if step < config.warmup_steps:
         return config.learning_rate * (step + 1) / config.warmup_steps
@@ -180,6 +243,8 @@ def learning_rate(config, step):
         if step < start:
             return config.learning_rate
         progress = min(1, (step - start + 1) / config.decay_steps)
+        if config.decay_shape == "1-sqrt":
+            progress = math.sqrt(progress)
         return config.learning_rate - progress * (
             config.learning_rate - config.min_learning_rate
         )
@@ -231,13 +296,15 @@ def train(
     stop_requested=None,
     initialize_from=None,
     continue_from=None,
+    compiled=False,
 ):
     """Train from scratch, or start from an earlier checkpoint.
 
     resume repeats an interrupted run exactly. initialize_from copies only the
     weights into a new run. continue_from carries the weights, optimizer and
     step into a new phase on other data, as long as the learning rate schedule
-    continues without a jump.
+    continues without a jump. compiled runs the model through torch.compile,
+    which fuses its small operations; checkpoints are the same either way.
     """
     if sum(item is not None for item in (resume, initialize_from, continue_from)) > 1:
         raise ValueError(
@@ -357,6 +424,9 @@ def train(
         skipped_updates = saved["skipped_updates"]
         phase_start = saved.get("phase_start_step", 0)
         initialization = saved.get("initialization")
+    if compiled:
+        # Training and validation batches keep one shape, so each compiles once.
+        model.compile(dynamic=False)
     target = min(config.steps, max_steps) if max_steps is not None else config.steps
     if target <= step:
         raise ValueError(
@@ -409,6 +479,7 @@ def train(
                 "event": "start",
                 "device": str(device),
                 "precision": precision,
+                "compiled": compiled,
                 "parameters": sum(p.numel() for p in model.parameters()),
                 "step": step,
                 "target_step": target,

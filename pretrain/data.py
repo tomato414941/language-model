@@ -263,18 +263,22 @@ def batch_languages(batch_size, generator, language=None):
     ]
 
 
-def open_corpus(path):
-    """Open prepared pretraining text or packed instruction conversations."""
+def open_corpus(path, splits=("train", "validation")):
+    """Open prepared pretraining text or packed instruction conversations.
+
+    A pretraining corpus opens only the given splits, so measuring held-out
+    loss needs only the validation files.
+    """
     manifest = json.loads((Path(path) / "manifest.json").read_text(encoding="utf-8"))
     if manifest.get("kind") == "instructions":
         from .instructions import InstructionCorpus
 
         return InstructionCorpus(path)
-    return Corpus(path)
+    return Corpus(path, splits)
 
 
 class Corpus:
-    def __init__(self, path):
+    def __init__(self, path, splits=("train", "validation")):
         self.path = Path(path)
         self.manifest = json.loads(
             (self.path / "manifest.json").read_text(encoding="utf-8")
@@ -294,7 +298,7 @@ class Corpus:
         dtype = np.dtype(self.manifest["dtype"])
         if self.manifest["vocabulary_size"] > np.iinfo(dtype).max + 1:
             raise ValueError("dataset token dtype cannot represent its vocabulary")
-        for split in ("train", "validation"):
+        for split in splits:
             self.streams[split] = {}
             for language in LANGUAGES:
                 filename = f"{split}_{language}.bin"

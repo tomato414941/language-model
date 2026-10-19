@@ -9,6 +9,7 @@ import torch
 from .data import file_digest, open_corpus, prepare_data
 from .training import (
     evaluate,
+    evaluate_windows,
     load_model,
     read_config,
     select_device,
@@ -147,6 +148,11 @@ def main(argv=None):
     )
     training.add_argument("--threads", type=int, default=4)
     training.add_argument(
+        "--compile",
+        action="store_true",
+        help="torch.compileで小さな演算をまとめて速くする（チェックポイントは同じ形）",
+    )
+    training.add_argument(
         "--hub-repo",
         default=os.environ.get("HF_MODEL_REPO"),
         help="学習段階の終了時にチェックポイントを保存するHFリポジトリ",
@@ -175,6 +181,14 @@ def main(argv=None):
     )
     evaluation.add_argument("--data", type=Path, default=Path("data/bilingual"))
     evaluation.add_argument("--batches", type=int, default=16)
+    evaluation.add_argument(
+        "--every-window",
+        action="store_true",
+        help="検証データを先頭から文脈長ごとに区切り、すべての窓で測る",
+    )
+    evaluation.add_argument(
+        "--max-windows", type=int, help="--every-windowで各言語に使う先頭からの窓の数"
+    )
     evaluation.add_argument(
         "--other-data",
         action="store_true",
@@ -356,6 +370,7 @@ def main(argv=None):
                     lambda: stopped,
                     args.initialize_from,
                     args.continue_from,
+                    args.compile,
                 )
             finally:
                 for s, handler in previous.items():
@@ -404,7 +419,7 @@ def main(argv=None):
                     args.output.write_text(text + "\n", encoding="utf-8")
                 print(text)
             elif args.command == "evaluate":
-                corpus = open_corpus(args.data)
+                corpus = open_corpus(args.data, ("validation",))
                 corpus.validate_context(model.config.context)
                 if args.other_data:
                     if corpus.tokenizer.to_str() != tokenizer.to_str():
@@ -413,19 +428,36 @@ def main(argv=None):
                     raise ValueError(
                         "evaluation requires the checkpoint's held-out dataset"
                     )
-                print(
-                    json.dumps(
-                        evaluate(
-                            model,
-                            corpus,
-                            device,
-                            select_precision(device),
-                            args.batches,
-                            args.batch_size,
-                        ),
-                        indent=2,
+                precision = select_precision(device)
+                if args.max_windows is not None and not args.every_window:
+                    raise ValueError("--max-windows applies to --every-window")
+                if args.every_window:
+                    if not hasattr(corpus, "streams"):
+                        raise ValueError("--every-window needs a pretraining corpus")
+                    result = evaluate_windows(
+                        model,
+                        corpus,
+                        device,
+                        precision,
+                        args.batch_size,
+                        args.max_windows,
                     )
-                )
+                else:
+                    result = evaluate(
+                        model, corpus, device, precision, args.batches, args.batch_size
+                    )
+                result["checkpoint"] = {
+                    "checkpoint": str(args.checkpoint),
+                    "sha256": file_digest(args.checkpoint),
+                    "step": payload["step"],
+                    "tokens_seen": payload["tokens_seen"],
+                }
+                result["data"] = {
+                    "path": str(args.data),
+                    "fingerprint": corpus.fingerprint,
+                    "every_window": args.every_window,
+                }
+                print(json.dumps(result, indent=2))
             else:
                 print(
                     model.generate(

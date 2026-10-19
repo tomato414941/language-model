@@ -23,6 +23,7 @@ from pretrain.model import LanguageModel, ModelConfig
 from pretrain.training import (
     TrainConfig,
     evaluate,
+    evaluate_windows,
     learning_rate,
     load_checkpoint,
     load_model,
@@ -333,6 +334,63 @@ class PretrainingTests(unittest.TestCase):
         self.assertAlmostEqual(rates[-1], 0.001)
         longer = self.wsd_config(steps=20, decay_steps=4)
         self.assertEqual(learning_rate(longer, 5), learning_rate(config, 5))
+
+    def test_square_root_decay_falls_faster_at_first_and_reaches_zero(self):
+        """1-sqrtの減衰は直線より先に大きく下がり、最後のステップで0にする。"""
+        linear = self.wsd_config(steps=10, decay_steps=4, min_learning_rate=0.0)
+        shaped = self.wsd_config(
+            steps=10, decay_steps=4, min_learning_rate=0.0, decay_shape="1-sqrt"
+        )
+        straight = [learning_rate(linear, step) for step in range(10)]
+        rates = [learning_rate(shaped, step) for step in range(10)]
+        self.assertEqual(rates[:6], straight[:6])
+        self.assertAlmostEqual(rates[6], 0.005)
+        self.assertTrue(all(a < b for a, b in zip(rates[6:9], straight[6:9])))
+        self.assertTrue(all(a > b for a, b in itertools.pairwise(rates[5:])))
+        self.assertEqual(rates[-1], 0.0)
+
+    def test_every_window_evaluation_predicts_each_held_out_token_once(self):
+        """学習データなしで検証データを窓に区切り、各トークンを一度ずつ予測した損失を返す。"""
+        torch.manual_seed(42)
+        model = LanguageModel(258, self.model_config)
+        context = self.model_config.context
+        for path in self.data.glob("train_*.bin"):
+            path.unlink()
+        corpus = Corpus(self.data, ("validation",))
+        result = evaluate_windows(model, corpus, torch.device("cpu"), batch_size=3)
+        for language in ("ja", "en"):
+            stream = corpus.streams["validation"][language]
+            count = (len(stream) - 1) // context
+            tokens = torch.from_numpy(
+                np.asarray(stream[: count * context + 1], dtype=np.int64)
+            )
+            with torch.no_grad():
+                expected = model(
+                    tokens[:-1].view(count, context), tokens[1:].view(count, context)
+                ).item()
+            self.assertAlmostEqual(result[language]["loss"], expected, places=5)
+            self.assertEqual(result[language]["evaluated_tokens"], count * context)
+        first = evaluate_windows(
+            model, corpus, torch.device("cpu"), batch_size=3, limit=1
+        )
+        self.assertEqual(first["ja"]["evaluated_tokens"], context)
+
+    def test_compiled_training_saves_checkpoints_that_load_without_compilation(self):
+        """torch.compileで学習しても、通常のモデルで同じ予測をするチェックポイントを保存する。"""
+        result = self.run_training("compiled", self.config(steps=4), compiled=True)
+        model, _, payload = load_model(
+            self.root / "compiled/last.pt", torch.device("cpu")
+        )
+        self.assertEqual(payload["step"], 4)
+        again = evaluate(
+            model, self.corpus, torch.device("cpu"), batches=2, batch_size=4
+        )
+        for language in ("ja", "en"):
+            self.assertAlmostEqual(
+                again[language]["loss"],
+                result["validation"][language]["loss"],
+                places=4,
+            )
 
     def test_sequential_reading_uses_each_window_once_per_epoch(self):
         context = 16
