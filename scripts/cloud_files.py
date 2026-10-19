@@ -13,6 +13,16 @@ def digest(path):
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
+def upload_digests(path):
+    """Return the SHA-256 and MD5 of a file, read once."""
+    checksum, content = hashlib.sha256(), hashlib.md5()
+    with Path(path).open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            checksum.update(chunk)
+            content.update(chunk)
+    return checksum.hexdigest(), content.hexdigest()
+
+
 def read_digest(response):
     checksum = hashlib.sha256()
     size = 0
@@ -42,7 +52,7 @@ def transfer_file(action, entry, root, attempts=3):
     elif action == "upload":
         if not path.exists() and entry.get("optional", False):
             return {"path": str(relative), "skipped": True}
-        expected, size = digest(path), path.stat().st_size
+        (expected, content_md5), size = upload_digests(path), path.stat().st_size
     else:
         raise ValueError("choose download or upload")
     temporary = path.with_name(path.name + ".download")
@@ -74,12 +84,16 @@ def transfer_file(action, entry, root, attempts=3):
                     )
                     with urlopen(request, timeout=120) as response:
                         response.read()
-                with urlopen(entry["verify_url"], timeout=120) as response:
-                    checksum, received = read_digest(response)
-                if received != size or checksum != expected:
-                    raise ValueError(
-                        "uploaded contents do not match the source checksum"
-                    )
+                        etag = (response.headers.get("ETag") or "").strip('"')
+                # A store that reports the MD5 of what it received has already
+                # confirmed the contents; read back only when it does not.
+                if etag != content_md5:
+                    with urlopen(entry["verify_url"], timeout=120) as response:
+                        checksum, received = read_digest(response)
+                    if received != size or checksum != expected:
+                        raise ValueError(
+                            "uploaded contents do not match the source checksum"
+                        )
             return {
                 "path": str(relative),
                 "sha256": expected,

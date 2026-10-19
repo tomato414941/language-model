@@ -14,7 +14,8 @@ class CloudFileTests(unittest.TestCase):
         self.root = Path(self.directory.name)
         self.objects = {"/source": b"bilingual training bytes"}
         self.requests = []
-        objects, requests = self.objects, self.requests
+        self.reports_etag = False
+        objects, requests, tests = self.objects, self.requests, self
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
@@ -31,6 +32,9 @@ class CloudFileTests(unittest.TestCase):
                     int(self.headers["Content-Length"])
                 )
                 self.send_response(200)
+                if tests.reports_etag:
+                    etag = hashlib.md5(objects[self.path]).hexdigest()
+                    self.send_header("ETag", f'"{etag}"')
                 self.send_header("Content-Length", "0")
                 self.end_headers()
 
@@ -95,6 +99,20 @@ class CloudFileTests(unittest.TestCase):
             result["sha256"], hashlib.sha256(path.read_bytes()).hexdigest()
         )
         self.assertEqual(self.requests, [("PUT", "/model"), ("GET", "/model")])
+
+    def test_upload_accepts_a_matching_etag_without_reading_back(self):
+        self.reports_etag = True
+        path = self.root / "model.pt"
+        path.write_bytes(b"saved model weights")
+        entry = {
+            "path": path.name,
+            "url": self.url + "/model",
+            "verify_url": self.url + "/source",
+        }
+        result = transfer_file("upload", entry, self.root, attempts=1)
+        self.assertEqual(self.objects["/model"], path.read_bytes())
+        self.assertTrue(result["verified"])
+        self.assertEqual(self.requests, [("PUT", "/model")])
 
     def test_upload_reports_when_readback_differs_from_the_source(self):
         path = self.root / "model.pt"
