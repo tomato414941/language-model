@@ -31,6 +31,9 @@ def main(argv=None):
     )
     recipe.add_argument("--workdir", type=Path)
     recipe.add_argument(
+        "--workers", type=int, default=1, help="コーパスを並列に作るプロセス数"
+    )
+    recipe.add_argument(
         "--stage",
         choices=("inspect", "tokenizer", "corpus", "validate", "sft-config"),
         default="inspect",
@@ -215,6 +218,7 @@ def main(argv=None):
                     workdir / "tokenizer",
                     workdir,
                     workdir / "benchmarks",
+                    args.workers,
                 )
             elif args.stage == "validate":
                 result = validate_corpus(args.config, workdir)

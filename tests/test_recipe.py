@@ -141,7 +141,11 @@ class RecipeTests(unittest.TestCase):
             ]
         self.source_patch = patch(
             "pretrain.recipe.iter_source",
-            side_effect=lambda source, seed: iter(self.rows[source["id"]]),
+            side_effect=lambda source, seed, part=None: iter(
+                self.rows[source["id"]][
+                    slice(part["index"], None, part["count"]) if part else slice(None)
+                ]
+            ),
         )
         self.source_patch.start()
         self.addCleanup(self.source_patch.stop)
@@ -311,6 +315,33 @@ class RecipeTests(unittest.TestCase):
                 np.testing.assert_array_equal(
                     first.streams[split][language], second.streams[split][language]
                 )
+
+    def test_データ源を分けて並列に読んでも同じコーパスを作り重複を除く(self):
+        text = self.recipe_path.read_text().replace(
+            "[corpus]\n", "[corpus]\npart_tokens = 300\n"
+        )
+        self.recipe_path.write_text(text)
+        rows = self.rows["ja-hq"]
+        for index, row in enumerate(rows):
+            row["text"] = "自然科学と歴史を説明する短い文章です。" * 3 + str(index)
+        rows[1]["text"] = rows[0]["text"]
+        corpora = []
+        for workers in (1, 2):
+            root = self.root / f"workers-{workers}"
+            prepare_tokenizer(self.recipe_path, root / "tokenizer", self.benchmarks)
+            with contextlib.redirect_stdout(io.StringIO()):
+                manifest = prepare_corpus(
+                    self.recipe_path,
+                    root / "tokenizer",
+                    root,
+                    self.benchmarks,
+                    workers,
+                )["main"]
+            corpora.append(Corpus(root / "corpus"))
+            self.assertEqual(
+                manifest["sources"]["ja-hq"]["statistics"]["duplicates"], 1
+            )
+        self.assertEqual(corpora[0].fingerprint, corpora[1].fingerprint)
 
     def test_必要量に満たないデータ源を通知する(self):
         prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)

@@ -6,6 +6,7 @@ import io
 import itertools
 import json
 import math
+import multiprocessing
 import os
 import random
 import re
@@ -50,6 +51,10 @@ SOURCE_FIELDS = {
     *FILTERS,
 }
 PURPOSES = ("phase", "alternative", "evaluation")
+TOKEN_PIECE_DTYPE = "<u2"
+# Each part reads this much beyond its share of a source, so the merge can drop
+# documents another part or source already supplied without falling short.
+PART_SLACK = 0.15
 
 
 def finite_number(value):
@@ -129,9 +134,12 @@ def read_recipe(path):
         or tokenizer["bytes_per_language"] <= 0
     ):
         raise ValueError("corpus and tokenizer budgets must be positive integers")
+    # Sources are read in parts of about this many tokens, one per worker.
+    corpus.setdefault("part_tokens", 250_000_000)
     for value in (
         corpus["validation_tokens_per_language"],
         corpus["minimum_characters"],
+        corpus["part_tokens"],
     ):
         if type(value) is not int or value <= 0:
             raise ValueError("corpus and tokenizer budgets must be positive integers")
@@ -548,7 +556,7 @@ def read_json_lines(handle, compression):
             yield json.loads(line)
 
 
-def iter_source(source, seed):
+def iter_source(source, seed, part=None):
     from huggingface_hub import HfApi, HfFileSystem
     from pyarrow import parquet
 
@@ -569,6 +577,10 @@ def iter_source(source, seed):
     if not shards:
         raise ValueError(f"no {form} files found for {source['id']}")
     random.Random(f"{seed}:{source['id']}").shuffle(shards)
+    if part is not None:
+        if part["count"] > len(shards):
+            raise ValueError(f"{source['id']} has fewer files than parts")
+        shards = shards[part["index"] :: part["count"]]
     columns = source_columns(source)
     filesystem = HfFileSystem(token=False)
     for shard in shards:
@@ -701,17 +713,19 @@ def output_directory(output):
             shutil.rmtree(staging)
 
 
-def seen_documents(directory):
-    database = sqlite3.connect(Path(directory) / "seen.sqlite3")
+def seen_documents(directory=None):
+    database = sqlite3.connect(
+        ":memory:" if directory is None else Path(directory) / "seen.sqlite3"
+    )
     database.execute("CREATE TABLE documents (digest BLOB PRIMARY KEY) WITHOUT ROWID")
     return database
 
 
 def accepted_documents(
-    source, recipe, benchmarks, database, stats, training_fraction=None
+    source, recipe, benchmarks, database, stats, training_fraction=None, part=None
 ):
     """Yield new clean documents; with training_fraction, only training ones."""
-    for row in iter_source(source, recipe["seed"]):
+    for row in iter_source(source, recipe["seed"], part):
         text = document_text(row, source, recipe["corpus"])
         if text is None:
             stats["quality_rejected"] += 1
@@ -835,7 +849,124 @@ def train_tokenizer(recipe, staging, stack, benchmarks_path):
     return samples
 
 
-def prepare_corpus(recipe_path, tokenizer_directory, workdir, benchmarks_path):
+def source_parts(recipe):
+    """Split the reading of every source into parts that run independently.
+
+    A source used by several corpora is read once, in corpus order, and each
+    part covers every corpus's demand on its own subset of the source's files.
+    The split follows only the recipe, so any number of workers gives the same
+    corpora. Parts read PART_SLACK beyond their share, so documents found
+    earlier in another part or source can be dropped while merging.
+    """
+    demands = {}
+    for item in recipe["corpora"]:
+        for source_id, share in item["mix"].items():
+            demands.setdefault(source_id, {})[item["name"]] = source_targets(
+                recipe, item, share
+            )
+    parts = []
+    for source_id, wanted in demands.items():
+        total = sum(sum(targets.values()) for targets in wanted.values())
+        count = max(1, math.ceil(total / recipe["corpus"]["part_tokens"]))
+        for index in range(count):
+            parts.append(
+                {
+                    "source": source_id,
+                    "index": index,
+                    "count": count,
+                    "targets": {
+                        name: {
+                            split: math.ceil(target * (1 + PART_SLACK) / count)
+                            for split, target in targets.items()
+                        }
+                        for name, targets in wanted.items()
+                    },
+                }
+            )
+    return parts
+
+
+def part_directory(parts_root, part):
+    return Path(parts_root) / f"{part['source']}-{part['index']:04d}"
+
+
+def prepare_part(recipe_path, tokenizer_directory, benchmarks_path, part, parts_root):
+    """Tokenize one part of a source into per-corpus pieces for merging."""
+    recipe = read_recipe(recipe_path)
+    source = sources_by_id(recipe)[part["source"]]
+    corpora = {item["name"]: item for item in recipe["corpora"]}
+    tokenizer = Tokenizer.from_file(str(Path(tokenizer_directory) / "tokenizer.json"))
+    bos, eos = tokenizer.token_to_id(BOS), tokenizer.token_to_id(EOS)
+    benchmarks = BenchmarkFilter(benchmarks_path)
+    output = part_directory(parts_root, part)
+    output.mkdir(parents=True)
+    scanned = Counter()
+    summary = {}
+    with closing(seen_documents()) as database:
+        stream = accepted_documents(
+            source, recipe, benchmarks, database, scanned, part=part
+        )
+        for name, targets in part["targets"].items():
+            fraction = validation_fraction(recipe, corpora[name])
+            stats = Counter()
+            before = Counter(scanned)
+            with ExitStack() as stack:
+                pieces = {
+                    split: stack.enter_context(
+                        (output / f"{name}.{split}.bin").open("wb")
+                    )
+                    for split in targets
+                }
+                documents = stack.enter_context(
+                    (output / f"{name}.documents.jsonl").open("w", encoding="utf-8")
+                )
+                while chunk := list(itertools.islice(stream, 64)):
+                    encodings = tokenizer.encode_batch(
+                        [entry[0] for entry in chunk], add_special_tokens=False
+                    )
+                    for (_, digest, row), encoding in zip(chunk, encodings):
+                        split = (
+                            "validation"
+                            if validation_document(digest, fraction)
+                            else "train"
+                        )
+                        if stats[f"{split}_tokens"] >= targets[split]:
+                            continue
+                        encoded = np.asarray(
+                            [bos, *encoding.ids, eos], dtype=TOKEN_PIECE_DTYPE
+                        )
+                        pieces[split].write(encoded.tobytes())
+                        documents.write(
+                            json.dumps(
+                                {
+                                    "digest": digest.hex(),
+                                    "id": row.get("id"),
+                                    "url": row.get("url"),
+                                    "split": split,
+                                    "tokens": len(encoded),
+                                    "source_file": row["source_file"],
+                                },
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        )
+                        stats[f"{split}_tokens"] += len(encoded)
+                    if all(
+                        stats[f"{split}_tokens"] >= target
+                        for split, target in targets.items()
+                    ):
+                        break
+            summary[name] = dict(scanned - before)
+    (output / "statistics.json").write_text(json.dumps(summary) + "\n")
+    print(
+        json.dumps({"part": f"{part['source']}-{part['index']}", **summary}), flush=True
+    )
+    return part
+
+
+def prepare_corpus(
+    recipe_path, tokenizer_directory, workdir, benchmarks_path, workers=1
+):
     """Write every corpus of the recipe; no document appears in two of them."""
     recipe = read_recipe(recipe_path)
     tokenizer_directory = Path(tokenizer_directory)
@@ -857,52 +988,62 @@ def prepare_corpus(recipe_path, tokenizer_directory, workdir, benchmarks_path):
     tokenizer = Tokenizer.from_file(str(tokenizer_directory / "tokenizer.json"))
     if tokenizer.get_vocab_size() != recipe["tokenizer"]["vocabulary_size"]:
         raise ValueError("tokenizer vocabulary does not match the recipe")
-    benchmarks = BenchmarkFilter(benchmarks_path)
     paths = corpus_paths(recipe, workdir)
-    sources = sources_by_id(recipe)
-    manifests = {}
+    parts = source_parts(recipe)
     Path(workdir).mkdir(parents=True, exist_ok=True)
-    with (
-        tempfile.TemporaryDirectory(dir=workdir) as scratch,
-        closing(seen_documents(scratch)) as database,
-    ):
-        # A source shared by several corpora keeps reading where the previous
-        # corpus stopped instead of skipping its documents again.
-        streams = {}
-
-        def documents(source_id):
-            if source_id not in streams:
-                scanned = Counter()
-                streams[source_id] = (
-                    accepted_documents(
-                        sources[source_id], recipe, benchmarks, database, scanned
-                    ),
-                    scanned,
+    with tempfile.TemporaryDirectory(dir=workdir) as scratch:
+        arguments = [
+            (recipe_path, tokenizer_directory, benchmarks_path, part, Path(scratch))
+            for part in parts
+        ]
+        if workers == 1:
+            for argument in arguments:
+                prepare_part(*argument)
+        else:
+            context = multiprocessing.get_context("fork")
+            with context.Pool(workers, maxtasksperchild=1) as pool:
+                for _ in pool.imap_unordered(run_part, arguments):
+                    pass
+        manifests = {}
+        with closing(seen_documents(scratch)) as database:
+            for item in recipe["corpora"]:
+                manifests[item["name"]] = write_corpus(
+                    recipe,
+                    item,
+                    parts,
+                    Path(scratch),
+                    tokenizer,
+                    tokenizer_directory,
+                    tokenizer_manifest,
+                    benchmark_digest,
+                    fingerprint,
+                    database,
+                    paths[item["name"]],
                 )
-            return streams[source_id]
-
-        for item in recipe["corpora"]:
-            manifests[item["name"]] = write_corpus(
-                recipe,
-                item,
-                sources,
-                documents,
-                tokenizer,
-                tokenizer_directory,
-                tokenizer_manifest,
-                benchmark_digest,
-                fingerprint,
-                database,
-                paths[item["name"]],
-            )
     return manifests
+
+
+def run_part(argument):
+    return prepare_part(*argument)
+
+
+def read_json_documents(path):
+    with Path(path).open(encoding="utf-8") as lines:
+        for line in lines:
+            yield json.loads(line)
+
+
+def read_piece(path):
+    if path.stat().st_size == 0:
+        return np.zeros(0, dtype=TOKEN_PIECE_DTYPE)
+    return np.memmap(path, mode="r", dtype=TOKEN_PIECE_DTYPE)
 
 
 def write_corpus(
     recipe,
     item,
-    sources,
-    documents,
+    parts,
+    parts_root,
     tokenizer,
     tokenizer_directory,
     tokenizer_manifest,
@@ -911,8 +1052,9 @@ def write_corpus(
     database,
     output,
 ):
-    dtype = np.dtype("<u2")
-    bos, eos = tokenizer.token_to_id(BOS), tokenizer.token_to_id(EOS)
+    """Join the parts' pieces of one corpus in recipe order, dropping repeats."""
+    dtype = np.dtype(TOKEN_PIECE_DTYPE)
+    sources = sources_by_id(recipe)
     with output_directory(output) as staging, ExitStack() as stack:
         streams = {
             (split, language): stack.enter_context(
@@ -927,56 +1069,66 @@ def write_corpus(
         counts = {language: Counter() for language in LANGUAGES}
         tokens = Counter()
         used = {}
-        fraction = validation_fraction(recipe, item)
         for source_id, share in item["mix"].items():
             source = sources[source_id]
             language = source["language"]
             targets = source_targets(recipe, item, share)
             stats = Counter()
             shards = set()
-            stream, scanned = documents(source_id)
-            before = Counter(scanned)
-            while chunk := list(itertools.islice(stream, 64)):
-                encodings = tokenizer.encode_batch(
-                    [entry[0] for entry in chunk], add_special_tokens=False
+            for part in parts:
+                if part["source"] != source_id:
+                    continue
+                directory = part_directory(parts_root, part)
+                stats.update(
+                    json.loads((directory / "statistics.json").read_text())[
+                        item["name"]
+                    ]
                 )
-                for (_, digest, row), encoding in zip(chunk, encodings):
-                    split = (
-                        "validation"
-                        if validation_document(digest, fraction)
-                        else "train"
-                    )
+                pieces = {
+                    split: read_piece(directory / f"{item['name']}.{split}.bin")
+                    for split in targets
+                }
+                offsets = Counter()
+                for document in read_json_documents(
+                    directory / f"{item['name']}.documents.jsonl"
+                ):
+                    split, size = document["split"], document["tokens"]
+                    start = offsets[split]
+                    offsets[split] += size
                     if stats[f"{split}_tokens"] >= targets[split]:
                         continue
-                    encoded = np.asarray([bos, *encoding.ids, eos], dtype=dtype)
-                    streams[split, language].write(encoded.tobytes())
+                    if (
+                        database.execute(
+                            "INSERT OR IGNORE INTO documents VALUES (?)",
+                            (bytes.fromhex(document["digest"]),),
+                        ).rowcount
+                        == 0
+                    ):
+                        stats["duplicates"] += 1
+                        continue
+                    streams[split, language].write(
+                        pieces[split][start : start + size].tobytes()
+                    )
                     provenance.write(
                         json.dumps(
                             {
-                                "digest": digest.hex(),
+                                "digest": document["digest"],
                                 "source": source_id,
-                                "id": row.get("id"),
-                                "url": row.get("url"),
+                                "id": document["id"],
+                                "url": document["url"],
                                 "split": split,
-                                "tokens": len(encoded),
+                                "tokens": size,
                             },
                             ensure_ascii=False,
                         )
                         + "\n"
                     )
-                    stats[f"{split}_tokens"] += len(encoded)
+                    stats[f"{split}_tokens"] += size
                     stats[f"{split}_documents"] += 1
-                    tokens[split, language] += len(encoded)
+                    tokens[split, language] += size
                     counts[language][split] += 1
-                    shards.add(row["source_file"])
-                if all(
-                    stats[f"{split}_tokens"] >= target
-                    for split, target in targets.items()
-                ):
-                    break
+                    shards.add(document["source_file"])
                 database.commit()
-            database.commit()
-            stats.update(scanned - before)
             if any(
                 stats[f"{split}_tokens"] < target for split, target in targets.items()
             ):
