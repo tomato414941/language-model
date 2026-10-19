@@ -624,6 +624,31 @@ mix = {{ ja-hq = 25, ja-wiki = 25, en-web = 25, en-wiki = 25 }}
         )
         self.assertNotIn("--max-steps", commands[1])
 
+    def test_保存したチェックポイントから段階を続け終了位置をその続きから数える(self):
+        recipe = self.phase_recipe(
+            'continue_from = { checkpoint = "runs/earlier-stable/last.pt", step = 10 }\n'
+        )
+        config = self.root / "phases.toml"
+        config.write_text(config.read_text().replace("\nsteps=6\n", "\nsteps=16\n"))
+        inspected = inspect_recipe(recipe, self.root / "phased")
+        commands = [
+            command for command in inspected["commands"] if command[3] == "train"
+        ]
+        self.assertEqual(
+            commands[0][commands[0].index("--continue-from") + 1],
+            "runs/earlier-stable/last.pt",
+        )
+        self.assertNotIn("--initialize-from", commands[0])
+        self.assertEqual(commands[0][commands[0].index("--max-steps") + 1], "14")
+        self.assertEqual(
+            commands[1][commands[1].index("--continue-from") + 1],
+            "runs/phased-stable/last.pt",
+        )
+        self.assertEqual(inspected["scheduled_training_tokens"], 6 * 256)
+        config.write_text(config.read_text().replace("\nsteps=16\n", "\nsteps=6\n"))
+        with self.assertRaisesRegex(ValueError, "token budget"):
+            read_recipe(recipe)
+
     def test_検証用の割合を学習量と検証量の比から決める(self):
         recipe = read_recipe(self.phase_recipe())
         stable, decay = recipe["corpora"]

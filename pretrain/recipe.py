@@ -198,18 +198,24 @@ def read_recipe(path):
     alternatives = [item for item in corpora if item["purpose"] == "alternative"]
     if bool(phases) == bool(alternatives):
         raise ValueError("a recipe trains either sequential phases or alternatives")
+    start = continued_step(recipe)
+    if start and not phases:
+        raise ValueError("continue_from continues a recipe's sequential phases")
     budgets = (
         [sum(item["training_tokens"] for item in phases)]
         if phases
         else [item["training_tokens"] for item in alternatives]
     )
-    if any(training.steps != math.ceil(tokens / tokens_per_step) for tokens in budgets):
+    if any(
+        training.steps != start + math.ceil(tokens / tokens_per_step)
+        for tokens in budgets
+    ):
         raise ValueError(
             "training steps must cover the recipe's token budget without shortening it"
         )
     if len(phases) > 1 and (
         training.schedule != "wsd"
-        or phase_ends(phases, tokens_per_step)[-2]
+        or phase_ends(phases, tokens_per_step, start)[-2]
         != training.steps - training.decay_steps
     ):
         raise ValueError(
@@ -226,11 +232,34 @@ def read_recipe(path):
     return recipe
 
 
-def phase_ends(phases, tokens_per_step):
+def phase_ends(phases, tokens_per_step, start=0):
     return [
-        math.ceil(tokens / tokens_per_step)
+        start + math.ceil(tokens / tokens_per_step)
         for tokens in itertools.accumulate(item["training_tokens"] for item in phases)
     ]
+
+
+def continued_step(recipe):
+    """Return the step of the checkpoint the first phase continues, or 0.
+
+    A recipe that continues a checkpoint carries its weights, optimizer and
+    step on, so its schedule and phase ends count from that step.
+    """
+    source = recipe.get("continue_from")
+    if source is None:
+        return 0
+    if "initialize_from" in recipe:
+        raise ValueError("choose initialize_from or continue_from")
+    if (
+        not isinstance(source, dict)
+        or not isinstance(source.get("checkpoint"), str)
+        or type(source.get("step")) is not int
+        or source["step"] <= 0
+    ):
+        raise ValueError(
+            "continue_from needs a checkpoint and the positive step it was saved at"
+        )
+    return source["step"]
 
 
 def sources_by_id(recipe):
@@ -377,12 +406,15 @@ def inspect_recipe(path, workdir):
 
     phases = [item for item in recipe["corpora"] if item["purpose"] == "phase"]
     tokens_per_step = training.batch_size * training.accumulation_steps * model.context
+    start = continued_step(recipe)
     if phases:
         previous = None
-        for item, end in zip(phases, phase_ends(phases, tokens_per_step)):
+        for item, end in zip(phases, phase_ends(phases, tokens_per_step, start)):
             command = train_command(item["name"])
             if previous is not None:
                 command += ["--continue-from", str(previous / "last.pt")]
+            elif "continue_from" in recipe:
+                command += ["--continue-from", recipe["continue_from"]["checkpoint"]]
             elif "initialize_from" in recipe:
                 command += ["--initialize-from", recipe["initialize_from"]]
             if end != training.steps:
@@ -496,13 +528,14 @@ def inspect_recipe(path, workdir):
     return {
         "recipe_fingerprint": recipe_fingerprint(path),
         "parameters": parameters,
-        "initialization": recipe.get("initialize_from", "random_weights"),
+        "initialization": recipe.get("continue_from")
+        or recipe.get("initialize_from", "random_weights"),
         "model": asdict(model),
         "training": asdict(training),
         "nominal_training_tokens": sum(item["training_tokens"] for item in phases)
         if phases
         else trained[0]["training_tokens"],
-        "scheduled_training_tokens": training.steps * tokens_per_step,
+        "scheduled_training_tokens": (training.steps - start) * tokens_per_step,
         "tokenizer": recipe["tokenizer"],
         "corpora": [
             {
