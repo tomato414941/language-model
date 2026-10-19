@@ -4,6 +4,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 from scripts.cloud_files import transfer_file
 
@@ -14,17 +15,34 @@ class CloudFileTests(unittest.TestCase):
         self.root = Path(self.directory.name)
         self.objects = {"/source": b"bilingual training bytes"}
         self.requests = []
+        self.ranges = []
         self.reports_etag = False
+        self.serves_ranges = False
+        self.stop_after = None
         objects, requests, tests = self.objects, self.requests, self
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 requests.append(("GET", self.path))
                 data = objects[self.path]
-                self.send_response(200)
-                self.send_header("Content-Length", str(len(data)))
+                requested = self.headers.get("Range")
+                if requested and tests.serves_ranges:
+                    first, last = requested.removeprefix("bytes=").split("-")
+                    start, end = int(first), int(last) + 1
+                    tests.ranges.append((start, end))
+                    body = data[start:end]
+                    self.send_response(206)
+                    self.send_header(
+                        "Content-Range", f"bytes {start}-{end - 1}/{len(data)}"
+                    )
+                else:
+                    body = data
+                    self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(data)
+                if tests.stop_after is not None:
+                    body, tests.stop_after = body[: tests.stop_after], None
+                self.wfile.write(body)
 
             def do_PUT(self):
                 requests.append(("PUT", self.path))
@@ -83,6 +101,37 @@ class CloudFileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "expected checksum"):
             transfer_file("download", entry, self.root, attempts=1)
         self.assertEqual(path.read_bytes(), b"previous model data")
+
+    def test_download_continues_a_response_that_stops_early(self):
+        self.serves_ranges = True
+        self.stop_after = 10
+        entry = self.download_entry()
+        transfer_file("download", entry, self.root, attempts=1)
+        self.assertEqual(
+            (self.root / entry["path"]).read_bytes(), self.objects["/source"]
+        )
+        self.assertEqual(self.ranges, [(0, 24), (10, 24)])
+
+    def test_download_assembles_parts_fetched_over_parallel_connections(self):
+        self.serves_ranges = True
+        entry = self.download_entry()
+        with mock.patch("scripts.cloud_files.PART_BYTES", 5):
+            transfer_file("download", entry, self.root, attempts=1)
+        self.assertEqual(
+            (self.root / entry["path"]).read_bytes(), self.objects["/source"]
+        )
+        self.assertEqual(
+            sorted(self.ranges), [(0, 5), (5, 10), (10, 15), (15, 20), (20, 24)]
+        )
+
+    def test_download_refuses_a_whole_object_sent_for_one_part(self):
+        entry = self.download_entry()
+        with (
+            mock.patch("scripts.cloud_files.PART_BYTES", 5),
+            self.assertRaisesRegex(ValueError, "ignored a range request"),
+        ):
+            transfer_file("download", entry, self.root, attempts=1)
+        self.assertFalse((self.root / entry["path"]).exists())
 
     def test_upload_verifies_the_remote_contents_before_reporting_success(self):
         path = self.root / "model.pt"

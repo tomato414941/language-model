@@ -3,9 +3,16 @@ import hashlib
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http.client import HTTPException
 from pathlib import Path
 from urllib.request import Request, urlopen
+
+# A download arrives in parts over several connections, since one connection
+# to a distant store can be slow, and a connection that closes early costs
+# only the rest of its part.
+PART_BYTES = 64 * 1024 * 1024
+CONNECTIONS = 8
 
 
 def digest(path):
@@ -30,6 +37,64 @@ def read_digest(response):
         checksum.update(chunk)
         size += len(chunk)
     return checksum.hexdigest(), size
+
+
+def fetch_part(url, descriptor, start, end, size, attempts):
+    """Write bytes start to end - 1 of the object at the same file offsets.
+
+    A response that stops early ends without an error, so the part continues
+    from where its data stopped; only requests that bring nothing count
+    against the attempts.
+    """
+    position, stalled, error = start, 0, None
+    while position < end:
+        before = position
+        try:
+            request = Request(url, headers={"Range": f"bytes={position}-{end - 1}"})
+            with urlopen(request, timeout=120) as response:
+                if response.status == 206:
+                    total = response.headers.get("Content-Range", "").rpartition("/")[2]
+                elif (position, end) == (0, size):
+                    # A store may answer a range covering everything in full.
+                    total = response.headers.get("Content-Length")
+                else:
+                    raise ValueError("the store ignored a range request")
+                if total != str(size):
+                    raise ValueError(
+                        "downloaded contents do not match the expected checksum"
+                    )
+                while position < end and (
+                    chunk := response.read(min(1024 * 1024, end - position))
+                ):
+                    os.pwrite(descriptor, chunk, position)
+                    position += len(chunk)
+        except (OSError, HTTPException) as failure:
+            error = failure
+        if position == before:
+            stalled += 1
+            if stalled == attempts:
+                raise error or ValueError("downloaded contents ended early")
+            time.sleep(2**stalled)
+
+
+def download(url, temporary, size, attempts):
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        os.ftruncate(descriptor, size)
+        pool = ThreadPoolExecutor(CONNECTIONS)
+        try:
+            parts = [
+                pool.submit(
+                    fetch_part, url, descriptor, start, min(start + PART_BYTES, size), size, attempts
+                )
+                for start in range(0, size, PART_BYTES)
+            ]
+            for part in parts:
+                part.result()
+        finally:
+            pool.shutdown(cancel_futures=True)
+    finally:
+        os.close(descriptor)
 
 
 def transfer_file(action, entry, root, attempts=3):
@@ -59,17 +124,8 @@ def transfer_file(action, entry, root, attempts=3):
     for attempt in range(attempts):
         try:
             if action == "download":
-                checksum = hashlib.sha256()
-                received = 0
-                with (
-                    urlopen(entry["url"], timeout=120) as response,
-                    temporary.open("wb") as target,
-                ):
-                    while chunk := response.read(1024 * 1024):
-                        target.write(chunk)
-                        checksum.update(chunk)
-                        received += len(chunk)
-                if received != size or checksum.hexdigest() != expected:
+                download(entry["url"], temporary, size, attempts)
+                if digest(temporary) != expected:
                     raise ValueError(
                         "downloaded contents do not match the expected checksum"
                     )
