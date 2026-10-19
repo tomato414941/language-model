@@ -154,6 +154,22 @@ def main(argv=None):
     training.add_argument(
         "--hub-run-id", help="HFに保存する学習段階の名前（既定は出力ディレクトリ名）"
     )
+    throughput = commands.add_parser(
+        "throughput", help="学習設定の更新を合成データで流し、GPUでの学習速度を測る"
+    )
+    throughput.add_argument("--config", type=Path, required=True)
+    throughput.add_argument("--vocabulary-size", type=int, required=True)
+    throughput.add_argument(
+        "--batches",
+        type=int,
+        nargs="+",
+        default=[4, 8, 16],
+        help="試すマイクロバッチの大きさ（1ステップのトークン数は設定のまま）",
+    )
+    throughput.add_argument(
+        "--compile", action="store_true", help="torch.compileでまとめた計算で測る"
+    )
+    throughput.add_argument("--output", type=Path, help="結果を保存するJSONファイル")
     evaluation = commands.add_parser(
         "evaluate", help="保存したモデルの検証損失を言語ごとに測る"
     )
@@ -293,6 +309,21 @@ def main(argv=None):
                 args.tokenizer,
             )
             print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "throughput":
+            import tomllib
+
+            from .throughput import measure_training
+
+            with args.config.open("rb") as source:
+                settings = tomllib.load(source)
+            result = measure_training(
+                settings, args.vocabulary_size, args.batches, args.compile
+            )
+            text = json.dumps(result, indent=2)
+            if args.output is not None:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(text + "\n", encoding="utf-8")
+            print(text)
         elif args.command == "train":
             if args.threads <= 0:
                 raise ValueError("threads must be positive")
