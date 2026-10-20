@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from tokenizers import Tokenizer
 
-from .data import LANGUAGES, file_digest, open_corpus, to_device
+from .data import LANGUAGES, file_digest, open_corpus, to_device, token_bytes
 from .model import LanguageModel, ModelConfig
 
 
@@ -144,13 +144,15 @@ def autocast(device, precision):
 def evaluate(model, corpus, device, precision="float32", batches=16, batch_size=8):
     if batches <= 0 or batch_size <= 0:
         raise ValueError("evaluation batches and batch_size must be positive")
+    sizes = torch.from_numpy(token_bytes(corpus.tokenizer)).to(device)
     was_training = model.training
     model.eval()
     result = {}
     try:
         for language in LANGUAGES:
             generator = torch.Generator().manual_seed(1729)
-            total = 0.0
+            total = bits = 0.0
+            size = 0
             for _ in range(batches):
                 x, y = corpus.batch(
                     "validation",
@@ -166,17 +168,24 @@ def evaluate(model, corpus, device, precision="float32", batches=16, batch_size=
                 if not math.isfinite(value):
                     raise RuntimeError("validation loss is not finite")
                 total += value
+                # Instruction prompts and padding are -100 and add no loss.
+                learned = y[y >= 0]
+                bits += value * learned.numel() / math.log(2)
+                size += sizes[learned].sum().item()
             loss = total / batches
             result[language] = {
                 "loss": loss,
                 "perplexity": math.exp(min(loss, 700)),
+                "bits_per_byte": bits / size,
                 "evaluated_tokens": batches * batch_size * model.config.context,
+                "evaluated_bytes": size,
             }
     finally:
         model.train(was_training)
-    result["loss"] = sum(result[language]["loss"] for language in LANGUAGES) / len(
-        LANGUAGES
-    )
+    for measure in ("loss", "bits_per_byte"):
+        result[measure] = sum(
+            result[language][measure] for language in LANGUAGES
+        ) / len(LANGUAGES)
     return result
 
 
@@ -189,11 +198,15 @@ def evaluate_windows(
     The windows follow one another from the start of the stream, so every
     model measured on the same data predicts exactly the same tokens. limit
     keeps the first windows of a long stream; its documents are stored in
-    digest order, so the first windows sample its documents evenly.
+    digest order, so the first windows sample its documents evenly. Bits per
+    byte divide the bits of every prediction by the bytes of text the
+    predicted tokens stand for, so models whose tokenizers differ compare on
+    the same text.
     """
     if batch_size <= 0 or (limit is not None and limit <= 0):
         raise ValueError("evaluation batch_size and window limit must be positive")
     context = model.config.context
+    sizes = torch.from_numpy(token_bytes(corpus.tokenizer)).to(device)
     was_training = model.training
     model.eval()
     result = {}
@@ -204,6 +217,7 @@ def evaluate_windows(
             if limit is not None:
                 count = min(count, limit)
             total = 0.0
+            size = 0
             for first in range(0, count, batch_size):
                 x, y = to_device(
                     [
@@ -221,17 +235,21 @@ def evaluate_windows(
                 if not math.isfinite(value):
                     raise RuntimeError("validation loss is not finite")
                 total += value * y.numel()
+                size += sizes[y].sum().item()
             loss = total / (count * context)
             result[language] = {
                 "loss": loss,
                 "perplexity": math.exp(min(loss, 700)),
+                "bits_per_byte": total / math.log(2) / size,
                 "evaluated_tokens": count * context,
+                "evaluated_bytes": size,
             }
     finally:
         model.train(was_training)
-    result["loss"] = sum(result[language]["loss"] for language in LANGUAGES) / len(
-        LANGUAGES
-    )
+    for measure in ("loss", "bits_per_byte"):
+        result[measure] = sum(
+            result[language][measure] for language in LANGUAGES
+        ) / len(LANGUAGES)
     return result
 
 

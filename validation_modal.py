@@ -111,6 +111,9 @@ def main(output: str, max_windows: int = 1000):
                 {
                     "checkpoint": row["checkpoint"],
                     "data": row["data"],
+                    "bits_per_byte": round(row["bits_per_byte"], 4),
+                    "ja_bits_per_byte": round(row["ja"]["bits_per_byte"], 4),
+                    "en_bits_per_byte": round(row["en"]["bits_per_byte"], 4),
                     "loss": round(row["loss"], 4),
                     "ja": round(row["ja"]["loss"], 4),
                     "en": round(row["en"]["loss"], 4),

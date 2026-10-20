@@ -3,6 +3,7 @@ import importlib.util
 import io
 import itertools
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,7 +19,7 @@ if any(
 import numpy as np
 import torch
 
-from pretrain.data import Corpus, prepare_data
+from pretrain.data import Corpus, prepare_data, token_bytes
 from pretrain.model import LanguageModel, ModelConfig
 from pretrain.training import (
     TrainConfig,
@@ -374,6 +375,53 @@ class PretrainingTests(unittest.TestCase):
             model, corpus, torch.device("cpu"), batch_size=3, limit=1
         )
         self.assertEqual(first["ja"]["evaluated_tokens"], context)
+
+    def test_token_bytes_count_the_text_each_token_stands_for(self):
+        """各トークンが表す文章のバイト数を数え、特別なトークンは0バイトとする。"""
+        data = self.root / "merged"
+        prepare_data(
+            self.japanese,
+            self.english,
+            data,
+            vocabulary_size=300,
+            validation_fraction=0.25,
+        )
+        tokenizer = Corpus(data).tokenizer
+        sizes = token_bytes(tokenizer)
+        text = "あいうあいう 終わり1 abc abc ending1"
+        ids = tokenizer.encode(text).ids
+        self.assertGreater(sizes[ids].max(), 1)
+        self.assertEqual(sizes[ids].sum(), len(text.encode()))
+        for special in ("<|bos|>", "<|eos|>"):
+            self.assertEqual(sizes[tokenizer.token_to_id(special)], 0)
+
+    def test_validation_reports_bits_per_byte_of_the_predicted_text(self):
+        """検証で、予測したトークンのビット数を、それらが表す文章のバイト数で割って返す。"""
+        torch.manual_seed(42)
+        model = LanguageModel(258, self.model_config)
+        corpus = Corpus(self.data, ("validation",))
+        sizes = token_bytes(corpus.tokenizer)
+        every = evaluate_windows(model, corpus, torch.device("cpu"), batch_size=3)
+        sampled = evaluate(model, corpus, torch.device("cpu"), batches=2, batch_size=2)
+        for language in ("ja", "en"):
+            stream = corpus.streams["validation"][language]
+            tokens = every[language]["evaluated_tokens"]
+            targets = np.asarray(stream[1 : tokens + 1], dtype=np.int64)
+            self.assertEqual(every[language]["evaluated_bytes"], sizes[targets].sum())
+            for result in (every, sampled):
+                measured = result[language]
+                self.assertAlmostEqual(
+                    measured["bits_per_byte"],
+                    measured["loss"]
+                    * measured["evaluated_tokens"]
+                    / math.log(2)
+                    / measured["evaluated_bytes"],
+                )
+        for result in (every, sampled):
+            self.assertAlmostEqual(
+                result["bits_per_byte"],
+                (result["ja"]["bits_per_byte"] + result["en"]["bits_per_byte"]) / 2,
+            )
 
     def test_compiled_training_saves_checkpoints_that_load_without_compilation(self):
         """torch.compileで学習しても、通常のモデルで同じ予測をするチェックポイントを保存する。"""

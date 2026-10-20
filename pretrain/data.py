@@ -25,6 +25,28 @@ def file_digest(path):
     return digest.hexdigest()
 
 
+def token_bytes(tokenizer):
+    """Count the bytes of text each token stands for.
+
+    Each character of a byte-level token stands for one byte of UTF-8 text,
+    and the special tokens stand for none.
+    """
+    alphabet = set(pre_tokenizers.ByteLevel.alphabet())
+    special = {
+        index
+        for index, token in tokenizer.get_added_tokens_decoder().items()
+        if token.special
+    }
+    sizes = np.zeros(tokenizer.get_vocab_size(), dtype=np.int64)
+    for token, index in tokenizer.get_vocab().items():
+        if index in special:
+            continue
+        if not alphabet.issuperset(token):
+            raise ValueError("bits per byte needs a byte-level tokenizer")
+        sizes[index] = len(token)
+    return sizes
+
+
 def read_documents(path):
     path = Path(path)
     with path.open(encoding="utf-8") as source:
