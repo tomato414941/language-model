@@ -66,7 +66,13 @@ app = modal.App("language-model-evaluation")
     scaledown_window=2,
     timeout=7200,
     retries=0,
-    env={"TOKENIZERS_PARALLELISM": "false"},
+    # The container imports this module again, so it needs the selected model.
+    env={
+        "TOKENIZERS_PARALLELISM": "false",
+        "HF_MODEL_REPO": MODEL_REPO,
+        "HF_MODEL_RUN_ID": MODEL_RUN,
+        "HF_MODEL_REVISION": MODEL_REVISION,
+    },
 )
 def evaluate():
     import torch
