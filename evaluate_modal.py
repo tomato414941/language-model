@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
@@ -10,11 +11,14 @@ import modal
 
 ROOT = Path(__file__).parent
 MODEL_REPO = os.environ.get("HF_MODEL_REPO", "tomato414941/language-model")
-MODEL_RUN = os.environ.get("HF_MODEL_RUN_ID", "instructions-v2")
-MODEL_REVISION = os.environ.get(
-    "HF_MODEL_REVISION", "1b6a794d17085b380d51ff51380d24689937b645"
-)
+MODEL_RUN = os.environ.get("HF_MODEL_RUN_ID", "")
+MODEL_REVISION = os.environ.get("HF_MODEL_REVISION", "")
 MODEL_DIRECTORY = "/opt/models"
+
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", MODEL_RUN):
+    raise ValueError("Select the run to evaluate with HF_MODEL_RUN_ID")
+if not re.fullmatch(r"[a-f0-9]{40}", MODEL_REVISION):
+    raise ValueError("Pin HF_MODEL_REVISION to the model's full commit SHA")
 
 
 def download_model(repo_id, run_id, revision, directory):
@@ -39,6 +43,14 @@ image = (
         ROOT / "pretrain/__init__.py", "/root/pretrain/__init__.py", copy=True
     )
     .add_local_file(ROOT / "pretrain/hub.py", "/root/pretrain/hub.py", copy=True)
+    # Containers import this module again, so the image carries the selected model.
+    .env(
+        {
+            "HF_MODEL_REPO": MODEL_REPO,
+            "HF_MODEL_RUN_ID": MODEL_RUN,
+            "HF_MODEL_REVISION": MODEL_REVISION,
+        }
+    )
     .run_function(
         download_model,
         args=(MODEL_REPO, MODEL_RUN, MODEL_REVISION, MODEL_DIRECTORY),
@@ -66,13 +78,7 @@ app = modal.App("language-model-evaluation")
     scaledown_window=2,
     timeout=7200,
     retries=0,
-    # The container imports this module again, so it needs the selected model.
-    env={
-        "TOKENIZERS_PARALLELISM": "false",
-        "HF_MODEL_REPO": MODEL_REPO,
-        "HF_MODEL_RUN_ID": MODEL_RUN,
-        "HF_MODEL_REVISION": MODEL_REVISION,
-    },
+    env={"TOKENIZERS_PARALLELISM": "false"},
 )
 def evaluate():
     import torch
@@ -132,7 +138,7 @@ def evaluate():
 
 
 @app.local_entrypoint()
-def main(output: str = "runs/standard-evaluation-instructions-v2.json"):
+def main(output: str = f"runs/standard-evaluation-{MODEL_RUN}.json"):
     destination = Path(output)
     if destination.exists():
         raise ValueError(
