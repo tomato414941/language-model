@@ -28,6 +28,7 @@ from pretrain.training import (
     learning_rate,
     load_checkpoint,
     load_model,
+    make_optimizer,
     select_device,
     train,
 )
@@ -524,6 +525,69 @@ class PretrainingTests(unittest.TestCase):
                 self.config(),
                 torch.device("cpu"),
                 continue_from=self.root / "stable/last.pt",
+            )
+
+    def llama_config(self):
+        return ModelConfig(
+            width=24,
+            heads=4,
+            kv_heads=2,
+            layers=2,
+            context=16,
+            architecture="llama",
+            intermediate_size=64,
+        )
+
+    def test_muon_updates_block_matrices_and_adamw_the_embedding_and_norms(self):
+        """Muon はブロック内の行列を、AdamW は埋め込みと正規化の重みを受け持ち、どの重みも一度だけ更新する。"""
+        model = LanguageModel(258, self.llama_config())
+        config = TrainConfig(**{**self.config().__dict__, "optimizer": "muon"})
+        muon, adamw = make_optimizer(model, config, torch.device("cpu")).optimizers
+        owners = {}
+        for name, optimizer in (("muon", muon), ("adamw", adamw)):
+            for group in optimizer.param_groups:
+                for parameter in group["params"]:
+                    owners.setdefault(id(parameter), []).append(name)
+        for name, parameter in model.named_parameters():
+            matrix = name.startswith("blocks.") and parameter.ndim == 2
+            self.assertEqual(
+                owners[id(parameter)], ["muon" if matrix else "adamw"], name
+            )
+
+    def test_muon_training_learns_and_resumes_the_same_updates(self):
+        """Muon で両言語の検証損失を下げ、途中保存から再開しても連続学習と同じ重みを得る。"""
+        self.model_config = self.llama_config()
+        config = TrainConfig(**{**self.config(steps=24).__dict__, "optimizer": "muon"})
+        torch.manual_seed(42)
+        before = evaluate(
+            LanguageModel(258, self.model_config),
+            self.corpus,
+            torch.device("cpu"),
+            batches=2,
+            batch_size=4,
+        )
+        after = self.run_training("muon-continuous", config)["validation"]
+        for language in ("ja", "en"):
+            self.assertLess(after[language]["loss"], before[language]["loss"] * 0.8)
+        self.run_training("muon-resumed", config, max_steps=10)
+        self.run_training(
+            "muon-resumed", config, resume=self.root / "muon-resumed/last.pt"
+        )
+        first, second = (
+            load_checkpoint(self.root / name / "last.pt")
+            for name in ("muon-continuous", "muon-resumed")
+        )
+        for name, parameter in first["model"].items():
+            torch.testing.assert_close(parameter, second["model"][name], rtol=0, atol=0)
+
+    def test_continuation_keeps_the_optimizer_that_saved_its_state(self):
+        """継続では保存時の最適化手法を引き継ぎ、手法を変えるには重みだけを引き継ぐよう求める。"""
+        self.run_training("adamw-stable", self.wsd_config(), max_steps=6)
+        with self.assertRaisesRegex(ValueError, "change the optimizer"):
+            self.run_training(
+                "muon-decay",
+                self.wsd_config(optimizer="muon"),
+                continue_from=self.root / "adamw-stable/last.pt",
             )
 
     def test_prepared_data_reports_corruption_before_training(self):

@@ -41,6 +41,9 @@ class TrainConfig:
     # "random" draws windows with replacement; "sequential" reads every window
     # once per epoch in a seeded order.
     sampling: str = "random"
+    # "adamw" updates every weight with AdamW; "muon" updates the matrices in
+    # the blocks with Muon and the embedding and norms with AdamW.
+    optimizer: str = "adamw"
 
     def __post_init__(self):
         for field in (
@@ -90,6 +93,8 @@ class TrainConfig:
             raise ValueError("decay_shape must be linear or 1-sqrt")
         if self.schedule != "wsd" and self.decay_shape != "linear":
             raise ValueError("decay_shape applies to a wsd schedule")
+        if self.optimizer not in ("adamw", "muon"):
+            raise ValueError("optimizer must be adamw or muon")
 
 
 def read_config(path):
@@ -138,6 +143,75 @@ def autocast(device, precision):
     if precision == "float32":
         return nullcontext()
     return torch.autocast(device_type=device.type, dtype=getattr(torch, precision))
+
+
+class Optimizers:
+    """Several optimizers stepped as one, each over its own parameters."""
+
+    def __init__(self, *optimizers):
+        self.optimizers = optimizers
+
+    @property
+    def param_groups(self):
+        return [
+            group for optimizer in self.optimizers for group in optimizer.param_groups
+        ]
+
+    def zero_grad(self, set_to_none=True):
+        for optimizer in self.optimizers:
+            optimizer.zero_grad(set_to_none=set_to_none)
+
+    def step(self):
+        for optimizer in self.optimizers:
+            optimizer.step()
+
+    def state_dict(self):
+        return {"optimizers": [optimizer.state_dict() for optimizer in self.optimizers]}
+
+    def load_state_dict(self, state):
+        for optimizer, saved in zip(self.optimizers, state["optimizers"], strict=True):
+            optimizer.load_state_dict(saved)
+
+
+def make_optimizer(model, config, device):
+    """Build the configured optimizer; weight decay applies to matrices only.
+
+    Muon takes the matrices inside the blocks and AdamW the embedding and the
+    norms. Muon scales each matrix's update to the size AdamW's would have, so
+    both follow the same learning rate.
+    """
+
+    def adamw(parameters):
+        return torch.optim.AdamW(
+            [
+                {
+                    "params": [p for p in parameters if p.ndim >= 2],
+                    "weight_decay": config.weight_decay,
+                },
+                {
+                    "params": [p for p in parameters if p.ndim < 2],
+                    "weight_decay": 0.0,
+                },
+            ],
+            lr=config.learning_rate,
+            betas=(0.9, 0.95),
+            fused=device.type == "cuda",
+        )
+
+    if config.optimizer == "adamw":
+        return adamw(list(model.parameters()))
+    named = list(model.named_parameters())
+    matrices = [p for name, p in named if p.ndim == 2 and name.startswith("blocks.")]
+    chosen = {id(p) for p in matrices}
+    return Optimizers(
+        torch.optim.Muon(
+            matrices,
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay,
+            adjust_lr_fn="match_rms_adamw",
+        ),
+        adamw([p for _, p in named if id(p) not in chosen]),
+    )
 
 
 @torch.inference_mode()
@@ -344,21 +418,7 @@ def train(
     if device.type == "cuda":
         torch.cuda.manual_seed_all(config.seed)
     model = LanguageModel(corpus.tokenizer.get_vocab_size(), model_config).to(device)
-    optimizer = torch.optim.AdamW(
-        [
-            {
-                "params": [p for p in model.parameters() if p.ndim >= 2],
-                "weight_decay": config.weight_decay,
-            },
-            {
-                "params": [p for p in model.parameters() if p.ndim < 2],
-                "weight_decay": 0.0,
-            },
-        ],
-        lr=config.learning_rate,
-        betas=(0.9, 0.95),
-        fused=device.type == "cuda",
-    )
+    optimizer = make_optimizer(model, config, device)
     scaler = torch.amp.GradScaler("cuda", enabled=precision == "float16")
     generator = torch.Generator().manual_seed(config.seed)
     step, tokens_seen, best_loss = 0, 0, math.inf
@@ -387,6 +447,11 @@ def train(
         # The new schedule must agree with the rate of the last saved update, so
         # a decay phase or a longer stable phase picks up without a jump.
         previous = TrainConfig(**saved["train_config"])
+        if previous.optimizer != config.optimizer:
+            raise ValueError(
+                "continuation keeps the optimizer and its state; "
+                "use initialize_from to change the optimizer"
+            )
         last = max(saved["step"] - 1, 0)
         if not math.isclose(
             learning_rate(previous, last), learning_rate(config, last), rel_tol=1e-9
@@ -398,7 +463,9 @@ def train(
         model.load_state_dict(saved["model"])
         optimizer.load_state_dict(saved["optimizer"])
         for group in optimizer.param_groups:
-            group["fused"] = device.type == "cuda"
+            # Only AdamW's groups have a fused kernel to select.
+            if "fused" in group:
+                group["fused"] = device.type == "cuda"
         if saved["precision"] == precision:
             scaler.load_state_dict(saved["scaler"])
         step, tokens_seen = saved["step"], saved["tokens_seen"]
@@ -427,7 +494,9 @@ def train(
         model.load_state_dict(saved["model"])
         optimizer.load_state_dict(saved["optimizer"])
         for group in optimizer.param_groups:
-            group["fused"] = device.type == "cuda"
+            # Only AdamW's groups have a fused kernel to select.
+            if "fused" in group:
+                group["fused"] = device.type == "cuda"
         if saved["precision"] == precision:
             scaler.load_state_dict(saved["scaler"])
         generator.set_state(saved["sampling_rng"])

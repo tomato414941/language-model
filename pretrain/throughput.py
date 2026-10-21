@@ -7,7 +7,7 @@ from time import perf_counter
 import torch
 
 from .model import LanguageModel, ModelConfig
-from .training import TrainConfig, autocast
+from .training import TrainConfig, autocast, make_optimizer
 
 
 def measure_training(
@@ -31,21 +31,7 @@ def measure_training(
     if compiled:
         # Training shapes never change, so each micro-batch size compiles once.
         model.compile(dynamic=False)
-    optimizer = torch.optim.AdamW(
-        [
-            {
-                "params": [p for p in model.parameters() if p.ndim >= 2],
-                "weight_decay": training.weight_decay,
-            },
-            {
-                "params": [p for p in model.parameters() if p.ndim < 2],
-                "weight_decay": 0.0,
-            },
-        ],
-        lr=training.learning_rate,
-        betas=(0.9, 0.95),
-        fused=True,
-    )
+    optimizer = make_optimizer(model, training, device)
 
     def update(batch_size, accumulation):
         optimizer.zero_grad(set_to_none=True)
