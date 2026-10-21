@@ -91,3 +91,14 @@ name = "muon-1.6e-3"
 optimizer = "muon"
 learning_rate = 0.0016
 minutes = 46
+
+# The best AdamW rate at twice the tokens, to express the gap as compute.
+[[runs]]
+name = "adamw-8e-4-1b"
+optimizer = "adamw"
+learning_rate = 0.0008
+steps = 30518
+warmup_steps = 1526
+decay_steps = 6104
+save_every = 30518
+minutes = 70
