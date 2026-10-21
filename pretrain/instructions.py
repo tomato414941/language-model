@@ -537,14 +537,57 @@ class InstructionCorpus:
 
     def batch(self, split, batch_size, context, generator, device, language=None):
         self.validate_context(context)
-        tokens, masks = [], []
+        picked = []
         for selected in batch_languages(batch_size, generator, language):
-            rows, row_masks = self.rows[split][selected]
-            index = torch.randint(len(rows), (1,), generator=generator).item()
-            tokens.append(np.asarray(rows[index], dtype=np.int64))
-            masks.append(np.asarray(row_masks[index], dtype=bool))
-        tokens = torch.from_numpy(np.stack(tokens))
-        learn = torch.from_numpy(np.stack(masks))
+            count = len(self.rows[split][selected][0])
+            picked.append(
+                (selected, torch.randint(count, (1,), generator=generator).item())
+            )
+        return self.load(split, picked, device)
+
+    def sequential_batch(self, start, batch_size, context, seed, device):
+        """Read rows start.. of an endless, epoch-by-epoch pass over the training rows.
+
+        Each epoch visits every row of both languages once in a seeded order,
+        so every conversation is learned equally often and the languages mix
+        in proportion to their rows.
+        """
+        self.validate_context(context)
+        sizes = [len(self.rows["train"][language][0]) for language in LANGUAGES]
+        picked = []
+        for row in range(start, start + batch_size):
+            epoch, position = divmod(row, sum(sizes))
+            cached = getattr(self, "_order", None)
+            if cached is None or cached[0] != epoch:
+                self._order = (
+                    epoch,
+                    np.random.default_rng([seed, epoch]).permutation(sum(sizes)),
+                )
+            index = int(self._order[1][position])
+            for language, size in zip(LANGUAGES, sizes):
+                if index < size:
+                    picked.append((language, index))
+                    break
+                index -= size
+        return self.load("train", picked, device)
+
+    def load(self, split, picked, device):
+        tokens = torch.from_numpy(
+            np.stack(
+                [
+                    np.asarray(self.rows[split][language][0][index], dtype=np.int64)
+                    for language, index in picked
+                ]
+            )
+        )
+        learn = torch.from_numpy(
+            np.stack(
+                [
+                    np.asarray(self.rows[split][language][1][index], dtype=bool)
+                    for language, index in picked
+                ]
+            )
+        )
         # Cross-entropy ignores -100, so prompts and padding add no loss.
         targets = tokens[:, 1:].masked_fill(~learn[:, 1:], -100)
         inputs = tokens[:, :-1]

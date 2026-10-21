@@ -125,7 +125,7 @@ class InstructionTests(unittest.TestCase):
         )
         return data
 
-    def config(self, steps):
+    def config(self, steps, **options):
         return TrainConfig(
             steps=steps,
             batch_size=4,
@@ -137,6 +137,7 @@ class InstructionTests(unittest.TestCase):
             save_every=steps,
             eval_batches=2,
             log_every=steps,
+            **options,
         )
 
     def rows(self, corpus, split, language):
@@ -252,6 +253,21 @@ class InstructionTests(unittest.TestCase):
         learned = y[y != -100]
         self.assertTrue(len(learned))
         self.assertNotIn("User", self.tokenizer.decode(learned.tolist()))
+
+    def test_sequential_reading_learns_every_row_once_per_epoch(self):
+        """順番に読むと、1周ごとに日英の学習用の行をすべて1回ずつ使い、どこから読んでも同じ順になる。"""
+        corpus = InstructionCorpus(self.prepare(conversations(40)))
+        rows = sorted(
+            tuple(np.asarray(row[:-1], dtype=np.int64).tolist())
+            for language in LANGUAGES
+            for row in corpus.rows["train"][language][0]
+        )
+        x, y = corpus.sequential_batch(0, 2 * len(rows), 64, 42, torch.device("cpu"))
+        for epoch in (x[: len(rows)], x[len(rows) :]):
+            self.assertEqual(sorted(tuple(row.tolist()) for row in epoch), rows)
+        self.assertNotIn("User", self.tokenizer.decode(y[y != -100].tolist()))
+        again, _ = corpus.sequential_batch(3, 4, 64, 42, torch.device("cpu"))
+        torch.testing.assert_close(again, x[3:7], rtol=0, atol=0)
 
     def test_preparation_holds_out_validation_conversations_and_applies_the_budget(
         self,
@@ -369,7 +385,7 @@ class InstructionTests(unittest.TestCase):
             )
 
     def test_tuning_from_pretrained_weights_learns_replies_that_end(self):
-        """事前学習の重みから指示データで学習し、回答の形を覚えて終了記号で止める。"""
+        """事前学習の重みから指示データで学習し、行を無作為に引いても順番に読んでも、回答の形を覚えて終了記号で止める。"""
         with contextlib.redirect_stdout(io.StringIO()):
             train(
                 self.pretraining,
@@ -383,35 +399,38 @@ class InstructionTests(unittest.TestCase):
         before = evaluate(
             base, InstructionCorpus(data), torch.device("cpu"), batches=2, batch_size=4
         )
-        with contextlib.redirect_stdout(io.StringIO()):
-            result = train(
-                data,
-                self.root / "tuned",
-                self.model_config,
-                self.config(80),
-                torch.device("cpu"),
-                initialize_from=self.root / "base/last.pt",
-            )
-        self.assertLess(result["validation"]["loss"], before["loss"] * 0.5)
-        model, tokenizer, _ = load_model(
-            self.root / "tuned/last.pt", torch.device("cpu")
-        )
-        for question, expected in (
-            ("質問3は？", r"^答え\d+です。$"),
-            ("What is item 3?", r"^It is answer \d+\.$"),
-        ):
-            tokens = list(
-                model.sample_tokens(
-                    tokenizer,
-                    chat_prompt([{"role": "user", "content": question}]),
-                    max_new_tokens=24,
-                    temperature=0,
+        for sampling in ("random", "sequential"):
+            with self.subTest(sampling=sampling):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = train(
+                        data,
+                        self.root / f"tuned-{sampling}",
+                        self.model_config,
+                        self.config(80, sampling=sampling),
+                        torch.device("cpu"),
+                        initialize_from=self.root / "base/last.pt",
+                    )
+                self.assertLess(result["validation"]["loss"], before["loss"] * 0.5)
+                model, tokenizer, _ = load_model(
+                    self.root / f"tuned-{sampling}/last.pt", torch.device("cpu")
                 )
-            )
-            self.assertEqual(tokens[-1], tokenizer.token_to_id("<|eos|>"))
-            self.assertRegex(
-                tokenizer.decode(tokens, skip_special_tokens=True).strip(), expected
-            )
+                for question, expected in (
+                    ("質問3は？", r"^答え\d+です。$"),
+                    ("What is item 3?", r"^It is answer \d+\.$"),
+                ):
+                    tokens = list(
+                        model.sample_tokens(
+                            tokenizer,
+                            chat_prompt([{"role": "user", "content": question}]),
+                            max_new_tokens=24,
+                            temperature=0,
+                        )
+                    )
+                    self.assertEqual(tokens[-1], tokenizer.token_to_id("<|eos|>"))
+                    self.assertRegex(
+                        tokenizer.decode(tokens, skip_special_tokens=True).strip(),
+                        expected,
+                    )
 
 
 class FetchTests(unittest.TestCase):

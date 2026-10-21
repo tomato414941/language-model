@@ -406,8 +406,6 @@ def train(
     corpus.validate_context(model_config.context)
     precision = select_precision(device, precision)
     output = Path(output)
-    if config.sampling == "sequential" and not hasattr(corpus, "sequential_batch"):
-        raise ValueError("sequential sampling needs a pretraining corpus")
     if resume is None and (output / "last.pt").exists():
         raise ValueError(
             "a checkpoint already exists; use --resume or select a new output directory"

@@ -1,0 +1,26 @@
+[model]
+architecture = "llama"
+width = 576
+heads = 9
+kv_heads = 3
+layers = 30
+intermediate_size = 1536
+context = 2048
+rope_theta = 10000.0
+
+[training]
+# Two passes over the 16,112 training rows of data/instructions-v2, 16 rows a step.
+steps = 1007
+batch_size = 4
+accumulation_steps = 4
+learning_rate = 0.0002
+min_learning_rate = 0.00002
+warmup_steps = 50
+weight_decay = 0.1
+gradient_clip = 1.0
+eval_every = 100
+save_every = 500
+eval_batches = 16
+log_every = 25
+seed = 42
+sampling = "sequential"

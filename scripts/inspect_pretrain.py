@@ -99,7 +99,6 @@ def main(argv=None):
         raise ValueError("CPU generation is not reproducible")
     summary.update(
         cpu_inference_verified=True,
-        cpu_verification_location="RunPod CPU",
         cpu_verification_threads=1,
         cpu_sample=text,
     )
