@@ -1,0 +1,93 @@
+# Compare AdamW and Muon from scratch at the 115M model's size, at equal
+# tokens, on continue-v4's stable corpus, measured on the yardstick sets.
+# Each run reads 500M tokens: a 5% warmup, the peak rate, and a linear decay
+# to zero over the last 20%. minutes caps each run's training time; on an
+# H100, AdamW took 108 ms a step and Muon 143 ms in the short runs.
+data = "data/continue-v4/corpus-stable"
+validation = ["data/continue-v4/corpus-stable", "data/continue-v4/corpus-decay"]
+windows_per_language = 1000
+
+[model]
+architecture = "llama"
+width = 576
+heads = 9
+kv_heads = 3
+layers = 30
+intermediate_size = 1536
+context = 2048
+rope_theta = 10000.0
+
+[training]
+steps = 15259
+batch_size = 16
+accumulation_steps = 1
+learning_rate = 0.0004
+min_learning_rate = 0.0
+warmup_steps = 763
+weight_decay = 0.1
+gradient_clip = 1.0
+eval_every = 2500
+save_every = 15259
+eval_batches = 4
+log_every = 50
+seed = 42
+schedule = "wsd"
+decay_steps = 3052
+sampling = "sequential"
+
+# Short runs that check the setup and measure each optimizer's speed.
+[[runs]]
+name = "smoke-adamw"
+optimizer = "adamw"
+steps = 600
+warmup_steps = 60
+decay_steps = 120
+eval_every = 300
+save_every = 600
+minutes = 10
+
+[[runs]]
+name = "smoke-muon"
+optimizer = "muon"
+steps = 600
+warmup_steps = 60
+decay_steps = 120
+eval_every = 300
+save_every = 600
+minutes = 10
+
+[[runs]]
+name = "adamw-4e-4"
+optimizer = "adamw"
+learning_rate = 0.0004
+minutes = 36
+
+[[runs]]
+name = "adamw-8e-4"
+optimizer = "adamw"
+learning_rate = 0.0008
+minutes = 36
+
+[[runs]]
+name = "adamw-1.6e-3"
+optimizer = "adamw"
+learning_rate = 0.0016
+minutes = 36
+
+[[runs]]
+name = "muon-4e-4"
+optimizer = "muon"
+learning_rate = 0.0004
+minutes = 46
+
+[[runs]]
+name = "muon-8e-4"
+optimizer = "muon"
+learning_rate = 0.0008
+minutes = 46
+
+[[runs]]
+name = "muon-1.6e-3"
+optimizer = "muon"
+learning_rate = 0.0016
+minutes = 46
