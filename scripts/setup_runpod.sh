@@ -12,7 +12,7 @@ if [[ ! -x "$project_root/.tools/uv" ]]; then
     https://astral.sh/uv/0.10.12/install.sh --output "$installer"
   UV_INSTALL_DIR="$project_root/.tools" UV_NO_MODIFY_PATH=1 sh "$installer"
 fi
-"$project_root/.tools/uv" sync --frozen --extra train --extra hub --extra eval
+"$project_root/.tools/uv" sync --frozen --extra train --extra hub --extra eval --extra corpus
 # The lock pins the CUDA 13 build of PyTorch. On a host whose driver predates
 # CUDA 13, use the same PyTorch version built for CUDA 12.6 instead.
 if ! "$project_root/.tools/uv" run --no-sync python -c \

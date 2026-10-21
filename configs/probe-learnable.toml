@@ -1,0 +1,58 @@
+# Ask whether choosing documents by what the 115M model learns from them beats
+# taking the same sources as they come. Both alternatives anneal continue-v4 on
+# 150M tokens from one pool of documents it never trained on: a random sample,
+# and the documents ranked highest by a classifier that learned CoLoR-Filter
+# scores (arXiv:2406.10670) on a scored share of the pool.
+training_config = "bilingual-v4-probe.toml"
+sources = "sources.toml"
+seed = 42
+initialize_from = "runs/continue-v4-decay/best.pt"
+
+[tokenizer]
+vocabulary_size = 16384
+reuse_from = "data/bilingual-v3/tokenizer.json"
+reuse_sha256 = "c0db70b68a3817198e7412b0dae5b6c6ed55e4ba41256700e55c6c80b597e141"
+
+[corpus]
+validation_tokens_per_language = 300_000
+# The yardstick holds out the documents below this share of the seed-42 digest
+# range, so no corpus may train on them.
+validation_fraction = 0.00125
+minimum_characters = 300
+maximum_characters = 100000
+part_tokens = 100_000_000
+
+[evaluation]
+framework = "lm-eval"
+version = "0.4.13"
+base_tasks = ["hellaswag", "arc_easy", "ja_leaderboard_jcommonsenseqa"]
+instruction_tasks = ["ifeval"]
+
+# A document scores the loss continue-v4 loses on it once tuned on the
+# conversations of data/instructions-v2, as instructions-v3 was.
+[selection]
+prior = { checkpoint = "runs/continue-v4-decay/best.pt", sha256 = "e379f6314444306cdac08caee1313bc3b95d3299573aff6ad25be12b89e8db8e" }
+conditional = { checkpoint = "runs/instructions-v3/model.pt", sha256 = "e4a9195836dc492fe0e2cc142fbf98f60e137b69a357ef0b2371015712d9ff09" }
+# Score a tenth of the pool with both models; learn from its top and bottom quarters.
+scored_share = 10
+label_share = 25
+
+# The unscored nine tenths hold four times each alternative, so the learnable
+# corpus keeps about the top quarter of every source.
+[[corpora]]
+name = "pool"
+purpose = "pool"
+training_tokens = 670_000_000
+mix = { ja-climblab-fresh = 50, en-web-fresh = 30, en-dclm-fresh = 20 }
+
+[[corpora]]
+name = "random"
+purpose = "alternative"
+training_tokens = 150_000_000
+select = { pool = "pool", method = "random" }
+
+[[corpora]]
+name = "learnable"
+purpose = "alternative"
+training_tokens = 150_000_000
+select = { pool = "pool", method = "learnable" }
