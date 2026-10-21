@@ -36,8 +36,14 @@ def main(argv=None):
     )
     recipe.add_argument(
         "--stage",
-        choices=("inspect", "tokenizer", "corpus", "validate", "sft-config"),
+        choices=("inspect", "tokenizer", "corpus", "select", "validate", "sft-config"),
         default="inspect",
+    )
+    recipe.add_argument(
+        "--device",
+        choices=("cpu", "cuda", "auto"),
+        default="auto",
+        help="候補の文書をモデルで採点する装置（selectの段階）",
     )
     wikipedia = commands.add_parser(
         "fetch-wikipedia", help="日本語・英語のWikipedia本文を出典付きで取得する"
@@ -249,6 +255,12 @@ def main(argv=None):
                     workdir,
                     workdir / "benchmarks",
                     args.workers,
+                )
+            elif args.stage == "select":
+                from .selection import select_corpora
+
+                result = select_corpora(
+                    args.config, workdir, select_device(args.device)
                 )
             elif args.stage == "validate":
                 result = validate_corpus(args.config, workdir)

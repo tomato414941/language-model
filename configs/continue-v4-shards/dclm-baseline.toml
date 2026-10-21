@@ -1,0 +1,20 @@
+# Files of mlfoundations/dclm-baseline-1.0 that the continue-v4 corpora read.
+# A source that leaves them out gives documents no earlier model trained on.
+files = [
+  "global-shard_01_of_10/local-shard_0_of_10/shard_00000058_processed.jsonl.zst",
+  "global-shard_02_of_10/local-shard_3_of_10/shard_00000243_processed.jsonl.zst",
+  "global-shard_02_of_10/local-shard_4_of_10/shard_00000004_processed.jsonl.zst",
+  "global-shard_05_of_10/local-shard_2_of_10/shard_00000102_processed.jsonl.zst",
+  "global-shard_05_of_10/local-shard_4_of_10/shard_00000061_processed.jsonl.zst",
+  "global-shard_05_of_10/local-shard_8_of_10/shard_00000116_processed.jsonl.zst",
+  "global-shard_06_of_10/local-shard_2_of_10/shard_00000094_processed.jsonl.zst",
+  "global-shard_07_of_10/local-shard_2_of_10/shard_00000204_processed.jsonl.zst",
+  "global-shard_07_of_10/local-shard_4_of_10/shard_00000152_processed.jsonl.zst",
+  "global-shard_08_of_10/local-shard_8_of_10/shard_00000064_processed.jsonl.zst",
+  "global-shard_09_of_10/local-shard_0_of_10/shard_00000196_processed.jsonl.zst",
+  "global-shard_09_of_10/local-shard_0_of_10/shard_00000248_processed.jsonl.zst",
+  "global-shard_09_of_10/local-shard_4_of_10/shard_00000267_processed.jsonl.zst",
+  "global-shard_10_of_10/local-shard_2_of_10/shard_00000026_processed.jsonl.zst",
+  "global-shard_10_of_10/local-shard_4_of_10/shard_00000241_processed.jsonl.zst",
+  "global-shard_10_of_10/local-shard_7_of_10/shard_00000136_processed.jsonl.zst",
+]

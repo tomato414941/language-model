@@ -1,0 +1,24 @@
+# Files of KantaHayashiAI/ClimbLab-Ja that the continue-v4 corpora read.
+# A source that leaves them out gives documents no earlier model trained on.
+files = [
+  "train-002-of-512.parquet",
+  "train-036-of-512.parquet",
+  "train-044-of-512.parquet",
+  "train-115-of-512.parquet",
+  "train-123-of-512.parquet",
+  "train-124-of-512.parquet",
+  "train-148-of-512.parquet",
+  "train-149-of-512.parquet",
+  "train-180-of-512.parquet",
+  "train-183-of-512.parquet",
+  "train-184-of-512.parquet",
+  "train-198-of-512.parquet",
+  "train-221-of-512.parquet",
+  "train-236-of-512.parquet",
+  "train-259-of-512.parquet",
+  "train-276-of-512.parquet",
+  "train-316-of-512.parquet",
+  "train-462-of-512.parquet",
+  "train-465-of-512.parquet",
+  "train-484-of-512.parquet",
+]

@@ -1,0 +1,19 @@
+# Files of HuggingFaceFW/fineweb-edu that the continue-v4 corpora read.
+# A source that leaves them out gives documents no earlier model trained on.
+files = [
+  "data/CC-MAIN-2014-42/train-00008-of-00014.parquet",
+  "data/CC-MAIN-2015-14/train-00002-of-00013.parquet",
+  "data/CC-MAIN-2015-35/train-00012-of-00014.parquet",
+  "data/CC-MAIN-2017-17/train-00005-of-00022.parquet",
+  "data/CC-MAIN-2017-43/train-00002-of-00018.parquet",
+  "data/CC-MAIN-2017-43/train-00008-of-00018.parquet",
+  "data/CC-MAIN-2018-34/train-00003-of-00015.parquet",
+  "data/CC-MAIN-2018-43/train-00004-of-00018.parquet",
+  "data/CC-MAIN-2019-18/train-00005-of-00016.parquet",
+  "data/CC-MAIN-2021-31/train-00016-of-00023.parquet",
+  "data/CC-MAIN-2021-49/train-00001-of-00016.parquet",
+  "data/CC-MAIN-2024-22/000_00041.parquet",
+  "data/CC-MAIN-2024-42/000_00028.parquet",
+  "data/CC-MAIN-2024-42/000_00043.parquet",
+  "data/CC-MAIN-2025-26/000_00006.parquet",
+]

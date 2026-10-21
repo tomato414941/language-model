@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import math
+import shutil
 import sqlite3
 import tempfile
 import unittest
@@ -85,6 +86,9 @@ class RecipeTests(unittest.TestCase):
         self.recipe_path = self.root / "recipe.toml"
         for name in ("sources.toml", "previous-shards.toml"):
             (self.root / name).write_text((ROOT / "configs" / name).read_text())
+        shutil.copytree(
+            ROOT / "configs/continue-v4-shards", self.root / "continue-v4-shards"
+        )
         text = (ROOT / "configs/pretrain-1b.toml").read_text()
         for old, new in (
             ("bilingual-1b.toml", "training.toml"),

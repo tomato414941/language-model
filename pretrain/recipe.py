@@ -50,7 +50,10 @@ SOURCE_FIELDS = {
     "maximum_characters",
     *FILTERS,
 }
-PURPOSES = ("phase", "alternative", "evaluation")
+PURPOSES = ("phase", "alternative", "evaluation", "pool")
+# A pool is read from the sources but never trained on. A corpus that selects
+# from it takes either a random sample or the documents a model learns most from.
+SELECTIONS = ("random", "learnable")
 TOKEN_PIECE_DTYPE = "<u2"
 # Each part reads this much beyond its share of a source, so the merge can drop
 # documents another part or source already supplied without falling short.
@@ -163,9 +166,29 @@ def read_recipe(path):
         re.fullmatch(r"[a-z0-9][a-z0-9-]*", name) for name in names
     ):
         raise ValueError("each corpus needs a unique lowercase name")
+    pools = {item["name"]: item for item in corpora if item.get("purpose") == "pool"}
     for item in corpora:
         if item.setdefault("purpose", "phase") not in PURPOSES:
             raise ValueError(f"corpus purpose must be one of {PURPOSES}")
+        if "select" in item:
+            choice = item["select"]
+            if (
+                not isinstance(choice, dict)
+                or set(choice) != {"pool", "method"}
+                or choice["method"] not in SELECTIONS
+                or choice["pool"] not in pools
+                or item["purpose"] in ("evaluation", "pool")
+            ):
+                raise ValueError(
+                    f"{item['name']} must train on a selection {SELECTIONS} from a pool"
+                )
+            if "mix" in item or "validation_tokens_per_language" in item:
+                raise ValueError(
+                    f"{item['name']} takes its sources and held-out split from its pool"
+                )
+            pool = pools[choice["pool"]]
+            item["mix"] = dict(pool.get("mix") or {})
+            item["validation_tokens_per_language"] = validation_budget(recipe, pool)
         for name in ("training_tokens", "validation_tokens_per_language"):
             value = item.get(name, corpus["validation_tokens_per_language"])
             if type(value) is not int or value <= 0:
@@ -185,6 +208,34 @@ def read_recipe(path):
             for language in LANGUAGES
         ):
             raise ValueError("the recipe must allocate 50 percent to each language")
+    selected = [item for item in corpora if "select" in item]
+    if selected:
+        settings = recipe.get("selection")
+        if not isinstance(settings, dict):
+            raise ValueError("a recipe that selects documents needs a selection section")
+        for role in ("prior", "conditional"):
+            choice = settings.get(role)
+            if (
+                not isinstance(choice, dict)
+                or set(choice) != {"checkpoint", "sha256"}
+                or not isinstance(choice["checkpoint"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", str(choice["sha256"]))
+            ):
+                raise ValueError(
+                    f"the selection's {role} model needs a checkpoint and its SHA-256 digest"
+                )
+        for name in ("scored_share", "label_share"):
+            if type(settings.get(name)) is not int or not 0 < settings[name] <= 50:
+                raise ValueError(f"the selection's {name} must be a percentage up to 50")
+        for item in selected:
+            pool = pools[item["select"]["pool"]]
+            unscored = pool["training_tokens"] * (100 - settings["scored_share"]) // 100
+            if unscored < item["training_tokens"]:
+                raise ValueError(
+                    f"{item['name']} needs more tokens than its pool leaves unscored"
+                )
+    elif "selection" in recipe:
+        raise ValueError("the selection section needs a corpus that selects documents")
     # Keep only the sources this recipe uses, so adding a dataset to the shared
     # catalog leaves existing recipes and their prepared corpora unchanged.
     recipe["sources"] = [
@@ -303,14 +354,25 @@ def corpus_paths(recipe, workdir):
     return {name: workdir / f"corpus-{name}" for name in names}
 
 
+def streamed(recipe):
+    """The corpora read from the sources; a selected corpus comes from its pool."""
+    return [item for item in recipe["corpora"] if "select" not in item]
+
+
+def trained(recipe):
+    return [
+        item
+        for item in recipe["corpora"]
+        if item["purpose"] not in ("evaluation", "pool")
+    ]
+
+
 def run_paths(recipe_path, recipe):
     stem = Path(recipe_path).stem
-    trained = [
-        item["name"] for item in recipe["corpora"] if item["purpose"] != "evaluation"
-    ]
-    if len(trained) == 1:
-        return {trained[0]: Path("runs") / stem}
-    return {name: Path("runs") / f"{stem}-{name}" for name in trained}
+    trained_names = [item["name"] for item in trained(recipe)]
+    if len(trained_names) == 1:
+        return {trained_names[0]: Path("runs") / stem}
+    return {name: Path("runs") / f"{stem}-{name}" for name in trained_names}
 
 
 def recipe_fingerprint(path):
@@ -367,7 +429,12 @@ def inspect_recipe(path, workdir):
                 "--stage",
                 stage,
             ]
-            for stage in ("tokenizer", "corpus", "validate")
+            for stage in (
+                "tokenizer",
+                "corpus",
+                *(["select"] if len(streamed(recipe)) < len(recipe["corpora"]) else []),
+                "validate",
+            )
         ],
     ]
 
@@ -524,7 +591,6 @@ def inspect_recipe(path, workdir):
             ),
         ]
     sources = sources_by_id(recipe)
-    trained = [item for item in recipe["corpora"] if item["purpose"] != "evaluation"]
     return {
         "recipe_fingerprint": recipe_fingerprint(path),
         "parameters": parameters,
@@ -534,7 +600,7 @@ def inspect_recipe(path, workdir):
         "training": asdict(training),
         "nominal_training_tokens": sum(item["training_tokens"] for item in phases)
         if phases
-        else trained[0]["training_tokens"],
+        else trained(recipe)[0]["training_tokens"],
         "scheduled_training_tokens": (training.steps - start) * tokens_per_step,
         "tokenizer": recipe["tokenizer"],
         "corpora": [
@@ -618,10 +684,12 @@ def iter_source(source, seed, part=None):
     filesystem = HfFileSystem(token=False)
     for shard in shards:
         generator = random.Random(f"{seed}:{source['id']}:{shard}")
+        # Large reads keep the requests few, well within the Hub's rate limits
+        # when many parts read at once.
         with filesystem.open(
             f"datasets/{source['repository']}@{source['revision']}/{shard}",
             "rb",
-            block_size=1024 * 1024,
+            block_size=16 * 1024 * 1024,
         ) as handle:
             if form == "parquet":
                 with parquet.ParquetFile(handle) as table:
@@ -826,8 +894,8 @@ def train_tokenizer(recipe, staging, stack, benchmarks_path):
         for language in LANGUAGES
     }
     samples = {}
-    # The vocabulary follows the first corpus that training reads.
-    first = next(item for item in recipe["corpora"] if item["purpose"] != "evaluation")
+    # The vocabulary follows the first corpus that training reads from.
+    first = next(item for item in streamed(recipe) if item["purpose"] != "evaluation")
     for source_id, share in first["mix"].items():
         source = sources[source_id]
         stats = Counter()
@@ -892,7 +960,7 @@ def source_parts(recipe):
     earlier in another part or source can be dropped while merging.
     """
     demands = {}
-    for item in recipe["corpora"]:
+    for item in streamed(recipe):
         for source_id, share in item["mix"].items():
             demands.setdefault(source_id, {})[item["name"]] = source_targets(
                 recipe, item, share
@@ -1000,7 +1068,10 @@ def prepare_part(recipe_path, tokenizer_directory, benchmarks_path, part, parts_
 def prepare_corpus(
     recipe_path, tokenizer_directory, workdir, benchmarks_path, workers=1
 ):
-    """Write every corpus of the recipe; no document appears in two of them."""
+    """Write every corpus read from the sources; no document appears in two of them.
+
+    Corpora that select from a pool are written afterwards by the select stage.
+    """
     recipe = read_recipe(recipe_path)
     tokenizer_directory = Path(tokenizer_directory)
     tokenizer_manifest = json.loads((tokenizer_directory / "manifest.json").read_text())
@@ -1039,7 +1110,7 @@ def prepare_corpus(
                     pass
         manifests = {}
         with closing(seen_documents(scratch)) as database:
-            for item in recipe["corpora"]:
+            for item in streamed(recipe):
                 manifests[item["name"]] = write_corpus(
                     recipe,
                     item,
@@ -1236,6 +1307,16 @@ def validate_corpus(recipe_path, workdir):
             or manifest.get("corpus") != item["name"]
         ):
             raise ValueError("the corpus belongs to a different recipe")
+        if "select" in item:
+            pool = Corpus(
+                corpus_paths(recipe, workdir)[item["select"]["pool"]], ("validation",)
+            )
+            chosen = manifest.get("selection", {})
+            if (
+                chosen.get("method") != item["select"]["method"]
+                or chosen.get("pool_fingerprint") != pool.fingerprint
+            ):
+                raise ValueError("the corpus was not selected from this recipe's pool")
         if (
             file_digest(data / manifest["provenance"]["filename"])
             != manifest["provenance"]["sha256"]

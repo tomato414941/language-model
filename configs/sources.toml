@@ -164,3 +164,43 @@ prefix = "data/enwiki/"
 license = "CC-BY-SA-4.0"
 terms_url = "https://dumps.wikimedia.org/legal.html"
 equal = { in_language = "en" }
+
+# The same sources without the files the continue-v4 corpora read, so a probe
+# that starts from continue-v4 learns only documents it has not trained on.
+# bilingual-v3 read FineWeb-Edu's sample/10BT copy, which repeats under 1% of
+# the documents in these files.
+[[sources]]
+id = "ja-climblab-fresh"
+language = "ja"
+repository = "KantaHayashiAI/ClimbLab-Ja"
+revision = "2ed8cdb4a280e5c8875494f30d871db3406922ea"
+prefix = "train-"
+license = "ODC-By-1.0; source texts CC-BY-4.0, CC-BY-SA-3.0 or ODC-By-1.0"
+terms_url = "https://huggingface.co/datasets/KantaHayashiAI/ClimbLab-Ja/blob/main/LICENSES.md"
+minimum = { quality = 4, advertisement = 3 }
+any_minimum = { informational_value = 4, educational_value = 4, cultural_value = 4, creative_value = 4 }
+exclude_files_from = "continue-v4-shards/climblab-ja.toml"
+
+[[sources]]
+id = "en-web-fresh"
+language = "en"
+repository = "HuggingFaceFW/fineweb-edu"
+revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+prefix = "data/"
+license = "ODC-By-1.0"
+terms_url = "https://commoncrawl.org/terms-of-use"
+equal = { language = "en" }
+minimum = { language_score = 0.8, score = 3.0 }
+exclude_files_from = "continue-v4-shards/fineweb-edu.toml"
+
+[[sources]]
+id = "en-dclm-fresh"
+language = "en"
+repository = "mlfoundations/dclm-baseline-1.0"
+revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+prefix = "global-shard_"
+format = "jsonl.zst"
+license = "CC-BY-4.0"
+terms_url = "https://commoncrawl.org/terms-of-use"
+minimum = { "language_id_whole_page_fasttext.en" = 0.8 }
+exclude_files_from = "continue-v4-shards/dclm-baseline.toml"
