@@ -387,6 +387,19 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(stopped, "日本語 ")
         self.assertEqual(ended, "日本語 STOP suffix")
 
+    def test_採点した要求の数を進み具合として表示する(self):
+        """Shows how many requests have been scored, for long evaluations' logs."""
+        backend = NativeLM(
+            FixedModel(torch.full((258,), 1 / 258)),
+            byte_tokenizer(),
+            torch.device("cpu"),
+        )
+        shown = io.StringIO()
+        with contextlib.redirect_stderr(shown):
+            backend._loglikelihood_tokens([(None, [0, 5], [6]), (None, [0, 7], [8, 9])])
+        self.assertIn("Scoring requests", shown.getvalue())
+        self.assertIn("2/2", shown.getvalue())
+
     def test_standard_tasks_use_held_out_splits_and_published_fewshot_counts(self):
         """Uses published evaluation splits, examples and metrics."""
         with patch(

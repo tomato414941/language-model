@@ -15,6 +15,8 @@ from importlib.metadata import version
 import torch
 
 try:
+    from tqdm import tqdm
+
     from lm_eval import evaluator, utils
     from lm_eval.api.metrics import (
         aggregate_subtask_metrics,
@@ -196,7 +198,7 @@ class NativeLM(TemplateLM):
         return tokens
 
     @torch.inference_mode()
-    def _loglikelihood_tokens(self, requests, **kwargs):
+    def _loglikelihood_tokens(self, requests, disable_tqdm=False, **kwargs):
         prepared = []
         for index, (key, context, continuation) in enumerate(requests):
             if not context or not 0 < len(continuation) <= self.model.config.context:
@@ -207,6 +209,13 @@ class NativeLM(TemplateLM):
         results = [None] * len(requests)
         was_training = self.model.training
         self.model.eval()
+        # Long evaluations write to log files, so a line every half minute is enough.
+        progress = tqdm(
+            total=len(requests),
+            desc="Scoring requests",
+            disable=disable_tqdm,
+            mininterval=30,
+        )
         try:
             start = 0
             while start < len(prepared):
@@ -232,7 +241,9 @@ class NativeLM(TemplateLM):
                     results[index] = result
                     if key is not None:
                         self.cache_hook.add_partial("loglikelihood", key, result)
+                progress.update(len(batch))
         finally:
+            progress.close()
             self.model.train(was_training)
         return results
 
@@ -246,7 +257,8 @@ class NativeLM(TemplateLM):
                 context_len=1,
             )
             scores = self._loglikelihood_tokens(
-                [(None, *utils.make_disjoint_window(window)) for window in windows]
+                [(None, *utils.make_disjoint_window(window)) for window in windows],
+                disable_tqdm=True,
             )
             results.append(sum(score for score, _ in scores))
         return results

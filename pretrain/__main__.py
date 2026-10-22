@@ -1,5 +1,6 @@
 import argparse
 import json
+import logging
 import os
 import signal
 from pathlib import Path
@@ -406,7 +407,10 @@ def main(argv=None):
             model, tokenizer, payload = load_model(args.checkpoint, device)
             if args.command == "benchmark":
                 from .evaluation import evaluate_benchmarks
+                from lm_eval.utils import setup_logging
 
+                # Show each task's steps on stderr while a long evaluation runs.
+                setup_logging(logging.INFO)
                 precision = select_precision(device)
                 result = evaluate_benchmarks(
                     model,
