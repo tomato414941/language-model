@@ -20,7 +20,7 @@ REMOTE = Path("/inputs")
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .uv_sync(
-        str(ROOT), extras=["train"], extra_options="--no-dev", uv_version="0.10.12"
+        str(ROOT), extras=["train"], extra_options="--no-dev", uv_version="0.13.4"
     )
     .add_local_python_source("pretrain")
 )

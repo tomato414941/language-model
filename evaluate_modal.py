@@ -35,7 +35,7 @@ image = (
         str(ROOT),
         extras=["train", "hub", "eval"],
         extra_options="--no-dev",
-        uv_version="0.10.12",
+        uv_version="0.13.4",
     )
     # IFEval counts sentences with NLTK's Punkt data; keep it in the image.
     .run_commands("python -m nltk.downloader -d /usr/local/share/nltk_data punkt_tab")

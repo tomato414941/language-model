@@ -16,7 +16,7 @@ image = (
     # torch.compile builds Triton's kernel launcher with the system C compiler.
     .apt_install("gcc", "libc6-dev")
     .uv_sync(
-        str(ROOT), extras=["train"], extra_options="--no-dev", uv_version="0.10.12"
+        str(ROOT), extras=["train"], extra_options="--no-dev", uv_version="0.13.4"
     )
     .add_local_python_source("pretrain")
 )
