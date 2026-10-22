@@ -31,7 +31,7 @@ image = (
         str(ROOT),
         extras=["train", "hub", "eval"],
         extra_options="--no-dev",
-        uv_version="0.10.12",
+        uv_version="0.13.4",
     )
     .add_local_file(
         ROOT / "pretrain/__init__.py", "/root/pretrain/__init__.py", copy=True
