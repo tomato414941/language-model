@@ -97,6 +97,35 @@ IFEVAL_ROWS = [
 ]
 ROWS["ifeval"] = IFEVAL_ROWS
 ID_FIELDS["ifeval"] = "key"
+ROWS["jnli"] = [
+    {
+        "sentence_pair_id": "0",
+        "yjcaptions_id": "1-2-3",
+        "sentence1": "犬が芝生の上を走っている。",
+        "sentence2": "動物が外で動いている。",
+        "label": "entailment",
+    },
+    {
+        "sentence_pair_id": "1",
+        "yjcaptions_id": "4-5-6",
+        "sentence1": "電車が駅に止まっている。",
+        "sentence2": "電車が走っている。",
+        "label": "contradiction",
+    },
+]
+ID_FIELDS["jnli"] = "sentence_pair_id"
+ROWS["lambada"] = [
+    {"text": "The cat slept on the warm mat"},
+    {"text": "Rain fell softly on the green hills"},
+]
+ROWS["xwinograd"] = [
+    {
+        "sentence": "ケーキが箱に入らなかった。_が大きすぎたからだ。",
+        "option1": "ケーキ",
+        "option2": "箱",
+        "answer": "1",
+    }
+]
 
 
 def byte_tokenizer():
@@ -118,11 +147,20 @@ def benchmark_dataset(path, name=None, **kwargs):
     """Supply source records while using the harness's real task definitions."""
     if path == "google/IFEval":
         return DatasetDict(train=Dataset.from_list(IFEVAL_ROWS))
-    task = {
-        "Rowan/hellaswag": "hellaswag",
-        "allenai/ai2_arc": "arc_easy",
-        "json": "jcommonsenseqa",
-    }[path]
+    if path == "nyu-mll/blimp":
+        # Each phenomenon gets sentences of its own lengths.
+        rows = [
+            {"sentence_good": "a" * (len(name) % k + 1), "sentence_bad": "bb"}
+            for k in (3, 5)
+        ]
+        return DatasetDict(train=Dataset.from_list(rows))
+    if path in ("EleutherAI/lambada_openai", "Muennighoff/xwinograd"):
+        rows = ROWS["lambada" if "lambada" in path else "xwinograd"]
+        return DatasetDict(test=Dataset.from_list(rows))
+    if path == "json":
+        task = "jnli" if "jnli" in kwargs["data_files"]["train"] else "jcommonsenseqa"
+    else:
+        task = {"Rowan/hellaswag": "hellaswag", "allenai/ai2_arc": "arc_easy"}[path]
     rows = ROWS[task]
     train = [{**rows[index % len(rows)], ID_FIELDS[task]: index} for index in range(6)]
     return DatasetDict(
@@ -130,6 +168,18 @@ def benchmark_dataset(path, name=None, **kwargs):
         validation=Dataset.from_list(rows if task != "arc_easy" else rows[:1]),
         test=Dataset.from_list(rows),
     )
+
+
+def continuation_bits(tokenizer, probabilities, text):
+    """Bits per byte of text under a model that predicts the same tokens everywhere."""
+    tokens = tokenizer.encode(text, add_special_tokens=False).ids
+    nats = -sum(math.log(probabilities[token]) for token in tokens)
+    return nats / (math.log(2) * len(text.encode("utf-8")))
+
+
+def skewed_probabilities():
+    probabilities = torch.linspace(1, 3, 258, dtype=torch.float64)
+    return probabilities / probabilities.sum()
 
 
 class FixedModel(torch.nn.Module):
@@ -484,6 +534,106 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(set(benchmarks["results"]), set(DEFAULT_TASKS))
         for metrics in benchmarks["results"].values():
             self.assertTrue(0 <= metrics["acc,none"] <= 1)
+
+    def evaluate_skewed(self, tasks):
+        probabilities = skewed_probabilities()
+        with patch(
+            "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
+        ):
+            result = evaluate_benchmarks(
+                FixedModel(probabilities),
+                byte_tokenizer(),
+                torch.device("cpu"),
+                tasks=tasks,
+            )
+        return result, lambda text: continuation_bits(
+            byte_tokenizer(), probabilities, text
+        )
+
+    def test_正解の選択肢を予測できた度合いを1バイトあたりのビット数で測る(self):
+        """Reports the correct choice's bits per byte for each question and on average."""
+        result, bits = self.evaluate_skewed(["arc_easy"])
+        expected = [bits(" carbon dioxide"), bits(" water")]
+        items = result["items"]["arc_easy"]
+        self.assertEqual(items["doc_id"], [0, 1])
+        for value, wanted in zip(items["gold_bits_per_byte"], expected, strict=True):
+            self.assertAlmostEqual(value, wanted, places=4)
+        metrics = result["results"]["arc_easy"]
+        self.assertAlmostEqual(
+            metrics["gold_bits_per_byte,none"], sum(expected) / 2, places=4
+        )
+        self.assertAlmostEqual(
+            metrics["gold_bits_per_byte_stderr,none"],
+            abs(expected[0] - expected[1]) / 2,
+            places=4,
+        )
+        self.assertEqual(sum(items["correct"]) / 2, metrics["acc,none"])
+        self.assertFalse(result["higher_is_better"]["arc_easy"]["gold_bits_per_byte"])
+
+    def test_文章の最後の語を当てる課題では最後の語を正解として測る(self):
+        """Measures the passage's last word, as the task's continuation."""
+        result, bits = self.evaluate_skewed(["lambada_openai"])
+        values = result["items"]["lambada_openai"]["gold_bits_per_byte"]
+        for value, word in zip(values, (" mat", " hills"), strict=True):
+            self.assertAlmostEqual(value, bits(word), places=4)
+
+    def test_選択肢ごとに文脈が変わる課題では正解の文脈に続く部分を測る(self):
+        """Measures the shared ending after the correct choice's context."""
+        scored = []
+
+        def score(requests, **kwargs):
+            # A context's length stands in for its likelihood, to tell the contexts apart.
+            scored.extend(context for (context, _), _, _ in requests)
+            return [(-float(len(context)), False) for (context, _), _, _ in requests]
+
+        with (
+            patch(
+                "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
+            ),
+            patch.object(NativeLM, "_loglikelihood_tokens", side_effect=score),
+        ):
+            result = evaluate_benchmarks(
+                FixedModel(torch.full((258,), 1 / 258)),
+                byte_tokenizer(),
+                torch.device("cpu"),
+                tasks=["xwinograd_jp"],
+            )
+        correct = "ケーキが箱に入らなかった。ケーキ"
+        self.assertIn(correct, scored)
+        ending = " が大きすぎたからだ。".encode()
+        self.assertAlmostEqual(
+            result["items"]["xwinograd_jp"]["gold_bits_per_byte"][0],
+            len(correct) / (math.log(2) * len(ending)),
+            places=4,
+        )
+
+    def test_課題のまとまりでは正答率と同じ重みで各課題の値をまとめる(self):
+        """Combines a group's tasks with the weights the group gives their accuracy."""
+        result, _ = self.evaluate_skewed(["blimp"])
+        members = result["group_subtasks"]["blimp"]
+        self.assertEqual(len(members), 67)
+        values = [result["results"][m]["gold_bits_per_byte,none"] for m in members]
+        errors = [
+            result["results"][m]["gold_bits_per_byte_stderr,none"] for m in members
+        ]
+        group = result["results"]["blimp"]
+        # BLiMP averages its phenomena without weighting them by size.
+        self.assertAlmostEqual(
+            group["gold_bits_per_byte,none"], sum(values) / len(values), places=6
+        )
+        self.assertAlmostEqual(
+            group["gold_bits_per_byte_stderr,none"],
+            math.sqrt(sum(error**2 for error in errors)) / len(errors),
+            places=6,
+        )
+
+    def test_JNLIは公開されたJSONの文字のラベルを選択肢の順に読む(self):
+        """Reads JNLI's published labels as the task's choices in their order."""
+        result, bits = self.evaluate_skewed(["ja_leaderboard_jnli"])
+        self.assertEqual(result["n-shot"]["ja_leaderboard_jnli"], 3)
+        values = result["items"]["ja_leaderboard_jnli"]["gold_bits_per_byte"]
+        for value, label in zip(values, ("\n含意", "\n矛盾"), strict=True):
+            self.assertAlmostEqual(value, bits(label), places=4)
 
 
 if __name__ == "__main__":

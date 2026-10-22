@@ -1,12 +1,26 @@
-"""Evaluate native checkpoints with the published LM Evaluation Harness tasks."""
+"""Evaluate native checkpoints with the published LM Evaluation Harness tasks.
+
+Besides the harness's metrics, each choice and continuation task reports the
+bits per byte of its correct continuation, averaged over the questions as the
+accuracy is. It moves with every gain in the answer's probability, so small
+models show progress before their answers change; see DataDecide
+(arXiv:2504.11393) and Signal and Noise (arXiv:2508.13144).
+"""
 
 import json
+import math
+import statistics
 from importlib.metadata import version
 
 import torch
 
 try:
     from lm_eval import evaluator, utils
+    from lm_eval.api.metrics import (
+        aggregate_subtask_metrics,
+        pooled_sample_stderr,
+        unweighted_mean_stderr,
+    )
     from lm_eval.api.model import TemplateLM
     from lm_eval.api.task import ConfigurableTask
     from lm_eval.tasks import TaskManager
@@ -30,10 +44,111 @@ RESULT_SECTIONS = (
     "higher_is_better",
     "n-samples",
 )
-JCOMMONSENSEQA_URL = (
+JGLUE_URL = (
     "https://raw.githubusercontent.com/yahoojapan/JGLUE/refs/tags/v1.2.0/"
-    "datasets/jcommonsenseqa-v1.2/{split}-v1.2.json"
+    "datasets/{name}-v1.2/{split}-v1.2.json"
 )
+JGLUE_TASKS = {
+    "ja_leaderboard_jcommonsenseqa": "jcommonsenseqa",
+    "ja_leaderboard_jnli": "jnli",
+}
+# JGLUE's loader numbered JNLI's labels in this order, which the task's choices follow.
+JNLI_LABELS = ("entailment", "contradiction", "neutral")
+ANSWER_BITS = "gold_bits_per_byte"
+
+
+def number_jnli_labels(dataset):
+    def number(doc):
+        return {"label": JNLI_LABELS.index(doc["label"])}
+
+    return dataset.map(number)
+
+
+def jglue_task(manager, name):
+    """Read JGLUE's original JSON directly: datasets 4+ cannot run its loader script."""
+    path = manager.task_index[name].yaml_path
+    config = load_yaml(path, resolve_func=True)
+    # Keep the published prompts, validation split, three examples and metrics.
+    config.update(
+        dataset_path="json",
+        dataset_name=None,
+        dataset_kwargs={
+            "data_files": {
+                split: JGLUE_URL.format(name=JGLUE_TASKS[name], split=file)
+                for split, file in (("train", "train"), ("validation", "valid"))
+            }
+        },
+    )
+    if name == "ja_leaderboard_jnli":
+        config["process_docs"] = number_jnli_labels
+    config["metadata"]["config_source"] = str(path)
+    return ConfigurableTask(config=config)
+
+
+def answer_bits(task, sample):
+    """Bits per byte of the continuation that the harness counts as correct."""
+    if task.OUTPUT_TYPE == "loglikelihood":
+        gold = 0
+    elif task.OUTPUT_TYPE == "multiple_choice":
+        doc = sample["doc"]
+        # The harness finds the correct choice this way when it scores the choices.
+        gold = task.doc_to_text(doc) if task.multiple_input else task.doc_to_target(doc)
+        if isinstance(gold, str):
+            gold = task.doc_to_choice(doc).index(gold)
+        if isinstance(gold, list):
+            raise ValueError(f"{task.task_name} needs one correct choice per question")
+    else:
+        return None
+    context, continuation = sample["arguments"][gold]
+    # The harness scores the context's trailing spaces with the continuation.
+    scored = context[len(context.rstrip()) :] + continuation
+    loglikelihood = sample["filtered_resps"][gold][0]
+    return -loglikelihood / (math.log(2) * len(scored.encode("utf-8")))
+
+
+def add_answer_bits(result, tasks, groups):
+    """Report each task's and group's answer bits; return the questions' records."""
+    results, items = result["results"], {}
+    for name, samples in result.pop("samples").items():
+        samples = sorted(samples, key=lambda sample: sample["doc_id"])
+        bits = [answer_bits(tasks[name], sample) for sample in samples]
+        if not bits or bits[0] is None:
+            continue
+        results[name][f"{ANSWER_BITS},none"] = statistics.fmean(bits)
+        results[name][f"{ANSWER_BITS}_stderr,none"] = (
+            statistics.stdev(bits) / math.sqrt(len(bits)) if len(bits) > 1 else "N/A"
+        )
+        result["higher_is_better"][name][ANSWER_BITS] = False
+        # Kept per question so that models can be compared on the same questions.
+        items[name] = {
+            "doc_id": [sample["doc_id"] for sample in samples],
+            "correct": [sample["acc"] for sample in samples],
+            ANSWER_BITS: [round(value, 6) for value in bits],
+        }
+    for name, group in groups.items():
+        members = [task.task_name for task in group.get_all_tasks()]
+        weighting = [
+            metric.weight_by_size
+            for metric in group.aggregate_metric_list or []
+            if metric.metric == "acc"
+        ]
+        if name not in results or not weighting or any(m not in items for m in members):
+            continue
+        # Combine the tasks as the group combines their accuracy.
+        values = [results[member][f"{ANSWER_BITS},none"] for member in members]
+        errors = [results[member][f"{ANSWER_BITS}_stderr,none"] for member in members]
+        sizes = [len(items[member]["doc_id"]) for member in members]
+        results[name][f"{ANSWER_BITS},none"] = aggregate_subtask_metrics(
+            values, sizes, weighting[0]
+        )
+        results[name][f"{ANSWER_BITS}_stderr,none"] = (
+            "N/A"
+            if "N/A" in errors
+            else pooled_sample_stderr(errors, sizes)
+            if weighting[0]
+            else unweighted_mean_stderr(errors)
+        )
+    return items
 
 
 class NativeLM(TemplateLM):
@@ -197,35 +312,23 @@ def evaluate_benchmarks(
     selected = list(DEFAULT_TASKS if tasks is None else tasks)
     if not selected:
         raise ValueError("select at least one evaluation task")
-    loaded = {}
     for name in selected:
-        if name not in manager.all_subtasks:
+        if name not in manager.all_subtasks and name not in manager.all_groups:
             raise ValueError(f"unknown harness task: {name}")
-        if name == "ja_leaderboard_jcommonsenseqa":
-            path = manager.task_index[name].yaml_path
-            config = load_yaml(path, resolve_func=True)
-            # Read JGLUE's original JSON directly: datasets 4+ cannot run its loader script.
-            # Keep the published prompts, validation split, three examples and metrics.
-            config.update(
-                dataset_path="json",
-                dataset_name=None,
-                dataset_kwargs={
-                    "data_files": {
-                        "train": JCOMMONSENSEQA_URL.format(split="train"),
-                        "validation": JCOMMONSENSEQA_URL.format(split="valid"),
-                    }
-                },
-            )
-            config["metadata"]["config_source"] = str(path)
-            loaded[name] = ConfigurableTask(config=config)
-        else:
-            loaded[name] = name
+    # Keep the loaded tasks: their records tell which continuation is correct.
+    loaded = manager.load(
+        [jglue_task(manager, name) if name in JGLUE_TASKS else name for name in selected]
+    )
+    chosen = {
+        name: loaded["groups"][name] if name in loaded["groups"] else loaded["tasks"][name]
+        for name in selected
+    }
     backend = NativeLM(model, tokenizer, device, precision, batch_tokens)
-    result = None
+    result, items = None, {}
     for conversation in (False, True):
         group = [
             task
-            for name, task in loaded.items()
+            for name, task in chosen.items()
             if (name in CONVERSATION_TASKS) == conversation
         ]
         if not group:
@@ -235,16 +338,18 @@ def evaluate_benchmarks(
             tasks=group,
             task_manager=manager,
             limit=limit,
-            log_samples=False,
+            log_samples=True,
             apply_chat_template=conversation,
         )
+        items.update(add_answer_bits(part, loaded["tasks"], loaded["groups"]))
         if result is None:
             result = part
         else:
             for section in RESULT_SECTIONS:
                 result[section].update(part[section])
+    result["items"] = items
     result["conversation_format_tasks"] = [
-        name for name in loaded if name in CONVERSATION_TASKS
+        name for name in chosen if name in CONVERSATION_TASKS
     ]
     result["framework"] = {
         "name": "lm-evaluation-harness",
