@@ -490,7 +490,7 @@ def inspect_recipe(path, workdir):
                 command += ["--max-steps", str(end)]
             commands.append(command)
             previous = runs[item["name"]]
-        commands.append(benchmark_command(previous / "best.pt", tasks))
+        commands.append(benchmark_command(previous / "last.pt", tasks))
     else:
         evaluations = [
             corpora[item["name"]]
@@ -504,7 +504,7 @@ def inspect_recipe(path, workdir):
             if "initialize_from" in recipe:
                 command += ["--initialize-from", recipe["initialize_from"]]
             commands.append(command)
-            checkpoint = runs[item["name"]] / "best.pt"
+            checkpoint = runs[item["name"]] / "last.pt"
             for data in evaluations:
                 commands.append(
                     [
@@ -521,7 +521,7 @@ def inspect_recipe(path, workdir):
                 )
             commands.append(benchmark_command(checkpoint, tasks))
     if phases and "sft" in recipe:
-        pretrained = previous / "best.pt"
+        pretrained = previous / "last.pt"
         stem = Path(path).stem
         instruction_output = Path("runs") / (
             stem.replace("pretrain-", "instructions-", 1)
@@ -588,7 +588,7 @@ def inspect_recipe(path, workdir):
                 "bfloat16",
             ],
             benchmark_command(
-                instruction_output / "best.pt",
+                instruction_output / "last.pt",
                 [*tasks, *recipe["evaluation"]["instruction_tasks"]],
             ),
         ]

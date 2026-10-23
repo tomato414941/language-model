@@ -192,10 +192,10 @@ class HubTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "expected checksum"):
             download_checkpoint(self.repo_id, "bilingual-v2", self.root / "corrupt")
 
-    def test_training_run_preserves_the_latest_optimizer_and_random_number_states(self):
+    def test_学習の結果は最後の重みを続きから学習できる状態とともに公開する(self):
+        """Publishes a run's final weights with the optimizer and random number states."""
         output = self.root / "training"
         output.mkdir()
-        torch.save(self.saved, output / "best.pt")
         latest = {
             **self.saved,
             "step": 9,
@@ -217,7 +217,7 @@ class HubTests(unittest.TestCase):
         self.assertEqual(saved["step"], 9)
         self.assertTrue(torch.equal(saved["sampling_rng"], latest["sampling_rng"]))
         self.assertEqual(
-            torch.load(restored["checkpoint"], weights_only=True)["step"], 7
+            torch.load(restored["checkpoint"], weights_only=True)["step"], 9
         )
 
     def test_training_cli_saves_its_completed_checkpoint_to_the_selected_repository(

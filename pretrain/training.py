@@ -419,7 +419,7 @@ def train(
     optimizer = make_optimizer(model, config, device)
     scaler = torch.amp.GradScaler("cuda", enabled=precision == "float16")
     generator = torch.Generator().manual_seed(config.seed)
-    step, tokens_seen, best_loss = 0, 0, math.inf
+    step, tokens_seen = 0, 0
     skipped_updates = 0
     phase_start = 0
     initialization = None
@@ -501,11 +501,7 @@ def train(
         torch.set_rng_state(saved["torch_rng"])
         if device.type == "cuda" and saved["cuda_rng"] is not None:
             torch.cuda.set_rng_state(saved["cuda_rng"], device)
-        step, tokens_seen, best_loss = (
-            saved["step"],
-            saved["tokens_seen"],
-            saved["best_loss"],
-        )
+        step, tokens_seen = saved["step"], saved["tokens_seen"]
         skipped_updates = saved["skipped_updates"]
         phase_start = saved.get("phase_start_step", 0)
         initialization = saved.get("initialization")
@@ -535,7 +531,6 @@ def train(
             "dataset_fingerprint": corpus.fingerprint,
             "step": step,
             "tokens_seen": tokens_seen,
-            "best_loss": best_loss,
             "validation": validation,
             "validation_step": validation_step,
             "sampling_rng": generator.get_state(),
@@ -550,9 +545,6 @@ def train(
             "phase_start_step": phase_start,
         }
 
-    if validation["loss"] < best_loss:
-        best_loss = validation["loss"]
-        atomic_save(checkpoint(), output / "best.pt")
     atomic_save(checkpoint(), output / "last.pt")
     saved_step = step
     tokens_per_step = (
@@ -646,9 +638,6 @@ def train(
                 )
                 validation_step = step
                 record["validation"] = validation
-                if validation["loss"] < best_loss:
-                    best_loss = validation["loss"]
-                    atomic_save(checkpoint(), output / "best.pt")
             if step % config.save_every == 0 or final:
                 atomic_save(checkpoint(), output / "last.pt")
                 saved_step = step
@@ -667,13 +656,9 @@ def train(
                 model, corpus, device, precision, config.eval_batches, config.batch_size
             )
             validation_step = step
-        if validation["loss"] < best_loss:
-            best_loss = validation["loss"]
-            atomic_save(checkpoint(), output / "best.pt")
         atomic_save(checkpoint(), output / "last.pt")
     return {
         "step": step,
         "tokens_seen": tokens_seen,
         "validation": validation,
-        "best_loss": best_loss,
     }

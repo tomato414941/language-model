@@ -606,7 +606,7 @@ class BenchmarkTests(unittest.TestCase):
             self.assertTrue(0 <= metrics["acc,none"] <= 1)
 
     def test_inspection_saves_standard_benchmark_results_in_the_summary(self):
-        """Exports the selected checkpoint with its standard benchmark results."""
+        """Exports the final checkpoint with its standard benchmark results."""
         self.train_checkpoint()
         with (
             patch("scripts.inspect_pretrain.torch", CpuTorch()),

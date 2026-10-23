@@ -279,14 +279,8 @@ def download_checkpoint(repo_id, run_id, output, revision=None, token=None):
 
 def publish_training_run(output, repo_id, run_id=None, source_commit=None):
     output = Path(output)
-    last = output / "last.pt"
-    checkpoint = output / "best.pt" if (output / "best.pt").is_file() else last
     return publish_checkpoint(
-        checkpoint,
-        repo_id,
-        run_id or output.name,
-        resume_checkpoint=last,
-        source_commit=source_commit,
+        output / "last.pt", repo_id, run_id or output.name, source_commit=source_commit
     )
 
 

@@ -226,7 +226,7 @@ class RecipeTests(unittest.TestCase):
         )
         self.assertEqual(
             training[1][training[1].index("--initialize-from") + 1],
-            "runs/pretrain-500m/best.pt",
+            "runs/pretrain-500m/last.pt",
         )
         self.assertEqual(
             training[1][training[1].index("--output") + 1], "runs/instructions-500m"
@@ -246,7 +246,7 @@ class RecipeTests(unittest.TestCase):
         )
         self.assertEqual(
             training[1][training[1].index("--initialize-from") + 1],
-            "runs/pretrain-1b/best.pt",
+            "runs/pretrain-1b/last.pt",
         )
 
     def test_各データ源の割当を満たす日英コーパスを作成する(self):

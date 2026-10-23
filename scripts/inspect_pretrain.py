@@ -9,7 +9,6 @@ from pretrain.data import file_digest, open_corpus
 from pretrain.training import (
     atomic_save,
     evaluate,
-    load_checkpoint,
     load_model,
 )
 
@@ -27,9 +26,7 @@ def main(argv=None):
     results.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda")
     torch.set_num_threads(4)
-    selected = root / "best.pt" if (root / "best.pt").exists() else root / "last.pt"
-    model, tokenizer, saved = load_model(selected, device)
-    last = load_checkpoint(root / "last.pt")
+    model, tokenizer, saved = load_model(root / "last.pt", device)
     corpus = open_corpus(args.data)
     if corpus.fingerprint != saved["dataset_fingerprint"]:
         raise ValueError("inspection requires the checkpoint's held-out dataset")
@@ -52,15 +49,13 @@ def main(argv=None):
         root / "model.pt",
     )
     summary = {
-        "completed_step": last["step"],
-        "tokens_seen": last["tokens_seen"],
-        "selected_checkpoint_step": saved["step"],
-        "selected_checkpoint_tokens_seen": saved["tokens_seen"],
+        "completed_step": saved["step"],
+        "tokens_seen": saved["tokens_seen"],
         "validation": validation,
         "benchmarks": benchmarks,
         "parameters": sum(p.numel() for p in model.parameters()),
-        "precision": last["precision"],
-        "skipped_updates": last["skipped_updates"],
+        "precision": saved["precision"],
+        "skipped_updates": saved["skipped_updates"],
         "model_bytes": (root / "model.pt").stat().st_size,
         "model_sha256": file_digest(root / "model.pt"),
         "dataset_fingerprint": saved["dataset_fingerprint"],
@@ -69,17 +64,6 @@ def main(argv=None):
         "gpu": torch.cuda.get_device_name(),
         "completed_at": datetime.now(UTC).isoformat(),
     }
-    if (
-        selected != root / "last.pt"
-        and saved["step"] == last["step"]
-        and saved["validation"] == last["validation"]
-        and all(
-            torch.equal(value, last["model"][name])
-            for name, value in saved["model"].items()
-        )
-    ):
-        summary["best_checkpoint_uses_last"] = True
-        selected.unlink()
     torch.set_num_threads(1)
     cpu_model, cpu_tokenizer, cpu_saved = load_model(
         root / "model.pt", torch.device("cpu")
@@ -88,7 +72,7 @@ def main(argv=None):
         torch.equal(value, saved["model"][name])
         for name, value in cpu_saved["model"].items()
     ):
-        raise ValueError("exported weights differ from the selected checkpoint")
+        raise ValueError("exported weights differ from the final checkpoint")
     prompt = "# Japan\nJapan is"
     text = cpu_model.generate(
         cpu_tokenizer, prompt, max_new_tokens=8, temperature=0, seed=42

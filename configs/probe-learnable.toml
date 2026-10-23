@@ -6,7 +6,7 @@
 training_config = "bilingual-v4-probe.toml"
 sources = "sources.toml"
 seed = 42
-initialize_from = "runs/continue-v4-decay/best.pt"
+initialize_from = "runs/continue-v4-decay/last.pt"
 
 [tokenizer]
 vocabulary_size = 16384
@@ -34,7 +34,7 @@ instruction_tasks = ["ifeval"]
 # A document scores the loss continue-v4 loses on it once tuned on the
 # conversations of data/instructions-v2, as instructions-v3 was.
 [selection]
-prior = { checkpoint = "runs/continue-v4-decay/best.pt", sha256 = "e379f6314444306cdac08caee1313bc3b95d3299573aff6ad25be12b89e8db8e" }
+prior = { checkpoint = "runs/continue-v4-decay/last.pt", sha256 = "b9d13931c2ba626144bcdc51121e64867c9b772d6f5ae6c804695159f3c87b53" }
 conditional = { checkpoint = "runs/instructions-v3/model.pt", sha256 = "e4a9195836dc492fe0e2cc142fbf98f60e137b69a357ef0b2371015712d9ff09" }
 # Score a tenth of the pool with both models; learn from its top and bottom quarters.
 scored_share = 10

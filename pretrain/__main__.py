@@ -234,7 +234,7 @@ def main(argv=None):
     comparison.add_argument("--other", type=Path, required=True, help="比べる先の結果")
     for command in (evaluation, generation, benchmark):
         command.add_argument(
-            "--checkpoint", type=Path, default=Path("runs/bilingual/best.pt")
+            "--checkpoint", type=Path, default=Path("runs/bilingual/last.pt")
         )
         command.add_argument(
             "--device", choices=("cpu", "cuda", "auto"), default="auto"
