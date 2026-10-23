@@ -81,8 +81,12 @@ SOURCES = {
         },
     },
 }
-# A conversation containing the middle of a benchmark question is dropped.
-KEY_WIDTH = {"ja": 12, "en": 24}
+# Text containing a benchmark question is dropped. A question is found by the
+# middle of its normalized text, about as long as the 13-gram overlap that
+# decontamination commonly checks, or by all of it when it is shorter; a
+# question shorter than the minimum is too short to tell from ordinary text.
+KEY_WIDTH = {"ja": 32, "en": 64}
+KEY_MINIMUM = {"ja": 12, "en": 24}
 QUESTION_WRAPPER = re.compile(r"^(?:Question:|質問：)\s*|\s*(?:Answer:|回答：)$")
 
 
@@ -240,22 +244,44 @@ def benchmark_keys(path):
     keys = {language: set() for language in LANGUAGES}
     for name, items in load_benchmarks(path).items():
         language = sources["tasks"][name]["language"]
-        width = KEY_WIDTH[language]
         for item in items:
             text = contamination_text(QUESTION_WRAPPER.sub("", item["context"]))
-            if len(text) >= width:
+            if len(text) >= KEY_MINIMUM[language]:
+                width = min(len(text), KEY_WIDTH[language])
                 middle = (len(text) - width) // 2
                 keys[language].add(text[middle : middle + width])
     return keys
 
 
-def contaminated(messages, keys, width):
-    if not keys:
-        return False
-    text = contamination_text(
-        "\n".join(turn["content"] for turn in messages if turn["role"] != "assistant")
+class BenchmarkFilter:
+    """Find the benchmark questions in a text of the given language."""
+
+    def __init__(self, path):
+        import ahocorasick
+
+        self.automata = {}
+        for language, keys in benchmark_keys(path).items():
+            automaton = ahocorasick.Automaton()
+            for key in keys:
+                automaton.add_word(key, True)
+            if keys:
+                automaton.make_automaton()
+                self.automata[language] = automaton
+
+    def matches(self, text, language):
+        automaton = self.automata.get(language)
+        return (
+            automaton is not None
+            and next(automaton.iter(contamination_text(text)), None) is not None
+        )
+
+
+def contaminated(messages, benchmarks, language):
+    """Whether the user's side of a conversation contains a benchmark question."""
+    return benchmarks is not None and benchmarks.matches(
+        "\n".join(turn["content"] for turn in messages if turn["role"] != "assistant"),
+        language,
     )
-    return any(text[i : i + width] in keys for i in range(len(text) - width + 1))
 
 
 def encode_conversations(tokenizer, conversations):
@@ -359,7 +385,7 @@ def prepare_instructions(
     eos = tokenizer.token_to_id(EOS)
     if eos is None or tokenizer.token_to_id(BOS) is None:
         raise ValueError("the tokenizer needs BOS and EOS tokens")
-    keys = benchmark_keys(benchmarks) if benchmarks is not None else {}
+    questions = BenchmarkFilter(benchmarks) if benchmarks is not None else None
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output.name}-", dir=output.parent))
     try:
@@ -427,9 +453,7 @@ def prepare_instructions(
                 chunk = [
                     messages
                     for messages in ordered[start : start + 1024]
-                    if not contaminated(
-                        messages, keys.get(language), KEY_WIDTH[language]
-                    )
+                    if not contaminated(messages, questions, language)
                 ]
                 stats["contaminated"] += len(ordered[start : start + 1024]) - len(chunk)
                 for example in encode_conversations(tokenizer, chunk) if chunk else []:

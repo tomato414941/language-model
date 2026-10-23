@@ -31,9 +31,8 @@ from pyarrow import parquet
 
 from pretrain.__main__ import main
 from pretrain.data import Corpus, file_digest
-from pretrain.instructions import InstructionCorpus, prepare_instructions
+from pretrain.instructions import BenchmarkFilter, InstructionCorpus, prepare_instructions
 from pretrain.recipe import (
-    BenchmarkFilter,
     accepted_documents,
     document_digest,
     document_text,

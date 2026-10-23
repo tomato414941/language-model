@@ -24,6 +24,7 @@ from tokenizers import Tokenizer
 
 from pretrain.data import LANGUAGES, file_digest, prepare_data
 from pretrain.instructions import (
+    BenchmarkFilter,
     InstructionCorpus,
     chat_prompt,
     conversation_text,
@@ -341,6 +342,45 @@ class InstructionTests(unittest.TestCase):
         ]
         self.assertFalse(
             any("電車" in text or "とてもとても" in text for text in texts)
+        )
+
+    def test_評価の問題を含む文は見つけ問題の一部と重なるだけの文は見逃す(self):
+        """Finds a benchmark question by most of its text, not by a phrase it shares."""
+        question = "Which tool would best help a student measure how far a small toy car rolls down a ramp?"
+        benchmarks = self.root / "benchmarks"
+        benchmarks.mkdir()
+        items = benchmarks / "arc_easy.jsonl"
+        items.write_text(
+            json.dumps(
+                {
+                    "id": "1",
+                    "context": f"Question: {question}\nAnswer:",
+                    "choices": ["a tape measure", "a thermometer"],
+                    "label": 0,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (benchmarks / "sources.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "tasks": {
+                        "arc_easy": {
+                            "language": "en",
+                            "filename": items.name,
+                            "sha256": file_digest(items),
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        questions = BenchmarkFilter(benchmarks)
+        self.assertTrue(questions.matches(f"Homework: {question.upper()} Explain.", "en"))
+        self.assertFalse(
+            questions.matches("Teachers help a student measure how far a small toy car can go.", "en")
         )
 
     def test_preparation_drops_conversations_with_a_reply_over_the_limit(self):

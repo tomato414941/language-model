@@ -25,7 +25,7 @@ import torch
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 
 from .data import BOS, EOS, LANGUAGES, Corpus, file_digest, read_documents
-from .instructions import benchmark_keys, contamination_text
+from .instructions import BenchmarkFilter
 from .model import LanguageModel
 from .training import TrainConfig, read_config
 
@@ -778,27 +778,6 @@ def document_digest(text, seed):
 
 def validation_document(digest, fraction):
     return int.from_bytes(digest[:8], "big") < fraction * 2**64
-
-
-class BenchmarkFilter:
-    def __init__(self, path):
-        import ahocorasick
-
-        self.automata = {}
-        for language, keys in benchmark_keys(path).items():
-            automaton = ahocorasick.Automaton()
-            for key in keys:
-                automaton.add_word(key, True)
-            if keys:
-                automaton.make_automaton()
-                self.automata[language] = automaton
-
-    def matches(self, text, language):
-        automaton = self.automata.get(language)
-        return (
-            automaton is not None
-            and next(automaton.iter(contamination_text(text)), None) is not None
-        )
 
 
 @contextmanager
