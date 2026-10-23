@@ -467,6 +467,8 @@ def inspect_recipe(path, workdir):
             str(checkpoint),
             "--device",
             "cuda",
+            "--output",
+            str(Path(checkpoint).parent / "benchmarks.json"),
             "--tasks",
             *selected,
         ]

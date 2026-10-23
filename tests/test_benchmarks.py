@@ -29,6 +29,7 @@ from pretrain.benchmarks import (
     load_benchmarks,
     source_url,
 )
+from pretrain.comparison import compare_benchmarks
 from pretrain.data import file_digest, prepare_data
 from pretrain.evaluation import DEFAULT_TASKS, NativeLM, evaluate_benchmarks
 from pretrain.model import LanguageModel, ModelConfig
@@ -576,7 +577,7 @@ class BenchmarkTests(unittest.TestCase):
             patch(
                 "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
             ),
-            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stdout(io.StringIO()) as shown,
         ):
             main(
                 [
@@ -592,6 +593,8 @@ class BenchmarkTests(unittest.TestCase):
                 ]
             )
         result = json.loads(output.read_text(encoding="utf-8"))
+        # The command shows the summary by language; the file keeps every question.
+        self.assertEqual(json.loads(shown.getvalue()), result["by_language"])
         self.assertEqual(result["checkpoint"]["step"], 1)
         self.assertEqual(
             result["checkpoint"]["sha256"], file_digest(self.root / "run/last.pt")
@@ -666,7 +669,9 @@ class BenchmarkTests(unittest.TestCase):
             abs(expected[0] - expected[1]) / 2,
             places=4,
         )
-        self.assertEqual(sum(items["correct"]) / 2, metrics["acc,none"])
+        # ARC-Easy reads accuracy per character, as OLMES scores it.
+        self.assertEqual(items["metric"], "acc_norm")
+        self.assertEqual(sum(items["correct"]) / 2, metrics["acc_norm,none"])
         self.assertFalse(result["higher_is_better"]["arc_easy"]["gold_bits_per_byte"])
 
     def test_KUCIは形態素の区切りの空白を除いた文で正解の続きを測る(self):
@@ -675,6 +680,76 @@ class BenchmarkTests(unittest.TestCase):
         self.assertAlmostEqual(
             result["items"]["kuci"]["gold_bits_per_byte"][0], bits("予備の電池を買う"), places=4
         )
+
+    def test_課題ごとに決めた正答率を言語別にまとめる(self):
+        """Reads each standard task's fixed accuracy and groups the tasks by language."""
+        result, _ = self.evaluate_skewed(["arc_easy", "sciq", "kuci", "ja_leaderboard_xwinograd"])
+        summary = result["by_language"]
+        self.assertEqual(set(summary), {"en", "ja"})
+        self.assertEqual(set(summary["en"]), {"arc_easy", "sciq"})
+        self.assertEqual(set(summary["ja"]), {"kuci", "ja_leaderboard_xwinograd"})
+        for language, name, metric in (
+            ("en", "arc_easy", "acc_norm"),
+            ("en", "sciq", "acc"),
+            ("ja", "kuci", "acc_norm"),
+            ("ja", "ja_leaderboard_xwinograd", "acc"),
+        ):
+            read = summary[language][name]
+            self.assertEqual(read["metric"], metric)
+            self.assertEqual(read["accuracy"], result["results"][name][f"{metric},none"])
+            self.assertEqual(result["items"][name]["metric"], metric)
+
+    def test_二つの評価を同じ問題ごとに比べて言語別に差を示す(self):
+        """Pairs two evaluations' questions to show each task's difference by language."""
+        with patch(
+            "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
+        ):
+            base, other = (
+                evaluate_benchmarks(
+                    FixedModel(probabilities),
+                    byte_tokenizer(),
+                    torch.device("cpu"),
+                    tasks=["arc_easy", "blimp"],
+                )
+                for probabilities in (torch.full((258,), 1 / 258), skewed_probabilities())
+            )
+        paths = [self.root / "base.json", self.root / "other.json"]
+        for path, result in zip(paths, (base, other)):
+            path.write_text(json.dumps(result), encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()) as shown:
+            main(["compare-benchmarks", "--base", str(paths[0]), "--other", str(paths[1])])
+        comparison = json.loads(shown.getvalue())
+        self.assertEqual(comparison, json.loads(json.dumps(compare_benchmarks(base, other))))
+        arc = comparison["en"]["arc_easy"]
+        self.assertEqual((arc["metric"], arc["questions"]), ("acc_norm", 2))
+        self.assertAlmostEqual(arc["difference"], arc["other"] - arc["base"])
+        changes = [
+            b - a
+            for a, b in zip(base["items"]["arc_easy"]["gold_bits_per_byte"], other["items"]["arc_easy"]["gold_bits_per_byte"])
+        ]
+        self.assertAlmostEqual(arc["bits_difference"], sum(changes) / 2, places=6)
+        # A group's phenomena are paired question by question too.
+        blimp = comparison["en"]["blimp"]
+        self.assertEqual(blimp["questions"], 2 * 67)
+        self.assertAlmostEqual(blimp["difference"], blimp["other"] - blimp["base"])
+
+    def test_違う問題を解いた評価どうしは比べない(self):
+        """Refuses to compare evaluations that asked different questions."""
+        with patch(
+            "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
+        ):
+            whole, part = (
+                evaluate_benchmarks(
+                    FixedModel(torch.full((258,), 1 / 258)),
+                    byte_tokenizer(),
+                    torch.device("cpu"),
+                    tasks=["arc_easy"],
+                    limit=limit,
+                )
+                for limit in (None, 1)
+            )
+        with self.assertRaisesRegex(ValueError, "different questions"):
+            compare_benchmarks(whole, part)
 
     def test_文章の最後の語を当てる課題では最後の語を正解として測る(self):
         """Measures the passage's last word, as the task's continuation."""

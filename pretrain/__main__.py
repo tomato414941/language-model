@@ -1,8 +1,10 @@
 import argparse
+import contextlib
 import json
 import logging
 import os
 import signal
+import sys
 from pathlib import Path
 
 import torch
@@ -214,16 +216,22 @@ def main(argv=None):
         "benchmark", help="保存したモデルをLM Evaluation Harnessの標準タスクで評価する"
     )
     benchmark.add_argument(
-        "--tasks",
-        nargs="+",
-        help="標準タスク名（既定はHellaSwag・ARC Easy・JCommonsenseQA）",
+        "--tasks", nargs="+", help="評価するタスク名（既定は標準評価の10課題）"
     )
     benchmark.add_argument(
         "--limit", type=int, help="動作確認で各タスクに使う問題数（正式な評価は全問）"
     )
     benchmark.add_argument("--batch-tokens", type=int, default=4096)
     benchmark.add_argument("--threads", type=int, default=4)
-    benchmark.add_argument("--output", type=Path, help="結果を保存するJSONファイル")
+    benchmark.add_argument(
+        "--output", type=Path, required=True, help="問題ごとの記録を含む結果のJSONファイル"
+    )
+    comparison = commands.add_parser(
+        "compare-benchmarks",
+        help="二つの標準評価の結果を、同じ問題ごとに言語別に比べる",
+    )
+    comparison.add_argument("--base", type=Path, required=True, help="比べる元の結果")
+    comparison.add_argument("--other", type=Path, required=True, help="比べる先の結果")
     for command in (evaluation, generation, benchmark):
         command.add_argument(
             "--checkpoint", type=Path, default=Path("runs/bilingual/best.pt")
@@ -302,6 +310,14 @@ def main(argv=None):
             from .benchmarks import fetch_benchmarks
 
             result = fetch_benchmarks(args.output)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "compare-benchmarks":
+            from .comparison import compare_benchmarks
+
+            result = compare_benchmarks(
+                json.loads(args.base.read_text(encoding="utf-8")),
+                json.loads(args.other.read_text(encoding="utf-8")),
+            )
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command == "fetch-instructions":
             from .instructions import fetch_instructions
@@ -412,15 +428,17 @@ def main(argv=None):
                 # Show each task's steps on stderr while a long evaluation runs.
                 setup_logging(logging.INFO)
                 precision = select_precision(device)
-                result = evaluate_benchmarks(
-                    model,
-                    tokenizer,
-                    device,
-                    precision,
-                    args.batch_tokens,
-                    args.tasks,
-                    args.limit,
-                )
+                # The harness also prints notes; they join its log on stderr.
+                with contextlib.redirect_stdout(sys.stderr):
+                    result = evaluate_benchmarks(
+                        model,
+                        tokenizer,
+                        device,
+                        precision,
+                        args.batch_tokens,
+                        args.tasks,
+                        args.limit,
+                    )
                 result["checkpoint"] = {
                     "checkpoint": str(args.checkpoint),
                     "sha256": file_digest(args.checkpoint),
@@ -429,11 +447,12 @@ def main(argv=None):
                     "parameters": sum(p.numel() for p in model.parameters()),
                     "precision": precision,
                 }
-                text = json.dumps(result, indent=2)
-                if args.output is not None:
-                    args.output.parent.mkdir(parents=True, exist_ok=True)
-                    args.output.write_text(text + "\n", encoding="utf-8")
-                print(text)
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(
+                    json.dumps(result, indent=2) + "\n", encoding="utf-8"
+                )
+                # The file keeps every question; the summary is what to read.
+                print(json.dumps(result["by_language"], indent=2))
             elif args.command == "evaluate":
                 corpus = open_corpus(args.data, ("validation",))
                 corpus.validate_context(model.config.context)

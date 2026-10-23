@@ -35,20 +35,28 @@ from .conversation import chat_prompt
 from .data import BOS, EOS
 from .training import autocast
 
-# The easier tasks from SciQ to KUCI separate small models; the two Japanese
-# tasks after them stay near chance until a model grows enough to learn them.
-DEFAULT_TASKS = (
-    "hellaswag",
-    "arc_easy",
-    "ja_leaderboard_jcommonsenseqa",
-    "sciq",
-    "piqa",
-    "lambada_openai",
-    "blimp",
-    "kuci",
-    "ja_leaderboard_xwinograd",
-    "ja_leaderboard_jnli",
-)
+# The standard tasks, each with the language it asks in and the accuracy read
+# from it. OLMES (arXiv:2406.08446) scores HellaSwag, ARC-Easy and PIQA by each
+# choice's loglikelihood per character, the harness's acc_norm, and KUCI is
+# scored like HellaSwag; the rest use plain accuracy, as OLMo scored SciQ and
+# as the harness defines the others. The easier tasks from SciQ to KUCI
+# separate small models; the two Japanese tasks after them stay near chance
+# until a model grows enough to learn them. The tasks and their metrics were
+# fixed before the experiments that read them: change them only for reasons
+# other than how models score on them.
+STANDARD_TASKS = {
+    "hellaswag": ("en", "acc_norm"),
+    "arc_easy": ("en", "acc_norm"),
+    "ja_leaderboard_jcommonsenseqa": ("ja", "acc"),
+    "sciq": ("en", "acc"),
+    "piqa": ("en", "acc_norm"),
+    "lambada_openai": ("en", "acc"),
+    "blimp": ("en", "acc"),
+    "kuci": ("ja", "acc_norm"),
+    "ja_leaderboard_xwinograd": ("ja", "acc"),
+    "ja_leaderboard_jnli": ("ja", "acc"),
+}
+DEFAULT_TASKS = tuple(STANDARD_TASKS)
 # Definitions of published tasks that the harness lacks, in its own format.
 TASK_DEFINITIONS = Path(__file__).with_name("harness_tasks")
 # These tasks ask in the conversation format that the API serves.
@@ -124,9 +132,19 @@ def answer_bits(task, sample):
     return -loglikelihood / (math.log(2) * len(scored.encode("utf-8")))
 
 
+def accuracy_metric(name):
+    """The accuracy read from a task or group: its standard one, or plain accuracy."""
+    return STANDARD_TASKS.get(name, (None, "acc"))[1]
+
+
 def add_answer_bits(result, tasks, groups):
     """Report each task's and group's answer bits; return the questions' records."""
     results, items = result["results"], {}
+    parents = {
+        task.task_name: name
+        for name, group in groups.items()
+        for task in group.get_all_tasks()
+    }
     for name, samples in result.pop("samples").items():
         samples = sorted(samples, key=lambda sample: sample["doc_id"])
         bits = [answer_bits(tasks[name], sample) for sample in samples]
@@ -138,9 +156,11 @@ def add_answer_bits(result, tasks, groups):
         )
         result["higher_is_better"][name][ANSWER_BITS] = False
         # Kept per question so that models can be compared on the same questions.
+        metric = accuracy_metric(parents.get(name, name))
         items[name] = {
             "doc_id": [sample["doc_id"] for sample in samples],
-            "correct": [sample["acc"] for sample in samples],
+            "metric": metric,
+            "correct": [sample[metric] for sample in samples],
             ANSWER_BITS: [round(value, 6) for value in bits],
         }
     for name, group in groups.items():
@@ -167,6 +187,23 @@ def add_answer_bits(result, tasks, groups):
             else unweighted_mean_stderr(errors)
         )
     return items
+
+
+def by_language(result, names):
+    """Each task's standard accuracy and correct answer's bits per byte, by language."""
+    summary = {}
+    for name in names:
+        row, metric = result["results"][name], accuracy_metric(name)
+        if f"{metric},none" not in row:  # Instruction following reports other metrics.
+            continue
+        language = STANDARD_TASKS[name][0] if name in STANDARD_TASKS else "other"
+        summary.setdefault(language, {})[name] = {
+            "metric": metric,
+            "accuracy": row[f"{metric},none"],
+            "stderr": row[f"{metric}_stderr,none"],
+            ANSWER_BITS: row.get(f"{ANSWER_BITS},none"),
+        }
+    return summary
 
 
 class NativeLM(TemplateLM):
@@ -376,6 +413,7 @@ def evaluate_benchmarks(
             for section in RESULT_SECTIONS:
                 result[section].update(part[section])
     result["items"] = items
+    result["by_language"] = by_language(result, chosen)
     result["conversation_format_tasks"] = [
         name for name in chosen if name in CONVERSATION_TASKS
     ]
