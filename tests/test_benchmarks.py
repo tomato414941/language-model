@@ -152,6 +152,18 @@ ROWS["piqa"] = [
         "label": 0,
     }
 ]
+ROWS["kuci"] = [
+    {
+        "id": 0,
+        "context": "電池 の 減り は 早い ので 、",
+        "choice_a": "海 で 泳ぐ",
+        "choice_b": "本 を 読む",
+        "choice_c": "雨 が 降る",
+        "choice_d": "予備 の 電池 を 買う",
+        "label": "d",
+    }
+]
+ID_FIELDS["kuci"] = "id"
 ROWS["blimp"] = [
     {
         "sentence_good": "Raymond is selling this sketch.",
@@ -196,6 +208,8 @@ def benchmark_dataset(path, name=None, **kwargs):
     }
     if path in tested:
         return DatasetDict(test=Dataset.from_list(ROWS[tested[path]]))
+    if path == "json" and "KUCI" in str(kwargs["data_files"]):
+        return DatasetDict(test=Dataset.from_list(ROWS["kuci"]))
     if path == "json":
         task = "jnli" if "jnli" in kwargs["data_files"]["train"] else "jcommonsenseqa"
     else:
@@ -349,6 +363,7 @@ class BenchmarkTests(unittest.TestCase):
             benchmarks["xwinograd_ja"][0]["context"], "箱にケーキが入らない。ケーキが大きい。"
         )
         self.assertEqual(benchmarks["jnli"][0]["context"], "犬が芝生の上を走っている。")
+        self.assertEqual(benchmarks["kuci"][0]["context"], "電池の減りは早いので、予備の電池を買う")
         # Questions without identifiers of their own are numbered by file and row.
         self.assertEqual(benchmarks["sciq"][1]["id"], "data/validation-00000-of-00001.parquet:0")
         self.assertEqual(
@@ -488,6 +503,7 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(configs["sciq"]["test_split"], "test")
         self.assertEqual(configs["piqa"]["validation_split"], "validation")
         self.assertEqual(result["n-shot"]["ja_leaderboard_jnli"], 3)
+        self.assertEqual(configs["kuci"]["test_split"], "test")
         for name in DEFAULT_TASKS:
             self.assertIn("acc,none", result["results"][name])
         # BLiMP's group carries a version of its own.
@@ -652,6 +668,13 @@ class BenchmarkTests(unittest.TestCase):
         )
         self.assertEqual(sum(items["correct"]) / 2, metrics["acc,none"])
         self.assertFalse(result["higher_is_better"]["arc_easy"]["gold_bits_per_byte"])
+
+    def test_KUCIは形態素の区切りの空白を除いた文で正解の続きを測る(self):
+        """Scores KUCI's right continuation as Japanese text, without spaces between morphemes."""
+        result, bits = self.evaluate_skewed(["kuci"])
+        self.assertAlmostEqual(
+            result["items"]["kuci"]["gold_bits_per_byte"][0], bits("予備の電池を買う"), places=4
+        )
 
     def test_文章の最後の語を当てる課題では最後の語を正解として測る(self):
         """Measures the passage's last word, as the task's continuation."""

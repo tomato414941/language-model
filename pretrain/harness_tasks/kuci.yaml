@@ -1,0 +1,24 @@
+# KUCI (Omura et al., EMNLP 2020): pick the most plausible of four
+# continuations of a Japanese clause. The harness has no definition of it, so
+# this one scores it as HellaSwag is scored, on the published test split.
+task: kuci
+dataset_path: json
+dataset_kwargs:
+  data_files:
+    test: https://raw.githubusercontent.com/ku-nlp/KUCI/79afa1d63d1f262e6709e9be714d9ad5dae8d6f6/dataset/test.jsonl
+output_type: multiple_choice
+test_split: test
+# KUCI separates morphemes with spaces, which Japanese text does not use.
+doc_to_text: "{{context.replace(' ', '')}}"
+doc_to_choice: "{{[choice_a, choice_b, choice_c, choice_d] | map('replace', ' ', '') | list}}"
+doc_to_target: "{{['a', 'b', 'c', 'd'].index(label)}}"
+target_delimiter: ""
+metric_list:
+  - metric: acc
+    aggregation: mean
+    higher_is_better: true
+  - metric: acc_norm
+    aggregation: mean
+    higher_is_better: true
+metadata:
+  version: 1.0

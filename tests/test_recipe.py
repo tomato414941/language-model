@@ -172,7 +172,7 @@ class RecipeTests(unittest.TestCase):
             15_000_000_000,
         )
         self.assertEqual(
-            plan["commands"][-1][-10:],
+            plan["commands"][-1][-11:],
             [
                 "hellaswag",
                 "arc_easy",
@@ -181,6 +181,7 @@ class RecipeTests(unittest.TestCase):
                 "piqa",
                 "lambada_openai",
                 "blimp",
+                "kuci",
                 "ja_leaderboard_xwinograd",
                 "ja_leaderboard_jnli",
                 "ifeval",

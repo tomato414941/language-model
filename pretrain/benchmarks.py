@@ -13,7 +13,7 @@ from pathlib import Path
 from .data import file_digest
 
 SOURCE_URL = "https://huggingface.co/datasets/{repository}/resolve/{revision}/{path}"
-# JGLUE publishes JNLI on GitHub, where the evaluation reads it too.
+# JGLUE and KUCI publish their files on GitHub, where the evaluation reads them too.
 GITHUB_URL = "https://raw.githubusercontent.com/{repository}/{revision}/{path}"
 # BLiMP keeps each of its 67 phenomena in a file of its own.
 BLIMP_FILES = {
@@ -160,6 +160,18 @@ TASKS = {
             for phenomenon, digest in BLIMP_FILES.items()
         },
     },
+    "kuci": {
+        "language": "ja",
+        "host": "github",
+        "repository": "ku-nlp/KUCI",
+        "revision": "79afa1d63d1f262e6709e9be714d9ad5dae8d6f6",
+        "license": "CC-BY-SA-4.0",
+        "files": {
+            "dataset/train.jsonl": "77cd991d35cdc5cba23d0e2208cdc66e3173577449dffdf1503bf49e0624b076",
+            "dataset/dev.jsonl": "a5205847d0c5a6a7952445a772b858e909d0fd379ea7f5b1a4effa7b1e045aa3",
+            "dataset/test.jsonl": "d4741c5a786018e7094ed83be12bd71b812650ce347394d05d3725f9e8482a19",
+        },
+    },
     "xwinograd_ja": {
         "language": "ja",
         "repository": "polm-stability/xwinograd-ja",
@@ -244,6 +256,12 @@ def blimp_item(row):
     return {"context": row["sentence_good"]}
 
 
+def kuci_item(row):
+    # The clause with its right continuation, as the web text KUCI came from wrote it.
+    answer = row[f"choice_{row['label']}"]
+    return {"id": str(row["id"]), "context": (row["context"] + answer).replace(" ", "")}
+
+
 def xwinograd_item(row):
     # The sentence with the right referent filled in, as a text would write it.
     return {"context": row[f"sentence{row['answer']}"]}
@@ -266,6 +284,7 @@ CONVERTERS = {
     "piqa": piqa_item,
     "lambada": lambada_item,
     "blimp": blimp_item,
+    "kuci": kuci_item,
     "xwinograd_ja": xwinograd_item,
     "jnli": jnli_item,
     "ifeval": ifeval_item,

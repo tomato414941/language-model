@@ -11,6 +11,7 @@ import json
 import math
 import statistics
 from importlib.metadata import version
+from pathlib import Path
 
 import torch
 
@@ -34,7 +35,7 @@ from .conversation import chat_prompt
 from .data import BOS, EOS
 from .training import autocast
 
-# The easier tasks from SciQ to BLiMP separate small models; the two Japanese
+# The easier tasks from SciQ to KUCI separate small models; the two Japanese
 # tasks after them stay near chance until a model grows enough to learn them.
 DEFAULT_TASKS = (
     "hellaswag",
@@ -44,9 +45,12 @@ DEFAULT_TASKS = (
     "piqa",
     "lambada_openai",
     "blimp",
+    "kuci",
     "ja_leaderboard_xwinograd",
     "ja_leaderboard_jnli",
 )
+# Definitions of published tasks that the harness lacks, in its own format.
+TASK_DEFINITIONS = Path(__file__).with_name("harness_tasks")
 # These tasks ask in the conversation format that the API serves.
 CONVERSATION_TASKS = ("ifeval",)
 RESULT_SECTIONS = (
@@ -332,7 +336,7 @@ def evaluate_benchmarks(
     """Use the harness's task definitions, default few-shot counts and metrics."""
     if limit is not None and (type(limit) is not int or limit <= 0):
         raise ValueError("limit must be a positive integer")
-    manager = TaskManager()
+    manager = TaskManager(include_path=str(TASK_DEFINITIONS))
     selected = list(DEFAULT_TASKS if tasks is None else tasks)
     if not selected:
         raise ValueError("select at least one evaluation task")
