@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import math
+import os
 import shutil
 import sqlite3
 import tempfile
@@ -357,6 +358,17 @@ class RecipeTests(unittest.TestCase):
                 manifest["sources"]["ja-hq"]["statistics"]["duplicates"], 1
             )
         self.assertEqual(corpora[0].fingerprint, corpora[1].fingerprint)
+
+    def test_並列に作る部分のプロセスが終わってしまうとコーパス作りを止める(self):
+        """Stops at once when a part's process dies, instead of waiting for the part."""
+        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)
+        with (
+            patch("pretrain.recipe.prepare_part", side_effect=lambda *_: os._exit(1)),
+            self.assertRaisesRegex(RuntimeError, "exit code 1"),
+        ):
+            prepare_corpus(
+                self.recipe_path, self.root / "tokenizer", self.root, self.benchmarks, 2
+            )
 
     def test_必要量に満たないデータ源を通知する(self):
         prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)

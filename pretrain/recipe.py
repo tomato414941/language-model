@@ -7,6 +7,7 @@ import itertools
 import json
 import math
 import multiprocessing
+import multiprocessing.connection
 import os
 import random
 import re
@@ -1085,10 +1086,7 @@ def prepare_corpus(
             for argument in arguments:
                 prepare_part(*argument)
         else:
-            context = multiprocessing.get_context("fork")
-            with context.Pool(workers, maxtasksperchild=1) as pool:
-                for _ in pool.imap_unordered(run_part, arguments):
-                    pass
+            run_parts(arguments, workers)
         manifests = {}
         with closing(seen_documents(scratch)) as database:
             for item in streamed(recipe):
@@ -1108,8 +1106,32 @@ def prepare_corpus(
     return manifests
 
 
-def run_part(argument):
-    return prepare_part(*argument)
+def run_parts(arguments, workers):
+    """Prepare each part in a process of its own, at most `workers` at a time.
+
+    A part whose process fails or is ended, as one ended for lack of memory
+    is, stops the stage at once instead of leaving it waiting for that part.
+    """
+    context = multiprocessing.get_context("fork")
+    pending, running = list(arguments), []
+    try:
+        while pending or running:
+            while pending and len(running) < workers:
+                process = context.Process(target=prepare_part, args=pending.pop(0))
+                process.start()
+                running.append(process)
+            multiprocessing.connection.wait([process.sentinel for process in running])
+            for process in [process for process in running if not process.is_alive()]:
+                process.join()
+                running.remove(process)
+                if process.exitcode:
+                    raise RuntimeError(
+                        f"a corpus part's process ended with exit code {process.exitcode}"
+                    )
+    finally:
+        for process in running:
+            process.terminate()
+            process.join()
 
 
 def read_json_documents(path):
