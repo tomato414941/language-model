@@ -41,9 +41,8 @@ from .training import autocast
 # scored like HellaSwag; the rest use plain accuracy, as OLMo scored SciQ and
 # as the harness defines the others. The easier tasks from SciQ to KUCI
 # separate small models; the two Japanese tasks after them stay near chance
-# until a model grows enough to learn them. The tasks and their metrics were
-# fixed before the experiments that read them: change them only for reasons
-# other than how models score on them.
+# until a model grows enough to learn them. Add tasks or revise these choices
+# freely, but not to favor particular models.
 STANDARD_TASKS = {
     "hellaswag": ("en", "acc_norm"),
     "arc_easy": ("en", "acc_norm"),
@@ -132,19 +131,17 @@ def answer_bits(task, sample):
     return -loglikelihood / (math.log(2) * len(scored.encode("utf-8")))
 
 
-def accuracy_metric(name):
-    """The accuracy read from a task or group: its standard one, or plain accuracy."""
-    return STANDARD_TASKS.get(name, (None, "acc"))[1]
+def task_reading(name):
+    """The language a task or group asks in and the accuracy read from it.
+
+    A task outside the standard ones is read by plain accuracy, as "other".
+    """
+    return STANDARD_TASKS.get(name, ("other", "acc"))
 
 
 def add_answer_bits(result, tasks, groups):
     """Report each task's and group's answer bits; return the questions' records."""
     results, items = result["results"], {}
-    parents = {
-        task.task_name: name
-        for name, group in groups.items()
-        for task in group.get_all_tasks()
-    }
     for name, samples in result.pop("samples").items():
         samples = sorted(samples, key=lambda sample: sample["doc_id"])
         bits = [answer_bits(tasks[name], sample) for sample in samples]
@@ -155,12 +152,16 @@ def add_answer_bits(result, tasks, groups):
             statistics.stdev(bits) / math.sqrt(len(bits)) if len(bits) > 1 else "N/A"
         )
         result["higher_is_better"][name][ANSWER_BITS] = False
-        # Kept per question so that models can be compared on the same questions.
-        metric = accuracy_metric(parents.get(name, name))
+        # Kept per question so that models can be compared on the same
+        # questions, with every accuracy the task reports, so that a revised
+        # choice of accuracy still reads this evaluation.
         items[name] = {
             "doc_id": [sample["doc_id"] for sample in samples],
-            "metric": metric,
-            "correct": [sample[metric] for sample in samples],
+            "correct": {
+                metric: [sample[metric] for sample in samples]
+                for metric in samples[0]["metrics"]
+                if metric.startswith("acc")
+            },
             ANSWER_BITS: [round(value, 6) for value in bits],
         }
     for name, group in groups.items():
@@ -193,10 +194,9 @@ def by_language(result, names):
     """Each task's standard accuracy and correct answer's bits per byte, by language."""
     summary = {}
     for name in names:
-        row, metric = result["results"][name], accuracy_metric(name)
+        row, (language, metric) = result["results"][name], task_reading(name)
         if f"{metric},none" not in row:  # Instruction following reports other metrics.
             continue
-        language = STANDARD_TASKS[name][0] if name in STANDARD_TASKS else "other"
         summary.setdefault(language, {})[name] = {
             "metric": metric,
             "accuracy": row[f"{metric},none"],

@@ -31,7 +31,7 @@ from pretrain.benchmarks import (
 )
 from pretrain.comparison import compare_benchmarks
 from pretrain.data import file_digest, prepare_data
-from pretrain.evaluation import DEFAULT_TASKS, NativeLM, evaluate_benchmarks
+from pretrain.evaluation import DEFAULT_TASKS, STANDARD_TASKS, NativeLM, evaluate_benchmarks
 from pretrain.model import LanguageModel, ModelConfig
 from pretrain.training import TrainConfig, train
 from scripts import inspect_pretrain
@@ -652,6 +652,20 @@ class BenchmarkTests(unittest.TestCase):
             byte_tokenizer(), probabilities, text
         )
 
+    def evaluate_two_models(self, tasks):
+        with patch(
+            "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
+        ):
+            return tuple(
+                evaluate_benchmarks(
+                    FixedModel(probabilities),
+                    byte_tokenizer(),
+                    torch.device("cpu"),
+                    tasks=tasks,
+                )
+                for probabilities in (torch.full((258,), 1 / 258), skewed_probabilities())
+            )
+
     def test_正解の選択肢を予測できた度合いを1バイトあたりのビット数で測る(self):
         """Reports the correct choice's bits per byte for each question and on average."""
         result, bits = self.evaluate_skewed(["arc_easy"])
@@ -669,9 +683,9 @@ class BenchmarkTests(unittest.TestCase):
             abs(expected[0] - expected[1]) / 2,
             places=4,
         )
-        # ARC-Easy reads accuracy per character, as OLMES scores it.
-        self.assertEqual(items["metric"], "acc_norm")
-        self.assertEqual(sum(items["correct"]) / 2, metrics["acc_norm,none"])
+        # Every accuracy the task reports is kept for each question.
+        for metric in ("acc", "acc_norm"):
+            self.assertEqual(sum(items["correct"][metric]) / 2, metrics[f"{metric},none"])
         self.assertFalse(result["higher_is_better"]["arc_easy"]["gold_bits_per_byte"])
 
     def test_KUCIは形態素の区切りの空白を除いた文で正解の続きを測る(self):
@@ -682,7 +696,7 @@ class BenchmarkTests(unittest.TestCase):
         )
 
     def test_課題ごとに決めた正答率を言語別にまとめる(self):
-        """Reads each standard task's fixed accuracy and groups the tasks by language."""
+        """Reads each standard task's chosen accuracy and groups the tasks by language."""
         result, _ = self.evaluate_skewed(["arc_easy", "sciq", "kuci", "ja_leaderboard_xwinograd"])
         summary = result["by_language"]
         self.assertEqual(set(summary), {"en", "ja"})
@@ -697,22 +711,10 @@ class BenchmarkTests(unittest.TestCase):
             read = summary[language][name]
             self.assertEqual(read["metric"], metric)
             self.assertEqual(read["accuracy"], result["results"][name][f"{metric},none"])
-            self.assertEqual(result["items"][name]["metric"], metric)
 
     def test_二つの評価を同じ問題ごとに比べて言語別に差を示す(self):
         """Pairs two evaluations' questions to show each task's difference by language."""
-        with patch(
-            "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
-        ):
-            base, other = (
-                evaluate_benchmarks(
-                    FixedModel(probabilities),
-                    byte_tokenizer(),
-                    torch.device("cpu"),
-                    tasks=["arc_easy", "blimp"],
-                )
-                for probabilities in (torch.full((258,), 1 / 258), skewed_probabilities())
-            )
+        base, other = self.evaluate_two_models(["arc_easy", "blimp"])
         paths = [self.root / "base.json", self.root / "other.json"]
         for path, result in zip(paths, (base, other)):
             path.write_text(json.dumps(result), encoding="utf-8")
@@ -733,8 +735,17 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(blimp["questions"], 2 * 67)
         self.assertAlmostEqual(blimp["difference"], blimp["other"] - blimp["base"])
 
-    def test_違う問題を解いた評価どうしは比べない(self):
-        """Refuses to compare evaluations that asked different questions."""
+    def test_指標を見直しても前の評価を評価し直さずに比べる(self):
+        """Reads a revised accuracy from each question's record, without evaluating again."""
+        base, other = self.evaluate_two_models(["arc_easy"])
+        with patch.dict(STANDARD_TASKS, {"arc_easy": ("en", "acc")}):
+            arc = compare_benchmarks(base, other)["en"]["arc_easy"]
+        self.assertEqual(arc["metric"], "acc")
+        self.assertEqual(arc["base"], base["results"]["arc_easy"]["acc,none"])
+        self.assertAlmostEqual(arc["difference"], arc["other"] - arc["base"])
+
+    def test_片方にしかない課題や違う問題を解いた課題は理由を示して残りを比べる(self):
+        """Lists the tasks it cannot pair, with the reason, and compares the rest."""
         with patch(
             "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
         ):
@@ -743,13 +754,17 @@ class BenchmarkTests(unittest.TestCase):
                     FixedModel(torch.full((258,), 1 / 258)),
                     byte_tokenizer(),
                     torch.device("cpu"),
-                    tasks=["arc_easy"],
+                    tasks=tasks,
                     limit=limit,
                 )
-                for limit in (None, 1)
+                for tasks, limit in ((["arc_easy", "sciq"], None), (["arc_easy", "sciq", "kuci"], 1))
             )
-        with self.assertRaisesRegex(ValueError, "different questions"):
-            compare_benchmarks(whole, part)
+        comparison = compare_benchmarks(whole, part)
+        self.assertEqual(
+            comparison["en"]["arc_easy"], {"not_compared": "the evaluations asked different questions"}
+        )
+        self.assertEqual(comparison["ja"]["kuci"], {"not_compared": "only one of the evaluations asked it"})
+        self.assertEqual(comparison["en"]["sciq"]["questions"], 1)
 
     def test_文章の最後の語を当てる課題では最後の語を正解として測る(self):
         """Measures the passage's last word, as the task's continuation."""
