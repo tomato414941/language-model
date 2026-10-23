@@ -34,7 +34,19 @@ from .conversation import chat_prompt
 from .data import BOS, EOS
 from .training import autocast
 
-DEFAULT_TASKS = ("hellaswag", "arc_easy", "ja_leaderboard_jcommonsenseqa")
+# The easier tasks from SciQ to BLiMP separate small models; the two Japanese
+# tasks after them stay near chance until a model grows enough to learn them.
+DEFAULT_TASKS = (
+    "hellaswag",
+    "arc_easy",
+    "ja_leaderboard_jcommonsenseqa",
+    "sciq",
+    "piqa",
+    "lambada_openai",
+    "blimp",
+    "ja_leaderboard_xwinograd",
+    "ja_leaderboard_jnli",
+)
 # These tasks ask in the conversation format that the API serves.
 CONVERSATION_TASKS = ("ifeval",)
 RESULT_SECTIONS = (

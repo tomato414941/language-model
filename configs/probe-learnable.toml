@@ -25,7 +25,10 @@ part_tokens = 100_000_000
 [evaluation]
 framework = "lm-eval"
 version = "0.4.13"
-base_tasks = ["hellaswag", "arc_easy", "ja_leaderboard_jcommonsenseqa"]
+base_tasks = [
+    "hellaswag", "arc_easy", "ja_leaderboard_jcommonsenseqa", "sciq", "piqa",
+    "lambada_openai", "blimp", "ja_leaderboard_xwinograd", "ja_leaderboard_jnli",
+]
 instruction_tasks = ["ifeval"]
 
 # A document scores the loss continue-v4 loses on it once tuned on the

@@ -172,8 +172,19 @@ class RecipeTests(unittest.TestCase):
             15_000_000_000,
         )
         self.assertEqual(
-            plan["commands"][-1][-4:],
-            ["hellaswag", "arc_easy", "ja_leaderboard_jcommonsenseqa", "ifeval"],
+            plan["commands"][-1][-10:],
+            [
+                "hellaswag",
+                "arc_easy",
+                "ja_leaderboard_jcommonsenseqa",
+                "sciq",
+                "piqa",
+                "lambada_openai",
+                "blimp",
+                "ja_leaderboard_xwinograd",
+                "ja_leaderboard_jnli",
+                "ifeval",
+            ],
         )
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

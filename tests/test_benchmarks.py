@@ -27,6 +27,7 @@ from pretrain.benchmarks import (
     TASKS,
     fetch_benchmarks,
     load_benchmarks,
+    source_url,
 )
 from pretrain.data import file_digest, prepare_data
 from pretrain.evaluation import DEFAULT_TASKS, NativeLM, evaluate_benchmarks
@@ -126,6 +127,37 @@ ROWS["xwinograd"] = [
         "answer": "1",
     }
 ]
+ROWS["xwinograd_ja"] = [
+    {
+        "sentence1": "箱にケーキが入らない。箱が大きい。",
+        "sentence2": "箱にケーキが入らない。ケーキが大きい。",
+        "answer": "2",
+    }
+]
+ROWS["sciq"] = [
+    {
+        "question": "Which organ pumps blood through the body?",
+        "distractor1": "lungs",
+        "distractor2": "liver",
+        "distractor3": "kidney",
+        "correct_answer": "heart",
+        "support": "The heart pumps blood through the body.",
+    }
+]
+ROWS["piqa"] = [
+    {
+        "goal": "How do I keep bread fresh?",
+        "sol1": "Store it in a sealed bag.",
+        "sol2": "Leave it in the sun.",
+        "label": 0,
+    }
+]
+ROWS["blimp"] = [
+    {
+        "sentence_good": "Raymond is selling this sketch.",
+        "sentence_bad": "Raymond is selling this sketches.",
+    }
+]
 
 
 def byte_tokenizer():
@@ -154,9 +186,16 @@ def benchmark_dataset(path, name=None, **kwargs):
             for k in (3, 5)
         ]
         return DatasetDict(train=Dataset.from_list(rows))
-    if path in ("EleutherAI/lambada_openai", "Muennighoff/xwinograd"):
-        rows = ROWS["lambada" if "lambada" in path else "xwinograd"]
-        return DatasetDict(test=Dataset.from_list(rows))
+    if path in ("allenai/sciq", "baber/piqa"):
+        rows = Dataset.from_list(ROWS[path.split("/")[1]])
+        return DatasetDict(train=rows, validation=rows, test=rows)
+    tested = {
+        "EleutherAI/lambada_openai": "lambada",
+        "Muennighoff/xwinograd": "xwinograd",
+        "polm-stability/xwinograd-ja": "xwinograd_ja",
+    }
+    if path in tested:
+        return DatasetDict(test=Dataset.from_list(ROWS[tested[path]]))
     if path == "json":
         task = "jnli" if "jnli" in kwargs["data_files"]["train"] else "jcommonsenseqa"
     else:
@@ -220,9 +259,11 @@ class BenchmarkTests(unittest.TestCase):
             files = {}
             for offset, path in enumerate(task["files"]):
                 # Each split holds different questions, as in the real sources.
-                field = ID_FIELDS[name]
+                field = ID_FIELDS.get(name)
                 rows = [
-                    {
+                    row
+                    if field is None
+                    else {
                         **row,
                         field: row[field] + 10 * offset
                         if isinstance(row[field], int)
@@ -231,20 +272,19 @@ class BenchmarkTests(unittest.TestCase):
                     for row in ROWS[name]
                 ]
                 buffer = io.BytesIO()
-                if path.endswith(".jsonl"):
+                if path.endswith((".json", ".jsonl")):
                     buffer.write(
                         "".join(json.dumps(row) + "\n" for row in rows).encode()
                     )
                 else:
                     parquet.write_table(arrow.Table.from_pylist(rows), buffer)
-                url = f"{task['repository']}/resolve/{task['revision']}/{path}"
-                self.files[url] = buffer.getvalue()
+                self.files[source_url(task, path)] = buffer.getvalue()
                 files[path] = hashlib.sha256(buffer.getvalue()).hexdigest()
             self.tasks[name] = {**task, "files": files}
 
     def fetch(self, output, files=None):
         def download(url):
-            return (files or self.files)[url.split("/datasets/", 1)[1]]
+            return (files or self.files)[url]
 
         with (
             patch("pretrain.benchmarks.TASKS", self.tasks),
@@ -294,6 +334,26 @@ class BenchmarkTests(unittest.TestCase):
         )
         self.assertEqual(benchmarks["jcommonsenseqa"][0]["choices"][2], "絵本")
         self.assertEqual(benchmarks["ifeval"][0]["context"], IFEVAL_ROWS[0]["prompt"])
+        self.assertEqual(
+            benchmarks["sciq"][0]["context"],
+            "Question: Which organ pumps blood through the body?\nAnswer:",
+        )
+        self.assertEqual(
+            benchmarks["piqa"][0]["context"],
+            "Question: How do I keep bread fresh?\nAnswer:",
+        )
+        self.assertEqual(
+            benchmarks["blimp"][0]["context"], "Raymond is selling this sketch."
+        )
+        self.assertEqual(
+            benchmarks["xwinograd_ja"][0]["context"], "箱にケーキが入らない。ケーキが大きい。"
+        )
+        self.assertEqual(benchmarks["jnli"][0]["context"], "犬が芝生の上を走っている。")
+        # Questions without identifiers of their own are numbered by file and row.
+        self.assertEqual(benchmarks["sciq"][1]["id"], "data/validation-00000-of-00001.parquet:0")
+        self.assertEqual(
+            manifest["tasks"]["jnli"]["dataset_url"], "https://github.com/yahoojapan/JGLUE"
+        )
         for name, task in self.tasks.items():
             metadata = manifest["tasks"][name]
             self.assertEqual(metadata["revision"], task["revision"])
@@ -425,9 +485,16 @@ class BenchmarkTests(unittest.TestCase):
             configs["ja_leaderboard_jcommonsenseqa"]["validation_split"], "validation"
         )
         self.assertEqual(result["n-shot"]["ja_leaderboard_jcommonsenseqa"], 3)
+        self.assertEqual(configs["sciq"]["test_split"], "test")
+        self.assertEqual(configs["piqa"]["validation_split"], "validation")
+        self.assertEqual(result["n-shot"]["ja_leaderboard_jnli"], 3)
         for name in DEFAULT_TASKS:
             self.assertIn("acc,none", result["results"][name])
-            self.assertEqual(result["versions"][name], 1.0)
+        # BLiMP's group carries a version of its own.
+        self.assertEqual(
+            {name: float(result["versions"][name]) for name in DEFAULT_TASKS},
+            {name: 2.0 if name == "blimp" else 1.0 for name in DEFAULT_TASKS},
+        )
 
     def test_instruction_following_asks_in_the_conversation_format(self):
         """Asks IFEval in the conversation format and keeps published choice prompts."""
@@ -513,7 +580,9 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(
             result["checkpoint"]["sha256"], file_digest(self.root / "run/last.pt")
         )
-        self.assertEqual(set(result["results"]), set(DEFAULT_TASKS))
+        # The results also list each of BLiMP's phenomena.
+        tasks = {name for name in result["results"] if not name.startswith("blimp_")}
+        self.assertEqual(tasks, set(DEFAULT_TASKS))
         for metrics in result["results"].values():
             self.assertTrue(0 <= metrics["acc,none"] <= 1)
 
@@ -544,7 +613,8 @@ class BenchmarkTests(unittest.TestCase):
         )
         benchmarks = summary["benchmarks"]
         self.assertEqual(benchmarks["framework"]["version"], "0.4.13")
-        self.assertEqual(set(benchmarks["results"]), set(DEFAULT_TASKS))
+        tasks = {name for name in benchmarks["results"] if not name.startswith("blimp_")}
+        self.assertEqual(tasks, set(DEFAULT_TASKS))
         for metrics in benchmarks["results"].values():
             self.assertTrue(0 <= metrics["acc,none"] <= 1)
 
