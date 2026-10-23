@@ -20,6 +20,7 @@ import numpy as np
 import torch
 
 from pretrain.data import Corpus, prepare_data, token_bytes
+from pretrain.growth import grow_checkpoint
 from pretrain.model import LanguageModel, ModelConfig
 from pretrain.training import (
     TrainConfig,
@@ -537,6 +538,33 @@ class PretrainingTests(unittest.TestCase):
             architecture="llama",
             intermediate_size=64,
         )
+
+    def test_層を増やしたモデルは元と同じ予測から学習を始め増やした層も学ぶ(self):
+        """Grows a model to twice the layers with the same predictions, then trains every layer."""
+        self.model_config = self.llama_config()
+        self.run_training("small", max_steps=3)
+        grown_path = self.root / "grown.pt"
+        grow_checkpoint(self.root / "small/last.pt", grown_path)
+        small, _, _ = load_model(self.root / "small/last.pt", torch.device("cpu"))
+        grown, _, _ = load_model(grown_path, torch.device("cpu"))
+        self.assertEqual(grown.config.layers, 2 * small.config.layers)
+        tokens = torch.randint(
+            small.vocabulary_size, (2, 16), generator=torch.Generator().manual_seed(0)
+        )
+        with torch.no_grad():
+            torch.testing.assert_close(grown(tokens), small(tokens), rtol=0, atol=0)
+        with contextlib.redirect_stdout(io.StringIO()):
+            train(
+                self.data,
+                self.root / "large",
+                grown.config,
+                self.config(steps=2),
+                torch.device("cpu"),
+                initialize_from=grown_path,
+            )
+        trained = load_checkpoint(self.root / "large/last.pt")["model"]
+        for name in ("blocks.1.attention_output.weight", "blocks.3.down.weight"):
+            self.assertGreater(trained[name].abs().sum().item(), 0)
 
     def test_muon_updates_block_matrices_and_adamw_the_embedding_and_norms(self):
         """Muon はブロック内の行列を、AdamW は埋め込みと正規化の重みを受け持ち、どの重みも一度だけ更新する。"""

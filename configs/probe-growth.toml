@@ -1,0 +1,47 @@
+# Ask whether the 115M model gains more from growing it to twice the layers
+# than from training it as it is, at the same cost. Both arms start from the
+# end of continue-v4's stable phase and read the same new documents in the
+# same order: the model as it is for 25,000 steps (bilingual-v4-extend.toml)
+# and the grown one, whose steps cost about twice as much, for 12,500
+# (bilingual-v4-grown.toml). Each holds the peak rate for four fifths of its
+# steps and decays over the rest, on the decay corpus. The end of each stable
+# phase is where a longer run of the better arm would continue.
+training_config = "bilingual-v4-extend.toml"
+sources = "sources.toml"
+seed = 42
+continue_from = { checkpoint = "runs/continue-v4-stable/last.pt", step = 244141 }
+
+[tokenizer]
+vocabulary_size = 16384
+reuse_from = "data/bilingual-v3/tokenizer.json"
+reuse_sha256 = "c0db70b68a3817198e7412b0dae5b6c6ed55e4ba41256700e55c6c80b597e141"
+
+[corpus]
+validation_tokens_per_language = 1_000_000
+# The yardstick holds out the documents below this share of the seed-42 digest
+# range, so no corpus may train on them.
+validation_fraction = 0.00125
+minimum_characters = 300
+maximum_characters = 100000
+part_tokens = 100_000_000
+
+[evaluation]
+framework = "lm-eval"
+version = "0.4.13"
+base_tasks = [
+    "hellaswag", "arc_easy", "ja_leaderboard_jcommonsenseqa", "sciq", "piqa",
+    "lambada_openai", "blimp", "kuci", "ja_leaderboard_xwinograd", "ja_leaderboard_jnli",
+]
+instruction_tasks = ["ifeval"]
+
+# The sources without the files continue-v4 read, in continue-v4's split of
+# the two languages.
+[[corpora]]
+name = "stable"
+training_tokens = 655_360_000
+mix = { ja-climblab-fresh = 50, en-web-fresh = 30, en-dclm-fresh = 20 }
+
+[[corpora]]
+name = "decay"
+training_tokens = 163_840_000
+mix = { ja-climblab-fresh = 50, en-web-fresh = 30, en-dclm-fresh = 20 }

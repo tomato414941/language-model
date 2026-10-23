@@ -226,6 +226,12 @@ def main(argv=None):
     benchmark.add_argument(
         "--output", type=Path, required=True, help="問題ごとの記録を含む結果のJSONファイル"
     )
+    growth = commands.add_parser(
+        "grow", help="学習したモデルの層を増やし、同じ予測から学習を始められる重みを作る"
+    )
+    growth.add_argument("--checkpoint", type=Path, required=True, help="元のモデルの重み")
+    growth.add_argument("--output", type=Path, required=True, help="層を増やしたモデルの重み")
+    growth.add_argument("--factor", type=int, default=2, help="層の数を何倍にするか")
     comparison = commands.add_parser(
         "compare-benchmarks",
         help="二つの標準評価の結果を、同じ問題ごとに言語別に比べる",
@@ -310,6 +316,11 @@ def main(argv=None):
             from .benchmarks import fetch_benchmarks
 
             result = fetch_benchmarks(args.output)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "grow":
+            from .growth import grow_checkpoint
+
+            result = grow_checkpoint(args.checkpoint, args.output, args.factor)
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command == "compare-benchmarks":
             from .comparison import compare_benchmarks
