@@ -421,7 +421,8 @@ def train(
     generator = torch.Generator().manual_seed(config.seed)
     step, tokens_seen = 0, 0
     skipped_updates = 0
-    phase_start = 0
+    # The step this phase began at and the row of the data it began reading.
+    phase_start, phase_row = 0, 0
     initialization = None
     if initialize_from is not None:
         saved = load_checkpoint(initialize_from)
@@ -469,6 +470,16 @@ def train(
         step, tokens_seen = saved["step"], saved["tokens_seen"]
         skipped_updates = saved["skipped_updates"]
         phase_start = step
+        if saved["dataset_fingerprint"] == corpus.fingerprint:
+            # The same data is read on from where the saved run stopped.
+            if (previous.seed, previous.sampling) != (config.seed, config.sampling):
+                raise ValueError(
+                    "continuing on the same data keeps the seed and sampling that order it"
+                )
+            phase_row = saved.get("phase_start_row", 0) + (
+                saved["step"] - saved.get("phase_start_step", 0)
+            ) * previous.accumulation_steps * previous.batch_size
+            generator.set_state(saved["sampling_rng"])
         initialization = {
             "continued_from": {
                 "checkpoint_sha256": file_digest(continue_from),
@@ -504,6 +515,7 @@ def train(
         step, tokens_seen = saved["step"], saved["tokens_seen"]
         skipped_updates = saved["skipped_updates"]
         phase_start = saved.get("phase_start_step", 0)
+        phase_row = saved.get("phase_start_row", 0)
         initialization = saved.get("initialization")
     if compiled:
         # Training and validation batches keep one shape, so each compiles once.
@@ -543,6 +555,7 @@ def train(
             "torch_version": str(torch.__version__),
             "initialization": initialization,
             "phase_start_step": phase_start,
+            "phase_start_row": phase_row,
         }
 
     atomic_save(checkpoint(), output / "last.pt")
@@ -581,7 +594,8 @@ def train(
             for micro in range(config.accumulation_steps):
                 if config.sampling == "sequential":
                     x, y = corpus.sequential_batch(
-                        ((step - phase_start) * config.accumulation_steps + micro)
+                        phase_row
+                        + ((step - phase_start) * config.accumulation_steps + micro)
                         * config.batch_size,
                         config.batch_size,
                         model_config.context,

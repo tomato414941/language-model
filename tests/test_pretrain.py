@@ -480,6 +480,29 @@ class PretrainingTests(unittest.TestCase):
         for name, parameter in first["model"].items():
             torch.testing.assert_close(parameter, second["model"][name], rtol=0, atol=0)
 
+    def test_同じデータで学習を続けると前の学習が読み終えたところから読む(self):
+        """Continuing on the saved run's data reads on from where it stopped, as one run would."""
+        self.run_training("continuous", self.wsd_config())
+        self.run_training("first", self.wsd_config(), max_steps=3)
+        self.run_training(
+            "second", self.wsd_config(), continue_from=self.root / "first/last.pt"
+        )
+        continuous, continued = (
+            load_checkpoint(self.root / name / "last.pt")
+            for name in ("continuous", "second")
+        )
+        self.assertEqual(continued["step"], continuous["step"])
+        for name, parameter in continuous["model"].items():
+            torch.testing.assert_close(
+                parameter, continued["model"][name], rtol=0, atol=0
+            )
+        with self.assertRaisesRegex(ValueError, "keeps the seed"):
+            self.run_training(
+                "reordered",
+                self.wsd_config(seed=7),
+                continue_from=self.root / "first/last.pt",
+            )
+
     def test_continuation_carries_the_run_onto_new_data_without_a_rate_jump(self):
         self.run_training("stable", self.wsd_config(), max_steps=6)
         stable = load_checkpoint(self.root / "stable/last.pt")
