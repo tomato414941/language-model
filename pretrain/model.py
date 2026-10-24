@@ -158,8 +158,9 @@ def document_bounds(starts):
     return bounds
 
 
-def flash_dtype(device, dtype):
-    """The half precision FlashAttention runs in on this device, or None."""
+def half_precision(device, dtype):
+    """The half precision that FlashAttention and grouped matrix products run
+    in on this device, or None where they do not run."""
     if device.type != "cuda" or torch.cuda.get_device_capability(device) < (8, 0):
         return None
     if torch.is_autocast_enabled("cuda"):
@@ -278,14 +279,27 @@ class Experts(nn.Module):
         order = assigned.argsort(stable=True)
         counts = torch.bincount(assigned, minlength=probabilities.shape[-1])
         sources = order // self.active
-        outputs = torch.cat(
-            [
-                (F.silu(part @ gate) * (part @ up)) @ down
-                for part, gate, up, down in zip(
-                    tokens[sources].split(counts.tolist()), self.gate, self.up, self.down
-                )
-            ]
-        )
+        selected = tokens[sources]
+        if half_precision(tokens.device, tokens.dtype) == torch.bfloat16:
+            # Each grouped product multiplies every expert's tokens at once.
+            ends = counts.cumsum(0, dtype=torch.int32)
+            selected = selected.to(torch.bfloat16)
+            gate, up, down = (w.to(torch.bfloat16) for w in (self.gate, self.up, self.down))
+            outputs = F.grouped_mm(
+                F.silu(F.grouped_mm(selected, gate, offs=ends))
+                * F.grouped_mm(selected, up, offs=ends),
+                down,
+                offs=ends,
+            )
+        else:
+            outputs = torch.cat(
+                [
+                    (F.silu(part @ gate) * (part @ up)) @ down
+                    for part, gate, up, down in zip(
+                        selected.split(counts.tolist()), self.gate, self.up, self.down
+                    )
+                ]
+            )
         mixed = tokens.new_zeros(tokens.shape).index_add_(
             0, sources, (outputs * scores.flatten()[order, None]).to(tokens.dtype)
         )
@@ -371,7 +385,7 @@ class LlamaBlock(ModernBlock):
         if cache is not None:
             key, value = cache.extend(key, value)
         if isinstance(mask, Documents):
-            dtype = flash_dtype(query.device, query.dtype)
+            dtype = half_precision(query.device, query.dtype)
             query, key, value = [
                 tensor.transpose(1, 2).reshape(batch * length, -1, self.head_width).to(dtype)
                 for tensor in (query, key, value)
@@ -617,7 +631,7 @@ class LanguageModel(nn.Module):
         """
         if starts is None:
             return None
-        if flash_dtype(starts.device, self.embedding.weight.dtype) is not None:
+        if half_precision(starts.device, self.embedding.weight.dtype) is not None:
             return Documents(document_bounds(starts))
         documents = starts.cumsum(1)
         length = starts.shape[1]

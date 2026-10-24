@@ -312,7 +312,7 @@ class PretrainingTests(unittest.TestCase):
         for flash in (True, False):
             model.zero_grad()
             with (
-                patch("pretrain.model.flash_dtype", return_value=None) if not flash else contextlib.nullcontext(),
+                patch("pretrain.model.half_precision", return_value=None) if not flash else contextlib.nullcontext(),
                 torch.autocast("cuda", dtype=torch.bfloat16),
             ):
                 loss = model(tokens[:, :-1], tokens[:, 1:])
@@ -398,6 +398,26 @@ class PretrainingTests(unittest.TestCase):
             torch.testing.assert_close(output, expected, rtol=1e-4, atol=1e-5)
         # Even routing makes the balancing loss 1, its least value, weighted by 0.01.
         self.assertGreater(loss.item(), 0.01)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA GPU required")
+    def test_GPUでは専門家をまとめて計算し一つずつと同じ結果を返す(self):
+        """GPUのbfloat16では全専門家の積をまとめて計算し、一つずつ計算したときと同じ出力と勾配を返す。"""
+        torch.manual_seed(0)
+        experts = Experts(width=64, count=8, active=2, size=32).cuda()
+        hidden = torch.randn(4, 50, 64, device="cuda")
+        results = []
+        for grouped in (True, False):
+            experts.zero_grad()
+            with (
+                patch("pretrain.model.half_precision", return_value=None) if not grouped else contextlib.nullcontext(),
+                torch.autocast("cuda", dtype=torch.bfloat16),
+            ):
+                mixed, loss = experts(hidden)
+            (mixed.float().square().mean() + loss).backward()
+            results.append((mixed.float(), [p.grad.float().clone() for p in experts.parameters()]))
+        torch.testing.assert_close(results[0][0], results[1][0], rtol=0.05, atol=2e-3)
+        for grouped, separate in zip(results[0][1], results[1][1]):
+            torch.testing.assert_close(grouped, separate, rtol=0.05, atol=2e-3)
 
     def test_さらに先の予測は学習の目的にだけ加わる(self):
         """さらに先の単語の予測は学習中の目的にだけ加わり、評価の損失は次の単語の予測だけで測る。"""
