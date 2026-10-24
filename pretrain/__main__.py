@@ -427,13 +427,14 @@ def main(argv=None):
             )
             print(json.dumps(result["pairs"], ensure_ascii=False, indent=2))
         elif args.command == "train-preferences":
-            from .preference import read_config, train_preferences
+            from .preference import read_config as read_preference_config
+            from .preference import train_preferences
 
             result = train_preferences(
                 args.data,
                 args.output,
                 args.initialize_from,
-                read_config(args.config),
+                read_preference_config(args.config),
                 select_device(args.device),
                 args.precision,
             )
