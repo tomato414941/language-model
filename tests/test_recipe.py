@@ -40,6 +40,7 @@ from pretrain.data import Corpus, file_digest
 from pretrain.instructions import BenchmarkFilter, InstructionCorpus, prepare_instructions
 from pretrain.recipe import (
     accepted_documents,
+    data_fingerprint,
     document_digest,
     document_text,
     inspect_recipe,
@@ -47,7 +48,6 @@ from pretrain.recipe import (
     prepare_corpus,
     prepare_tokenizer,
     read_recipe,
-    recipe_fingerprint,
     validate_corpus,
     validate_source,
     validation_document,
@@ -289,6 +289,30 @@ class RecipeTests(unittest.TestCase):
         )
         self.assertEqual(tuple(x.shape), (2, 128))
         self.assertTrue(torch.equal(x[:, 1:], y[:, :-1]))
+
+    def test_作ったあとで学習の設定や読むトークン数を変えても同じコーパスを使う(self):
+        """コーパスを作ったあとで学習率やモデル、評価、学習で読むトークン数を変えても、同じコーパスが確認を通る。作るトークン数を変えると別のコーパスとして断る。"""
+        self.prepare()
+        training = self.root / "training.toml"
+        training.write_text(
+            training.read_text().replace("width=24", "width=32").replace("steps=8", "steps=4")
+            + "learning_rate=1e-3\n"
+        )
+        text = self.recipe_path.read_text().replace('"hellaswag", ', "")
+        self.recipe_path.write_text(
+            text.replace("training_tokens = 2000", "training_tokens = 1000\ncorpus_tokens = 2000")
+        )
+        self.assertTrue(validate_corpus(self.recipe_path, self.root)["ready"])
+        self.recipe_path.write_text(
+            text.replace("training_tokens = 2000", "training_tokens = 1000\ncorpus_tokens = 3000")
+        )
+        with self.assertRaisesRegex(ValueError, "different recipe"):
+            validate_corpus(self.recipe_path, self.root)
+        self.recipe_path.write_text(
+            text.replace("training_tokens = 2000", "training_tokens = 1000\ncorpus_tokens = 900")
+        )
+        with self.assertRaisesRegex(ValueError, "corpus_tokens"):
+            read_recipe(self.recipe_path)
 
     def test_評価問題と重複文書を除外し語彙学習を学習用文書に限定する(self):
         rows = self.rows["en-web"]
@@ -646,15 +670,15 @@ mix = {{ ja-hq = 25, ja-wiki = 25, en-web = 25, en-wiki = 25 }}
         with self.assertRaisesRegex(ValueError, "one way"):
             validate_source({**source, "template": "{question}", "conversation_field": "messages"})
 
-    def test_カタログに足したデータ源は既存の計画を変えない(self):
-        before = recipe_fingerprint(self.recipe_path)
+    def test_カタログに足したデータ源は既存のデータを変えない(self):
+        before = data_fingerprint(self.recipe_path)
         with (self.root / "sources.toml").open("a") as catalog:
             catalog.write(
                 '\n[[sources]]\nid = "en-new"\nlanguage = "en"\nrepository = "org/new"\n'
                 f'revision = "{"0" * 40}"\nprefix = "data/"\nlicense = "CC0-1.0"\n'
                 'terms_url = "https://example.org/terms"\n'
             )
-        self.assertEqual(recipe_fingerprint(self.recipe_path), before)
+        self.assertEqual(data_fingerprint(self.recipe_path), before)
         with (self.root / "sources.toml").open("a") as catalog:
             catalog.write("minimun = { score = 3 }\n")
         with self.assertRaisesRegex(ValueError, "unknown fields"):

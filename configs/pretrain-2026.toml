@@ -3,9 +3,10 @@
 # lowers the rate reads the highest-quality text with questions, answers and
 # reasoning, as SmolLM3 and OLMo 3 end their pretraining. Each language takes
 # half of the tokens, as training alternates them; most code and mathematics
-# sits in the English half. The token counts are provisional until the
-# measured cost per token sets the budget; the stable phase's last checkpoint
-# is where a longer run continues.
+# sits in the English half. Each phase's corpus holds corpus_tokens, of which
+# training reads training_tokens, so a smaller budget or a slower model needs
+# no new corpus; the stable phase's last checkpoint is where a longer run
+# continues.
 training_config = "model-2026.toml"
 sources = "sources.toml"
 seed = 42
@@ -40,10 +41,12 @@ instruction_tasks = ["ifeval"]
 [[corpora]]
 name = "stable"
 training_tokens = 9_961_472_000
+corpus_tokens = 9_961_472_000
 mix = { ja-climblab = 42, ja-wiki = 4, ja-math-llmjp = 2, ja-code-llmjp = 2, en-web = 20, en-dclm = 10, en-code-swallow = 5, en-code-stack-edu = 5, en-qa-stackexchange = 2, en-math = 3, en-math-megamath = 3, en-math-swallow-qa = 1, en-math-swallow-textbook = 1 }
 
 [[corpora]]
 name = "decay"
 training_tokens = 1_782_579_200
+corpus_tokens = 1_782_579_200
 validation_tokens_per_language = 2_000_000
 mix = { ja-climblab-top = 18, ja-wiki = 8, ja-aozora = 2, ja-general-llmjp = 7, ja-reasoning-llmjp = 6, ja-math-llmjp = 5, ja-code-llmjp = 4, en-edu-top = 10, en-wiki = 5, en-cosmopedia = 3, en-code-swallow = 6, en-code-stack-edu = 2, en-math-swallow-qa = 4, en-math-swallow-textbook = 3, en-math = 2, en-reasoning-openmath = 5, en-general-llmjp = 4, en-reasoning-llmjp = 4, en-math-llmjp = 1, en-code-llmjp = 1 }

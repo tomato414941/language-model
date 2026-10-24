@@ -231,6 +231,11 @@ def read_recipe(path):
             value = item.get(name, corpus["validation_tokens_per_language"])
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{item['name']} {name} must be a positive integer")
+        if "corpus_tokens" in item and (
+            type(item["corpus_tokens"]) is not int
+            or item["corpus_tokens"] < item["training_tokens"]
+        ):
+            raise ValueError(f"{item['name']} corpus_tokens must hold its training_tokens")
         mix = item.get("mix")
         if not mix or any(source not in sources for source in mix):
             raise ValueError(f"{item['name']} mixes sources missing from the catalog")
@@ -267,8 +272,8 @@ def read_recipe(path):
                 raise ValueError(f"the selection's {name} must be a percentage up to 50")
         for item in selected:
             pool = pools[item["select"]["pool"]]
-            unscored = pool["training_tokens"] * (100 - settings["scored_share"]) // 100
-            if unscored < item["training_tokens"]:
+            unscored = corpus_tokens(pool) * (100 - settings["scored_share"]) // 100
+            if unscored < corpus_tokens(item):
                 raise ValueError(
                     f"{item['name']} needs more tokens than its pool leaves unscored"
                 )
@@ -373,13 +378,13 @@ def validation_fraction(recipe, item):
     for settings in (item, recipe["corpus"]):
         if "validation_fraction" in settings:
             return settings["validation_fraction"]
-    ratio = 2 * validation_budget(recipe, item) / item["training_tokens"]
+    ratio = 2 * validation_budget(recipe, item) / corpus_tokens(item)
     return min(0.25, 1.25 * ratio / (1 + ratio))
 
 
 def source_targets(recipe, item, share):
     return {
-        "train": item["training_tokens"] * share // 100,
+        "train": corpus_tokens(item) * share // 100,
         "validation": validation_budget(recipe, item) * share // 50,
     }
 
@@ -413,19 +418,33 @@ def run_paths(recipe_path, recipe):
     return {name: Path("runs") / f"{stem}-{name}" for name in trained_names}
 
 
-def recipe_fingerprint(path):
+# Settings that shape training and evaluation but neither the tokenizer nor
+# the corpora, so they may change without rebuilding either.
+TRAINING_SETTINGS = ("training_config", "evaluation", "sft", "initialize_from", "continue_from")
+
+
+def corpus_tokens(item):
+    """The training tokens a corpus holds; training may read fewer of them."""
+    return item.get("corpus_tokens", item["training_tokens"])
+
+
+def data_fingerprint(path):
+    """What the tokenizer and the corpora are built from.
+
+    The recipe without its training settings, and with each corpus's size in
+    place of the tokens training reads, so that another budget, model or
+    schedule keeps the prepared data.
+    """
     recipe = read_recipe(path)
-    return hashlib.sha256(
-        json.dumps(
-            {
-                "recipe": recipe,
-                "training_config_sha256": file_digest(
-                    Path(path).resolve().parent / recipe["training_config"]
-                ),
-            },
-            sort_keys=True,
-        ).encode()
-    ).hexdigest()
+    data = {key: value for key, value in recipe.items() if key not in TRAINING_SETTINGS}
+    data["corpora"] = [
+        {
+            **{key: value for key, value in item.items() if key != "training_tokens"},
+            "corpus_tokens": corpus_tokens(item),
+        }
+        for item in recipe["corpora"]
+    ]
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
 def inspect_recipe(path, workdir):
@@ -632,7 +651,7 @@ def inspect_recipe(path, workdir):
         ]
     sources = sources_by_id(recipe)
     return {
-        "recipe_fingerprint": recipe_fingerprint(path),
+        "data_fingerprint": data_fingerprint(path),
         "parameters": parameters,
         "initialization": recipe.get("continue_from")
         or recipe.get("initialize_from", "random_weights"),
@@ -649,6 +668,7 @@ def inspect_recipe(path, workdir):
                 "purpose": item["purpose"],
                 "path": str(corpora[item["name"]]),
                 "training_tokens": item["training_tokens"],
+                "corpus_tokens": corpus_tokens(item),
                 "validation_tokens_per_language": validation_budget(recipe, item),
             }
             for item in recipe["corpora"]
@@ -666,7 +686,7 @@ def inspect_recipe(path, workdir):
         "packed_dtype": "<u2",
         "minimum_packed_bytes": 2
         * sum(
-            item["training_tokens"] + 2 * validation_budget(recipe, item)
+            corpus_tokens(item) + 2 * validation_budget(recipe, item)
             for item in recipe["corpora"]
         ),
         "checkpoint_bytes_approximate": parameters * 12,
@@ -1033,7 +1053,7 @@ def prepare_tokenizer(recipe_path, output, benchmarks_path):
             samples = train_tokenizer(recipe, staging, stack, benchmarks_path)
         manifest = {
             "version": 1,
-            "recipe_fingerprint": recipe_fingerprint(recipe_path),
+            "data_fingerprint": data_fingerprint(recipe_path),
             "benchmarks_sha256": file_digest(Path(benchmarks_path) / "sources.json"),
             "tokenizer_sha256": file_digest(staging / "tokenizer.json"),
             "reused": samples is None,
@@ -1265,9 +1285,9 @@ def prepare_corpus(
     tokenizer_directory = Path(tokenizer_directory)
     tokenizer_manifest = json.loads((tokenizer_directory / "manifest.json").read_text())
     benchmark_digest = file_digest(Path(benchmarks_path) / "sources.json")
-    fingerprint = recipe_fingerprint(recipe_path)
+    fingerprint = data_fingerprint(recipe_path)
     if (
-        tokenizer_manifest["recipe_fingerprint"] != fingerprint
+        tokenizer_manifest.get("data_fingerprint") != fingerprint
         or tokenizer_manifest["benchmarks_sha256"] != benchmark_digest
     ):
         raise ValueError(
@@ -1471,7 +1491,7 @@ def write_corpus(
             "dtype": dtype.str,
             "seed": recipe["seed"],
             "corpus": item["name"],
-            "recipe_fingerprint": fingerprint,
+            "data_fingerprint": fingerprint,
             "vocabulary_size": tokenizer.get_vocab_size(),
             "tokenizer_sha256": file_digest(staging / "tokenizer.json"),
             "tokenizer_training": tokenizer_manifest,
@@ -1504,7 +1524,7 @@ def validate_corpus(recipe_path, workdir):
     model, _ = read_config(
         Path(recipe_path).resolve().parent / recipe["training_config"]
     )
-    fingerprint = recipe_fingerprint(recipe_path)
+    fingerprint = data_fingerprint(recipe_path)
     sources = sources_by_id(recipe)
     result = {}
     for item in recipe["corpora"]:
@@ -1513,7 +1533,7 @@ def validate_corpus(recipe_path, workdir):
         corpus.validate_context(model.context)
         manifest = corpus.manifest
         if (
-            manifest.get("recipe_fingerprint") != fingerprint
+            manifest.get("data_fingerprint") != fingerprint
             or manifest.get("corpus") != item["name"]
         ):
             raise ValueError("the corpus belongs to a different recipe")
@@ -1556,7 +1576,7 @@ def validate_corpus(recipe_path, workdir):
             "files": manifest["files"],
             "sources": manifest["sources"],
         }
-    return {"ready": True, "recipe_fingerprint": fingerprint, "corpora": result}
+    return {"ready": True, "data_fingerprint": fingerprint, "corpora": result}
 
 
 def write_sft_config(recipe_path, data, tokenizer_directory, output):
@@ -1574,7 +1594,7 @@ def write_sft_config(recipe_path, data, tokenizer_directory, output):
         (Path(tokenizer_directory) / "manifest.json").read_text()
     )
     if (
-        tokenizer_manifest["recipe_fingerprint"] != recipe_fingerprint(recipe_path)
+        tokenizer_manifest.get("data_fingerprint") != data_fingerprint(recipe_path)
         or corpus.manifest["tokenizer_sha256"] != tokenizer_manifest["tokenizer_sha256"]
         or corpus.manifest["benchmarks_sha256"]
         != tokenizer_manifest["benchmarks_sha256"]

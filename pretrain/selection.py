@@ -24,10 +24,10 @@ import torch.nn.functional as F
 from .data import LANGUAGES, Corpus, file_digest
 from .recipe import (
     corpus_paths,
+    data_fingerprint,
     output_directory,
     read_json_documents,
     read_recipe,
-    recipe_fingerprint,
     source_targets,
     sources_by_id,
 )
@@ -470,7 +470,7 @@ def write_selection(recipe, item, pool, ranked, summary, fingerprint, output):
                 )
             },
             "corpus": item["name"],
-            "recipe_fingerprint": fingerprint,
+            "data_fingerprint": fingerprint,
             "selection": selection,
             "sources": {
                 source_id: {
@@ -514,13 +514,13 @@ def select_corpora(recipe_path, workdir, device):
     for role in ("prior", "conditional"):
         if file_digest(settings[role]["checkpoint"]) != settings[role]["sha256"]:
             raise ValueError(f"the {role} checkpoint does not match its checksum")
-    fingerprint = recipe_fingerprint(recipe_path)
+    fingerprint = data_fingerprint(recipe_path)
     paths = corpus_paths(recipe, workdir)
     result = {}
     for name in sorted({item["select"]["pool"] for item in recipe["corpora"] if "select" in item}):
         pool = Corpus(paths[name])
         if (
-            pool.manifest.get("recipe_fingerprint") != fingerprint
+            pool.manifest.get("data_fingerprint") != fingerprint
             or pool.manifest.get("corpus") != name
         ):
             raise ValueError("the pool belongs to a different recipe")
