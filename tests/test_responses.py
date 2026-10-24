@@ -15,7 +15,7 @@ import uvicorn
 from fastapi.testclient import TestClient
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 
-from pretrain.conversation import chat_prompt
+from pretrain.conversation import THINK_END, TURN_END, chat_prompt
 from pretrain.model import LanguageModel, ModelConfig
 from responses_api import ModelSettings
 from server import create_app
@@ -188,6 +188,79 @@ class ResponsesTests(unittest.TestCase):
         self.assertIsInstance(response["completed_at"], int)
         self.assertIsNone(response["incomplete_details"])
         self.assertEqual(response["usage"]["output_tokens"], 1)
+
+    def scripted(self, *pieces):
+        """Make the model emit these texts and reserved tokens, one token per step."""
+        tokens = iter(
+            [
+                token
+                for piece in pieces
+                for token in (
+                    [self.tokenizer.token_to_id(piece)]
+                    if self.tokenizer.token_to_id(piece) is not None
+                    else self.tokenizer.encode(piece).ids
+                )
+            ]
+        )
+
+        def scripted_logits(inputs):
+            logits = torch.full(
+                (1, inputs.shape[1], self.tokenizer.get_vocab_size()), -torch.inf
+            )
+            logits[0, -1, next(tokens)] = 1
+            return logits
+
+        return patch.object(
+            self.app.state.responses.backend.model, "forward", side_effect=scripted_logits
+        )
+
+    def test_returns_reasoning_before_the_answer_when_asked_to_reason(self):
+        """推論を頼まれると考える過程から始め、考えた内容を回答とは別の項目で返し、そのトークン数を数える。"""
+        self.post()
+        with self.scripted("2と2", THINK_END, "4", TURN_END):
+            response = self.post(input="2+2?", reasoning={"effort": "medium"}, max_output_tokens=16).json()
+        self.assertEqual(response["status"], "completed")
+        thought, message = response["output"]
+        self.assertEqual(thought["type"], "reasoning")
+        self.assertEqual(thought["content"], [{"type": "reasoning_text", "text": "2と2"}])
+        self.assertEqual(message["content"][0]["text"], "4")
+        self.assertEqual(
+            response["usage"]["output_tokens_details"]["reasoning_tokens"],
+            len(self.tokenizer.encode("2と2").ids) + 1,
+        )
+        self.assertEqual(response["reasoning"]["effort"], "medium")
+        self.assertEqual(
+            response["usage"]["input_tokens"],
+            1 + len(self.tokenizer.encode(chat_prompt([{"role": "user", "content": "2+2?"}], reasoning=True)).ids),
+        )
+
+    def test_streams_reasoning_before_the_answer_and_drops_earlier_reasoning(self):
+        """推論の内容を回答より先に流し、前の応答の推論の項目を入力に含めても会話には入れない。"""
+        self.post()
+        earlier = {"type": "reasoning", "id": "rs_1", "summary": [], "content": [{"type": "reasoning_text", "text": "x"}]}
+        with self.scripted("2と2", THINK_END, "4", TURN_END):
+            response = self.post(
+                input=[{"role": "user", "content": "1+1?"}, earlier, {"role": "assistant", "content": "2"},
+                       {"role": "user", "content": "2+2?"}],
+                reasoning={"effort": "high"},
+                max_output_tokens=16,
+                stream=True,
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+        kinds = [event["type"] for event in events]
+        self.assertLess(kinds.index("response.reasoning_text.delta"), kinds.index("response.reasoning_text.done"))
+        self.assertLess(kinds.index("response.reasoning_text.done"), kinds.index("response.output_text.delta"))
+        final = events[-1]["response"]
+        self.assertEqual([item["type"] for item in final["output"]], ["reasoning", "message"])
+        self.assertEqual(final["output"][1]["content"][0]["text"], "4")
+        history = [
+            {"role": "user", "content": "1+1?"}, {"role": "assistant", "content": "2"}, {"role": "user", "content": "2+2?"}
+        ]
+        self.assertEqual(
+            final["usage"]["input_tokens"],
+            1 + len(self.tokenizer.encode(chat_prompt(history, reasoning=True)).ids),
+        )
 
     def test_streams_complete_japanese_characters_and_final_usage(self):
         """Streams complete Japanese characters and returns the final text and usage."""

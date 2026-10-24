@@ -78,6 +78,22 @@ class InputMessage(InputSchema):
     status: Literal["in_progress", "completed", "incomplete"] | None = None
 
 
+class InputReasoning(InputSchema):
+    """A reasoning item from an earlier response; earlier reasoning is left out of the prompt."""
+
+    type: Literal["reasoning"]
+    id: str | None = None
+    summary: list = Field(default_factory=list)
+    content: list | None = None
+    encrypted_content: str | None = None
+    status: Literal["in_progress", "completed", "incomplete"] | None = None
+
+
+class ReasoningOptions(InputSchema):
+    effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
+    summary: Literal["auto", "concise", "detailed"] | None = None
+
+
 class TextFormat(InputSchema):
     type: Literal["text"] = "text"
 
@@ -88,7 +104,7 @@ class TextOptions(InputSchema):
 
 class ResponseRequest(InputSchema):
     model: str = Field(min_length=1, max_length=128)
-    input: str | list[InputMessage]
+    input: str | list[InputMessage | InputReasoning]
     instructions: str | None = None
     max_output_tokens: int | None = Field(default=None, ge=1)
     temperature: float | None = Field(default=1.0, ge=0, le=2, allow_inf_nan=False)
@@ -113,6 +129,11 @@ class ResponseRequest(InputSchema):
     background: bool | None = False
     truncation: Literal["disabled"] | None = "disabled"
     include: list[str] | None = None
+    reasoning: ReasoningOptions | None = None
+
+    def reasons(self):
+        """Whether the reply reasons before it answers, as low or higher effort asks."""
+        return self.reasoning is not None and self.reasoning.effort in ("low", "medium", "high")
 
     def prompt(self):
         for name in ("store", "previous_response_id", "background", "tools", "include"):
@@ -133,6 +154,8 @@ class ResponseRequest(InputSchema):
             else self.input
         )
         for index, message in enumerate(inputs):
+            if isinstance(message, InputReasoning):
+                continue
             if isinstance(message.content, str):
                 content = message.content
             else:
@@ -149,7 +172,7 @@ class ResponseRequest(InputSchema):
                     "content": content,
                 }
             )
-        return chat_prompt(messages)
+        return chat_prompt(messages, self.reasons())
 
 
 class OutputText(BaseModel):
@@ -165,6 +188,19 @@ class OutputMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
     status: Literal["in_progress", "completed", "incomplete"]
     content: list[OutputText] = Field(default_factory=list)
+
+
+class ReasoningText(BaseModel):
+    type: Literal["reasoning_text"] = "reasoning_text"
+    text: str = ""
+
+
+class OutputReasoning(BaseModel):
+    id: str
+    type: Literal["reasoning"] = "reasoning"
+    status: Literal["in_progress", "completed", "incomplete"]
+    summary: list = Field(default_factory=list)
+    content: list[ReasoningText] = Field(default_factory=list)
 
 
 class Usage(BaseModel):
@@ -191,7 +227,7 @@ class Response(BaseModel):
     model_revision: str
     instructions: str | None = None
     max_output_tokens: int
-    output: list[OutputMessage] = Field(default_factory=list)
+    output: list[OutputReasoning | OutputMessage] = Field(default_factory=list)
     usage: Usage | None = None
     store: Literal[False] = False
     background: Literal[False] = False
@@ -326,7 +362,7 @@ class ResponseService:
             )
             top_p = payload.top_p if payload.top_p is not None else 1.0
             try:
-                generation = self.backend.start(prompt, limit, temperature, top_p)
+                generation = self.backend.start(prompt, limit, temperature, top_p, payload.reasons())
             except ValueError as error:
                 raise APIError(str(error), "input", "context_length_exceeded") from None
             response = Response(
@@ -341,6 +377,7 @@ class ResponseService:
                 metadata=payload.metadata or {},
                 tool_choice=payload.tool_choice or "auto",
                 parallel_tool_calls=payload.parallel_tool_calls is not False,
+                reasoning=(payload.reasoning or ReasoningOptions()).model_dump(),
             )
             return ResponseSession(generation, response, self.capacity)
         except BaseException:
@@ -354,35 +391,45 @@ class ResponseSession:
         self.message = OutputMessage(
             id="msg_" + secrets.token_hex(16), status="in_progress"
         )
+        # A reply that reasons first returns its reasoning as an item before the message.
+        self.thought = (
+            OutputReasoning(id="rs_" + secrets.token_hex(16), status="in_progress")
+            if generation.reasoning
+            else None
+        )
         self.closed = False
+
+    def close_thought(self, status):
+        self.thought.status = status
+        self.thought.content = [ReasoningText(text=self.generation.reasoning_text)]
+
+    def record(self, status):
+        """Put the generated parts in the response's output and count its tokens."""
+        self.message.status = status
+        self.message.content = [OutputText(text=self.generation.text)]
+        if self.thought is not None:
+            self.close_thought("completed" if self.generation.text or self.generation.finished else status)
+        self.response.output = [item for item in (self.thought, self.message) if item is not None]
+        self.response.usage = Usage(
+            input_tokens=self.generation.input_tokens,
+            output_tokens=self.generation.output_tokens,
+            total_tokens=self.generation.input_tokens + self.generation.output_tokens,
+            output_tokens_details={"reasoning_tokens": self.generation.reasoning_tokens},
+        )
 
     def finish(self):
         status = "completed" if self.generation.finished else "incomplete"
-        self.message.status = status
-        self.message.content = [OutputText(text=self.generation.text)]
+        self.record(status)
         self.response.status = status
         self.response.completed_at = (
             int(time.time()) if self.generation.finished else None
         )
         if not self.generation.finished:
             self.response.incomplete_details = {"reason": "max_output_tokens"}
-        self.response.output = [self.message]
-        self.response.usage = Usage(
-            input_tokens=self.generation.input_tokens,
-            output_tokens=self.generation.output_tokens,
-            total_tokens=self.generation.input_tokens + self.generation.output_tokens,
-        )
         return self.response
 
     def fail(self):
-        self.message.status = "incomplete"
-        self.message.content = [OutputText(text=self.generation.text)]
-        self.response.output = [self.message]
-        self.response.usage = Usage(
-            input_tokens=self.generation.input_tokens,
-            output_tokens=self.generation.output_tokens,
-            total_tokens=self.generation.input_tokens + self.generation.output_tokens,
-        )
+        self.record("incomplete")
         self.response.status = "failed"
         self.response.error = {
             "code": "server_error",
@@ -413,29 +460,70 @@ class ResponseSession:
                 + "\n\n"
             )
 
-        address = {"item_id": self.message.id, "output_index": 0, "content_index": 0}
-        try:
-            for kind in ("response.created", "response.in_progress"):
-                yield event(kind, response=self.response.model_dump())
+        index = 0 if self.thought is None else 1
+        address = {"item_id": self.message.id, "output_index": index, "content_index": 0}
+
+        def open_message():
             yield event(
                 "response.output_item.added",
-                output_index=0,
+                output_index=index,
                 item=self.message.model_dump(),
             )
             yield event(
                 "response.content_part.added", **address, part=OutputText().model_dump()
             )
+
+        def thought_done():
+            thinking = {"item_id": self.thought.id, "output_index": 0, "content_index": 0}
+            yield event(
+                "response.reasoning_text.done", **thinking, text=self.generation.reasoning_text
+            )
+            yield event(
+                "response.output_item.done", output_index=0, item=self.thought.model_dump()
+            )
+
+        try:
+            for kind in ("response.created", "response.in_progress"):
+                yield event(kind, response=self.response.model_dump())
+            if self.thought is None:
+                for line in open_message():
+                    yield line
+            else:
+                yield event(
+                    "response.output_item.added",
+                    output_index=0,
+                    item=self.thought.model_dump(),
+                )
+            answering = self.thought is None
             iterator = iter(self.generation)
             sentinel = object()
             while True:
                 # Shield an active model step so cancellation cannot race with closing it.
-                delta = await anyio.to_thread.run_sync(next, iterator, sentinel)
-                if delta is sentinel:
+                item = await anyio.to_thread.run_sync(next, iterator, sentinel)
+                if item is sentinel:
                     break
+                phase, delta = item
+                if phase == "reasoning":
+                    yield event(
+                        "response.reasoning_text.delta",
+                        item_id=self.thought.id,
+                        output_index=0,
+                        content_index=0,
+                        delta=delta,
+                    )
+                    continue
+                if not answering:
+                    self.close_thought("completed")
+                    for line in (*thought_done(), *open_message()):
+                        yield line
+                    answering = True
                 yield event(
                     "response.output_text.delta", **address, delta=delta, logprobs=[]
                 )
             response = self.finish()
+            if not answering:
+                for line in (*thought_done(), *open_message()):
+                    yield line
             yield event(
                 "response.output_text.done",
                 **address,
@@ -449,7 +537,7 @@ class ResponseSession:
             )
             yield event(
                 "response.output_item.done",
-                output_index=0,
+                output_index=index,
                 item=self.message.model_dump(),
             )
             yield event("response." + response.status, response=response.model_dump())
