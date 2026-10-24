@@ -782,21 +782,37 @@ class RemoteFile(io.RawIOBase):
         super().close()
 
 
-def read_url(url):
-    with urllib.request.urlopen(url, timeout=120) as response:
-        return response.read()
+def read_url(url, query=None, attempts=5):
+    """The body at a URL, or the answer to a GraphQL query sent there.
+
+    A failed request is sent again, after the wait a throttling host asks for.
+    """
+    for attempt in range(1, attempts + 1):
+        request = urllib.request.Request(url)
+        if query is not None:
+            request.data = json.dumps(query).encode()
+            request.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                return response.read()
+        except (OSError, http.client.HTTPException) as error:
+            if attempt == attempts:
+                raise
+            wait = getattr(error, "headers", None) and error.headers.get("Retry-After")
+            time.sleep(max(2**attempt, int(wait) if wait and wait.isdigit() else 0))
 
 
 def hub_files(source):
-    """A Hugging Face dataset's files at the source's commit, and how to open one."""
+    """A Hugging Face dataset's files at the source's commit, how to open one and its size."""
     from huggingface_hub import HfApi, HfFileSystem
 
     info = HfApi(token=False).dataset_info(
-        source["repository"], revision=source["revision"]
+        source["repository"], revision=source["revision"], files_metadata=True
     )
     if info.sha != source["revision"]:
         raise ValueError("the resolved dataset revision does not match the recipe")
     filesystem = HfFileSystem(token=False)
+    sizes = {item.rfilename: item.size for item in info.siblings}
 
     def open_file(name):
         # Large reads keep the requests few, well within the Hub's rate limits
@@ -807,11 +823,11 @@ def hub_files(source):
             block_size=16 * 1024 * 1024,
         )
 
-    return [item.rfilename for item in info.siblings], open_file
+    return list(sizes), open_file, lambda names: {name: sizes[name] for name in names}
 
 
 def gitlab_files(source):
-    """A GitLab project's files at the source's commit, and how to open one."""
+    """A GitLab project's files at the source's commit, how to open one and their sizes."""
     project = "{}/api/v4/projects/{}".format(
         source["host"], urllib.parse.quote(source["repository"], safe="")
     )
@@ -840,13 +856,36 @@ def gitlab_files(source):
         )
         return io.BufferedReader(RemoteFile(url), 16 * 1024 * 1024)
 
-    return names, open_file
+    def sizes(names):
+        # One query asks for every file; a large file's size is that of the
+        # content it stands for, not of its pointer.
+        answer = json.loads(
+            read_url(
+                f"{source['host']}/api/graphql",
+                {
+                    "query": "query($project: ID!, $ref: String!, $paths: [String!]!) "
+                    "{ project(fullPath: $project) { repository "
+                    "{ blobs(ref: $ref, paths: $paths) { nodes { path rawSize } } } } }",
+                    "variables": {
+                        "project": source["repository"],
+                        "ref": source["revision"],
+                        "paths": list(names),
+                    },
+                },
+            )
+        )
+        nodes = answer["data"]["project"]["repository"]["blobs"]["nodes"]
+        found = {node["path"]: int(node["rawSize"]) for node in nodes}
+        if set(found) != set(names):
+            raise ValueError(f"{source['id']}'s host did not give the size of every file")
+        return found
+
+    return names, open_file, sizes
 
 
-def iter_source(source, seed, part=None):
-    from pyarrow import parquet
-
-    names, open_file = (gitlab_files if "host" in source else hub_files)(source)
+def source_shards(source):
+    """The files a source reads at its commit, how to open one and their sizes."""
+    names, open_file, sizes = (gitlab_files if "host" in source else hub_files)(source)
     form = source.get("format", "parquet")
     excluded = set(source.get("exclude_files", ()))
     shards = sorted(
@@ -858,11 +897,29 @@ def iter_source(source, seed, part=None):
     )
     if not shards:
         raise ValueError(f"no {form} files found for {source['id']}")
-    random.Random(f"{seed}:{source['id']}").shuffle(shards)
-    if part is not None:
-        if part["count"] > len(shards):
-            raise ValueError(f"{source['id']} has fewer files than parts")
-        shards = shards[part["index"] :: part["count"]]
+    return shards, open_file, sizes
+
+
+def source_sizes(source):
+    """The bytes of each file the source reads, at its commit."""
+    shards, _, sizes = source_shards(source)
+    return sizes(shards)
+
+
+def reading_order(source, shards, seed):
+    """The source's files in the order its readers take them."""
+    order = sorted(shards)
+    random.Random(f"{seed}:{source['id']}").shuffle(order)
+    return order
+
+
+def iter_source(source, seed, part=None):
+    """Yield the rows of a part's files, or of all the source's files."""
+    from pyarrow import parquet
+
+    shards, open_file, _ = source_shards(source)
+    form = source.get("format", "parquet")
+    shards = part["files"] if part is not None else reading_order(source, shards, seed)
     columns = source_columns(source)
     for shard in shards:
         generator = random.Random(f"{seed}:{source['id']}:{shard}")
@@ -1164,10 +1221,14 @@ def source_parts(recipe):
 
     A source used by several corpora is read once, in corpus order, and each
     part covers every corpus's demand on its own subset of the source's files.
-    The split follows only the recipe, so any number of workers gives the same
+    The files are dealt so that the parts hold about equal bytes, and each
+    part's demand follows its bytes, so a part dealt only small files is not
+    asked for what the large ones hold. The split follows only the recipe and
+    the files at each source's commit, so any number of workers gives the same
     corpora. Parts read PART_SLACK beyond their share, so documents found
     earlier in another part or source can be dropped while merging.
     """
+    sources = sources_by_id(recipe)
     demands = {}
     for item in streamed(recipe):
         for source_id, share in item["mix"].items():
@@ -1176,17 +1237,31 @@ def source_parts(recipe):
             )
     parts = []
     for source_id, wanted in demands.items():
+        sizes = source_sizes(sources[source_id])
+        order = reading_order(sources[source_id], sizes, recipe["seed"])
         total = sum(sum(targets.values()) for targets in wanted.values())
-        count = max(1, math.ceil(total / recipe["corpus"]["part_tokens"]))
+        count = min(
+            len(order), max(1, math.ceil(total / recipe["corpus"]["part_tokens"]))
+        )
+        files, loads = [[] for _ in range(count)], [0] * count
+        # Each file, the largest first, goes to the part holding the fewest bytes.
+        for name in sorted(order, key=lambda name: -sizes[name]):
+            lightest = loads.index(min(loads))
+            files[lightest].append(name)
+            loads[lightest] += sizes[name]
+        position = {name: index for index, name in enumerate(order)}
+        held = sum(loads)
         for index in range(count):
+            fraction = loads[index] / held if held else 1 / count
             parts.append(
                 {
                     "source": source_id,
                     "index": index,
                     "count": count,
+                    "files": sorted(files[index], key=position.get),
                     "targets": {
                         name: {
-                            split: math.ceil(target * (1 + PART_SLACK) / count)
+                            split: math.ceil(target * (1 + PART_SLACK) * fraction)
                             for split, target in targets.items()
                         }
                         for name, targets in wanted.items()
@@ -1304,32 +1379,46 @@ def prepare_corpus(
     paths = corpus_paths(recipe, workdir)
     parts = source_parts(recipe)
     Path(workdir).mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=workdir) as scratch:
-        arguments = [
-            (recipe_path, tokenizer_directory, benchmarks_path, part, Path(scratch))
-            for part in parts
-        ]
-        if workers == 1:
-            for argument in arguments:
-                prepare_part(*argument)
-        else:
-            run_parts(arguments, workers)
-        manifests = {}
-        with closing(seen_documents(scratch)) as database:
-            for item in streamed(recipe):
-                manifests[item["name"]] = write_corpus(
-                    recipe,
-                    item,
-                    parts,
-                    Path(scratch),
-                    tokenizer,
-                    tokenizer_directory,
-                    tokenizer_manifest,
-                    benchmark_digest,
-                    fingerprint,
-                    database,
-                    paths[item["name"]],
-                )
+    manifests, short = {}, []
+    # The corpora are kept only once every one of them is whole.
+    with ExitStack() as outputs:
+        staging = {
+            item["name"]: outputs.enter_context(output_directory(paths[item["name"]]))
+            for item in streamed(recipe)
+        }
+        with tempfile.TemporaryDirectory(dir=workdir) as scratch:
+            arguments = [
+                (recipe_path, tokenizer_directory, benchmarks_path, part, Path(scratch))
+                for part in parts
+            ]
+            if workers == 1:
+                for argument in arguments:
+                    prepare_part(*argument)
+            else:
+                run_parts(arguments, workers)
+            with closing(seen_documents(scratch)) as database:
+                for item in streamed(recipe):
+                    try:
+                        manifests[item["name"]] = write_corpus(
+                            recipe,
+                            item,
+                            parts,
+                            Path(scratch),
+                            tokenizer,
+                            tokenizer_directory,
+                            tokenizer_manifest,
+                            benchmark_digest,
+                            fingerprint,
+                            database,
+                            staging[item["name"]],
+                        )
+                    except ShortCorpus as error:
+                        short += error.args[0]
+        if short:
+            raise ValueError(
+                "sources short of their clean corpus budget, which no source may "
+                "repeat or pad to meet: " + "; ".join(short)
+            )
     return manifests
 
 
@@ -1373,6 +1462,10 @@ def read_piece(path):
     return np.memmap(path, mode="r", dtype=TOKEN_PIECE_DTYPE)
 
 
+class ShortCorpus(ValueError):
+    """Sources holding too few clean tokens for their shares of a corpus."""
+
+
 def write_corpus(
     recipe,
     item,
@@ -1384,12 +1477,16 @@ def write_corpus(
     benchmark_digest,
     fingerprint,
     database,
-    output,
+    staging,
 ):
-    """Join the parts' pieces of one corpus in recipe order, dropping repeats."""
+    """Join the parts' pieces of one corpus in recipe order, dropping repeats.
+
+    Every source short of its share is named before the corpus is given up.
+    """
     dtype = np.dtype(TOKEN_PIECE_DTYPE)
     sources = sources_by_id(recipe)
-    with output_directory(output) as staging, ExitStack() as stack:
+    short = []
+    with ExitStack() as stack:
         streams = {
             (split, language): stack.enter_context(
                 (staging / f"{split}_{language}.bin").open("wb")
@@ -1463,12 +1560,20 @@ def write_corpus(
                     counts[language][split] += 1
                     shards.add(document["source_file"])
                 database.commit()
-            if any(
-                stats[f"{split}_tokens"] < target for split, target in targets.items()
-            ):
-                raise ValueError(
-                    f"{source_id} is short of its clean corpus budget; do not repeat or pad the source"
-                )
+            print(
+                json.dumps(
+                    {"corpus": item["name"], "source": source_id, **dict(stats)}
+                ),
+                flush=True,
+            )
+            missing = [
+                f"{item['name']} {source_id} lacks {target - stats[f'{split}_tokens']:,} {split} tokens"
+                for split, target in targets.items()
+                if stats[f"{split}_tokens"] < target
+            ]
+            if missing:
+                short += missing
+                continue
             used[source_id] = {
                 **source,
                 "share": share,
@@ -1476,12 +1581,8 @@ def write_corpus(
                 "statistics": dict(stats),
                 "shards": sorted(shards),
             }
-            print(
-                json.dumps(
-                    {"corpus": item["name"], "source": source_id, **dict(stats)}
-                ),
-                flush=True,
-            )
+        if short:
+            raise ShortCorpus(short)
         stack.close()
         shutil.copyfile(
             tokenizer_directory / "tokenizer.json", staging / "tokenizer.json"

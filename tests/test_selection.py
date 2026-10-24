@@ -266,6 +266,10 @@ select = {{ pool = "pool", method = "learnable" }}
                 "pretrain.recipe.iter_source",
                 side_effect=lambda source, seed, part=None: iter(rows[source["id"]]),
             ),
+            patch(
+                "pretrain.recipe.source_sizes",
+                side_effect=lambda source: {source["prefix"] + "fixture.parquet": 1},
+            ),
             contextlib.redirect_stdout(io.StringIO()),
         ):
             prepare_tokenizer(recipe_path, self.root / "tokenizer", benchmarks)

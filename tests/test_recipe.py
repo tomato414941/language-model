@@ -49,6 +49,7 @@ from pretrain.recipe import (
     prepare_corpus,
     prepare_tokenizer,
     read_recipe,
+    source_sizes,
     validate_corpus,
     validate_source,
     validation_document,
@@ -150,16 +151,37 @@ class RecipeTests(unittest.TestCase):
                 )
                 for index in range(100)
             ]
+        self.layouts = {}
         self.source_patch = patch(
             "pretrain.recipe.iter_source",
-            side_effect=lambda source, seed, part=None: iter(
-                self.rows[source["id"]][
-                    slice(part["index"], None, part["count"]) if part else slice(None)
-                ]
+            side_effect=lambda source, seed, part=None: (
+                row
+                for index, row in enumerate(self.rows[source["id"]])
+                if part is None or self.file(source, index) in part["files"]
             ),
         )
         self.source_patch.start()
         self.addCleanup(self.source_patch.stop)
+        sizes = patch(
+            "pretrain.recipe.source_sizes",
+            side_effect=lambda source: {
+                name: 1000 * count
+                for name, count in Counter(
+                    self.file(source, index)
+                    for index in range(len(self.rows[source["id"]]))
+                ).items()
+            },
+        )
+        sizes.start()
+        self.addCleanup(sizes.stop)
+
+    def file(self, source, index):
+        """The file holding a source's row, of 1,000 bytes a row.
+
+        The rows take turns in four files unless the test lays them out.
+        """
+        layout = self.layouts.get(source["id"], lambda index: f"fixture-{index % 4}")
+        return f"{source['prefix']}{layout(index)}.parquet"
 
     def prepare(self):
         tokenizer = self.root / "tokenizer"
@@ -429,17 +451,43 @@ class RecipeTests(unittest.TestCase):
                 self.recipe_path, self.root / "tokenizer", self.root, self.benchmarks, 2
             )
 
-    def test_必要量に満たないデータ源を通知する(self):
+    def test_必要量に満たないデータ源をまとめて通知しコーパスを残さない(self):
         prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)
         self.rows["ja-hq"] = []
+        self.rows["en-math"] = self.rows["en-math"][:1]
         with self.assertRaisesRegex(ValueError, "short of the tokenizer sample budget"):
             prepare_tokenizer(
                 self.recipe_path, self.root / "second-tokenizer", self.benchmarks
             )
-        with self.assertRaisesRegex(ValueError, "short of its clean corpus budget"):
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(
+                ValueError, r"main ja-hq lacks 900 train tokens.*main en-math lacks"
+            ),
+        ):
             prepare_corpus(
                 self.recipe_path, self.root / "tokenizer", self.root, self.benchmarks
             )
+        self.assertFalse((self.root / "corpus").exists())
+
+    def test_大きさの違うファイルに分かれたデータ源からも必要量を集める(self):
+        """A part dealt only small files is not asked for what the large one holds."""
+        self.recipe_path.write_text(
+            self.recipe_path.read_text().replace("[corpus]\n", "[corpus]\npart_tokens = 600\n")
+        )
+        rows = self.rows["ja-hq"]
+        for index, row in enumerate(rows):
+            # Short documents, so the budget takes several and none overshoots it.
+            row["text"] = "自然科学と歴史を説明する短い文章です。" * 3 + str(index)
+        for row in rows[:3]:
+            row["text"] = "短い。"
+        # Three small files hold only rejected rows; one large file holds the rest.
+        self.layouts["ja-hq"] = lambda index: f"small-{index}" if index < 3 else "large"
+        corpus = self.prepare()
+        stats = corpus.manifest["sources"]["ja-hq"]["statistics"]
+        targets = corpus.manifest["sources"]["ja-hq"]["targets"]
+        self.assertGreaterEqual(stats["train_tokens"], targets["train"])
+        self.assertGreaterEqual(stats["validation_tokens"], targets["validation"])
 
     def test_変更されたコーパスの出典を検知する(self):
         self.prepare()
@@ -559,7 +607,10 @@ class RecipeTests(unittest.TestCase):
             api.return_value.dataset_info.return_value = SimpleNamespace(
                 sha=source["revision"],
                 siblings=[
-                    SimpleNamespace(rfilename=source["prefix"] + "fixture.parquet")
+                    SimpleNamespace(
+                        rfilename=source["prefix"] + "fixture.parquet",
+                        size=file.stat().st_size,
+                    )
                 ],
             )
             filesystem.return_value.open.side_effect = lambda *args, **kwargs: (
@@ -826,8 +877,8 @@ mix = {{ ja-hq = 25, ja-wiki = 25, en-web = 25, en-wiki = 25 }}
                 api.return_value.dataset_info.return_value = SimpleNamespace(
                     sha=source["revision"],
                     siblings=[
-                        SimpleNamespace(rfilename="part-0." + form),
-                        SimpleNamespace(rfilename="part-1.parquet"),
+                        SimpleNamespace(rfilename="part-0." + form, size=len(data)),
+                        SimpleNamespace(rfilename="part-1.parquet", size=0),
                     ],
                 )
                 filesystem.return_value.open.side_effect = lambda *a, data=data, **k: (
@@ -841,7 +892,7 @@ mix = {{ ja-hq = 25, ja-wiki = 25, en-web = 25, en-wiki = 25 }}
             self.assertTrue(all("extra" not in row for row in loaded))
             self.assertEqual({row["source_file"] for row in loaded}, {"part-0." + form})
 
-    def test_GitLabの固定した版から読み途中で切れた応答は続きから読む(self):
+    def test_GitLabの固定した版の大きさを中身を読まずに調べ途中で切れた応答は続きから読む(self):
         revision = "a" * 40
         rows = [{"text": f"数学の問題 {index}", "category": "math"} for index in range(400)]
         data = gzip.compress("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows).encode())
@@ -884,6 +935,20 @@ mix = {{ ja-hq = 25, ja-wiki = 25, en-web = 25, en-wiki = 25 }}
                     body, cut[0] = body[: len(body) // 2], False
                 self.wfile.write(body)
 
+            def do_POST(self):
+                # GraphQL answers with the size of the content behind each pointer.
+                asked = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                self.server_test.assertEqual(asked["variables"]["ref"], revision)
+                nodes = [
+                    {"path": name, "rawSize": str(len(files[name]))}
+                    for name in asked["variables"]["paths"]
+                ]
+                body = json.dumps({"data": {"project": {"repository": {"blobs": {"nodes": nodes}}}}}).encode()
+                self.send_response(200 if self.path == "/api/graphql" else 404)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
             def log_message(self, *_args):
                 pass
 
@@ -904,7 +969,9 @@ mix = {{ ja-hq = 25, ja-wiki = 25, en-web = 25, en-wiki = 25 }}
             "exclude_files": ["ja/math/excluded.jsonl.gz"],
         }
         with patch("pretrain.recipe.time.sleep"):
+            sizes = source_sizes(source)
             loaded = list(iter_source(source, 42))
+        self.assertEqual(sizes, {"ja/math/questions.jsonl.gz": len(data)})
         self.assertEqual(sorted(row["text"] for row in loaded), sorted(row["text"] for row in rows))
         self.assertEqual({row["source_file"] for row in loaded}, {"ja/math/questions.jsonl.gz"})
         # The second request asks for the rest after the bytes that arrived.
