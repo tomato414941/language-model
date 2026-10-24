@@ -14,7 +14,7 @@ from .training import atomic_save, load_checkpoint
 
 # The projections that add a layer's attention and feed-forward results to the
 # residual stream.
-OUTPUTS = ("attention_output.weight", "down.weight")
+OUTPUTS = ("attention_output.weight", "down.weight", "experts.down", "linear_output.weight")
 # States that only continue the run that saved them.
 RUN_STATES = ("optimizer", "scaler", "sampling_rng", "torch_rng", "cuda_rng")
 
@@ -27,6 +27,9 @@ def grow_checkpoint(checkpoint, output, factor=2):
     config = ModelConfig(**saved["model_config"])
     if config.architecture != "llama":
         raise ValueError("growth needs the llama architecture")
+    if config.full_attention_every is not None:
+        # A layer's kind follows its position, which copies would shift.
+        raise ValueError("growth keeps layers' kinds only when every layer attends")
     weights = {}
     for name, value in saved["model"].items():
         if not name.startswith("blocks."):

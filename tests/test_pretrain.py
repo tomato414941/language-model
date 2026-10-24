@@ -22,7 +22,14 @@ import torch
 
 from pretrain.data import Corpus, prepare_data, token_bytes
 from pretrain.growth import grow_checkpoint
-from pretrain.model import LanguageModel, ModelConfig
+from pretrain.model import (
+    RESET,
+    Experts,
+    LanguageModel,
+    ModelConfig,
+    chunked_delta_rule,
+    recurrent_delta_rule,
+)
 from pretrain.training import (
     TrainConfig,
     evaluate,
@@ -193,6 +200,22 @@ class PretrainingTests(unittest.TestCase):
                 )
                 for gate in ("headwise", "elementwise")
             ),
+            ModelConfig(
+                width=24,
+                heads=4,
+                kv_heads=2,
+                layers=4,
+                context=64,
+                architecture="llama",
+                intermediate_size=64,
+                qk_norm=True,
+                attention_gate="headwise",
+                document_start=bos,
+                full_attention_every=2,
+                experts=4,
+                active_experts=2,
+                prediction_depth=1,
+            ),
         ):
             torch.manual_seed(3)
             model = LanguageModel(258, config).eval()
@@ -232,20 +255,35 @@ class PretrainingTests(unittest.TestCase):
     def test_文書を区切ると同じ窓に詰めた前の文書を見ずに予測する(self):
         """文書の始まりの記号を指定すると、同じ窓に詰めた前の文書を見ずに、その文書だけのときと同じ予測をする。"""
         bos = self.corpus.tokenizer.token_to_id("<|bos|>")
-        config = dataclasses.replace(self.llama_config(), document_start=bos)
-        torch.manual_seed(5)
-        model = LanguageModel(258, config).eval()
-        # Larger weights make each prediction depend on the earlier positions.
-        with torch.no_grad():
-            for parameter in model.parameters():
-                parameter.normal_(std=0.3)
-        earlier, later = [bos, 5, 6, 7, 8], [bos, 9, 10, 11]
-        packed = model(torch.tensor([earlier + later]))[0, len(earlier) :]
-        torch.testing.assert_close(packed, model(torch.tensor([later]))[0], rtol=1e-4, atol=1e-4)
-        unseparated = LanguageModel(258, dataclasses.replace(config, document_start=None)).eval()
-        unseparated.load_state_dict(model.state_dict())
-        mixed = unseparated(torch.tensor([earlier + later]))[0, len(earlier) :]
-        self.assertFalse(torch.allclose(mixed, packed, atol=1e-3))
+        for config in (
+            dataclasses.replace(self.llama_config(), document_start=bos),
+            dataclasses.replace(
+                self.llama_config(),
+                layers=4,
+                document_start=bos,
+                full_attention_every=2,
+                experts=4,
+                active_experts=2,
+            ),
+        ):
+            torch.manual_seed(5)
+            model = LanguageModel(258, config).eval()
+            # Larger weights make each prediction depend on the earlier positions.
+            with torch.no_grad():
+                for name, parameter in model.named_parameters():
+                    if not name.endswith(("decay_rate", "decay_step")):
+                        parameter.normal_(std=0.3)
+            earlier, later = [bos, 5, 6, 7, 8], [bos, 9, 10, 11]
+            packed = model(torch.tensor([earlier + later]))[0, len(earlier) :]
+            torch.testing.assert_close(
+                packed, model(torch.tensor([later]))[0], rtol=1e-4, atol=1e-4
+            )
+            unseparated = LanguageModel(
+                258, dataclasses.replace(config, document_start=None)
+            ).eval()
+            unseparated.load_state_dict(model.state_dict())
+            mixed = unseparated(torch.tensor([earlier + later]))[0, len(earlier) :]
+            self.assertFalse(torch.allclose(mixed, packed, atol=1e-3))
 
     def test_文書の区切りには文書を始める記号を求める(self):
         """文書の始まりとして、語彙の文書開始記号以外を指定した学習を断る。"""
@@ -279,6 +317,94 @@ class PretrainingTests(unittest.TestCase):
             dataclasses.replace(self.llama_config(), attention_gate="scalar")
         with self.assertRaisesRegex(ValueError, "require llama"):
             ModelConfig(width=24, heads=4, layers=1, context=16, qk_norm=True)
+        with self.assertRaisesRegex(ValueError, "active_experts"):
+            dataclasses.replace(self.llama_config(), experts=4)
+        with self.assertRaisesRegex(ValueError, "require experts"):
+            dataclasses.replace(self.llama_config(), expert_size=8)
+        with self.assertRaisesRegex(ValueError, "prediction_depth"):
+            dataclasses.replace(self.llama_config(), prediction_depth=5)
+
+    def test_差分規則をまとめて解いても一つずつ解いたときと同じ出力と状態を得る(self):
+        """ゲート付き差分規則をチャンクごとにまとめて解いても、文書の区切りと初めの状態を含めて、一位置ずつ解いたときと同じ出力と最後の状態を得る。"""
+        torch.manual_seed(0)
+        batch, heads, length, width = 2, 3, 150, 8
+        query, key = (
+            torch.nn.functional.normalize(torch.randn(batch, heads, length, width), dim=-1)
+            for _ in range(2)
+        )
+        value = torch.randn(batch, heads, length, 5)
+        decay = -torch.rand(batch, heads, length) * 0.5
+        decay[:, :, 70] = RESET
+        beta = torch.rand(batch, heads, length)
+        state = torch.randn(batch, heads, width, 5)
+        recurrent = recurrent_delta_rule(query, key, value, decay, beta, state)
+        chunked = chunked_delta_rule(query, key, value, decay, beta, state)
+        for expected, actual in zip(recurrent, chunked, strict=True):
+            torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-4)
+
+    def test_専門家の混合は各単語を点数の高い専門家に送り点数で混ぜる(self):
+        """専門家の混合は、各単語を点数の高い専門家だけに送り、その出力を点数の比で混ぜ、偏りと点数の大きさを抑える損失を返す。"""
+        torch.manual_seed(0)
+        experts = Experts(width=8, count=4, active=2, size=6)
+        hidden = torch.randn(3, 5, 8)
+        mixed, loss = experts(hidden)
+        tokens = hidden.reshape(-1, 8)
+        probabilities = experts.router(tokens).softmax(-1)
+        for token, output, scores in zip(tokens, mixed.reshape(-1, 8), probabilities):
+            top, chosen = scores.topk(2)
+            expected = sum(
+                weight / top.sum()
+                * (torch.nn.functional.silu(token @ experts.gate[index]) * (token @ experts.up[index]))
+                @ experts.down[index]
+                for weight, index in zip(top, chosen)
+            )
+            torch.testing.assert_close(output, expected, rtol=1e-4, atol=1e-5)
+        # Even routing makes the balancing loss 1, its least value, weighted by 0.01.
+        self.assertGreater(loss.item(), 0.01)
+
+    def test_さらに先の予測は学習の目的にだけ加わる(self):
+        """さらに先の単語の予測は学習中の目的にだけ加わり、評価の損失は次の単語の予測だけで測る。"""
+        torch.manual_seed(0)
+        model = LanguageModel(258, dataclasses.replace(self.llama_config(), prediction_depth=2))
+        tokens = torch.randint(2, 258, (2, 17))
+        x, y = tokens[:, :-1], tokens[:, 1:]
+        model.eval()
+        evaluated = model(x, y)
+        expected = torch.nn.functional.cross_entropy(model(x).flatten(0, 1), y.flatten())
+        torch.testing.assert_close(evaluated, expected)
+        model.train()
+        trained = model(x, y)
+        self.assertGreater(trained.item(), evaluated.item())
+        trained.backward()
+        for name, parameter in model.predictors.named_parameters():
+            self.assertIsNotNone(parameter.grad, name)
+            self.assertGreater(parameter.grad.abs().sum().item(), 0, name)
+
+    def test_線形注意と専門家とさらに先の予測を入れて両言語を学ぶ(self):
+        """Gated DeltaNet の層、専門家の混合、さらに先の予測を入れても、両言語の検証損失を下げる。"""
+        bos = self.corpus.tokenizer.token_to_id("<|bos|>")
+        self.model_config = dataclasses.replace(
+            self.llama_config(),
+            layers=4,
+            qk_norm=True,
+            attention_gate="headwise",
+            document_start=bos,
+            full_attention_every=2,
+            experts=4,
+            active_experts=2,
+            prediction_depth=1,
+        )
+        torch.manual_seed(42)
+        before = evaluate(
+            LanguageModel(258, self.model_config),
+            self.corpus,
+            torch.device("cpu"),
+            batches=2,
+            batch_size=4,
+        )
+        after = self.run_training("modern-2026", self.config(steps=24))["validation"]
+        for language in ("ja", "en"):
+            self.assertLess(after[language]["loss"], before[language]["loss"] * 0.8)
 
     def test_checkpoint_restores_predictions_and_seeded_long_prompt_generation(self):
         """保存した重みと語彙を復元し、長い日英の接頭辞を保って再現可能に生成する。"""
@@ -410,6 +536,34 @@ class PretrainingTests(unittest.TestCase):
                 **changes,
             }
         )
+
+    def test_文脈を伸ばす段階は文脈長と回転の基準だけを変えて続ける(self):
+        """保存した学習を、文脈長と回転位置埋め込みの基準だけを変えて続け、ほかの設定の違いは断る。"""
+        self.model_config = self.llama_config()
+        self.run_training("short", self.wsd_config(), max_steps=6)
+        longer = dataclasses.replace(self.model_config, context=32, rope_theta=40000.0)
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = train(
+                self.data,
+                self.root / "long",
+                longer,
+                self.wsd_config(),
+                torch.device("cpu"),
+                continue_from=self.root / "short/last.pt",
+            )
+        self.assertEqual(result["step"], 8)
+        model, _, saved = load_model(self.root / "long/last.pt", torch.device("cpu"))
+        self.assertEqual((model.config.context, model.config.rope_theta), (32, 40000.0))
+        self.assertEqual(saved["tokens_seen"], load_checkpoint(self.root / "short/last.pt")["tokens_seen"] + 2 * 4 * 2 * 32)
+        with self.assertRaisesRegex(ValueError, "same model configuration"):
+            train(
+                self.data,
+                self.root / "wider",
+                dataclasses.replace(longer, intermediate_size=32),
+                self.wsd_config(),
+                torch.device("cpu"),
+                continue_from=self.root / "short/last.pt",
+            )
 
     def test_wsd_schedule_holds_the_peak_and_decays_over_the_last_steps(self):
         config = self.wsd_config(steps=10, decay_steps=4)
@@ -677,6 +831,13 @@ class PretrainingTests(unittest.TestCase):
         for model_config in (
             self.llama_config(),
             dataclasses.replace(self.llama_config(), qk_norm=True, attention_gate="elementwise"),
+            dataclasses.replace(
+                self.llama_config(),
+                full_attention_every=2,
+                experts=4,
+                active_experts=2,
+                prediction_depth=1,
+            ),
         ):
             model = LanguageModel(258, model_config)
             muon, adamw = make_optimizer(model, config, torch.device("cpu")).optimizers

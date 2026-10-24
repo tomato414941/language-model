@@ -4,7 +4,7 @@ import os
 import time
 import tomllib
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -376,6 +376,19 @@ def load_model(path, device):
     return model.to(device), tokenizer, payload
 
 
+def same_weights(saved, config):
+    """Whether a saved model carries over to this configuration.
+
+    A rotary model may change only its context and the base of its rotation,
+    as a phase that lengthens the context does, raising the base as Llama 3
+    and SmolLM3 do; its weights do not depend on either.
+    """
+    saved = ModelConfig(**saved)
+    if config.architecture == "llama":
+        saved = replace(saved, context=config.context, rope_theta=config.rope_theta)
+    return saved == config
+
+
 def train(
     data,
     output,
@@ -428,7 +441,7 @@ def train(
     initialization = None
     if initialize_from is not None:
         saved = load_checkpoint(initialize_from)
-        if ModelConfig(**saved["model_config"]) != model_config:
+        if not same_weights(saved["model_config"], model_config):
             raise ValueError("initialization requires the same model configuration")
         if Tokenizer.from_str(saved["tokenizer"]).to_str() != corpus.tokenizer.to_str():
             raise ValueError("initialization requires the same tokenizer")
@@ -441,7 +454,7 @@ def train(
         }
     if continue_from is not None:
         saved = load_checkpoint(continue_from)
-        if ModelConfig(**saved["model_config"]) != model_config:
+        if not same_weights(saved["model_config"], model_config):
             raise ValueError("continuation requires the same model configuration")
         if Tokenizer.from_str(saved["tokenizer"]).to_str() != corpus.tokenizer.to_str():
             raise ValueError("continuation requires the same tokenizer")
