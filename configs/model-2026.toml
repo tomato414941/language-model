@@ -1,0 +1,39 @@
+# The 2026 model: rotary attention with normalized queries and keys, a gate
+# per head and attention within documents, trained with Muon on a
+# warmup-stable-decay schedule. The size and the step counts are provisional
+# until the measured cost per token on interruptible GPUs sets them.
+[model]
+architecture = "llama"
+width = 1024
+heads = 16
+kv_heads = 4
+layers = 24
+intermediate_size = 2752
+context = 2048
+rope_theta = 10000.0
+qk_norm = true
+attention_gate = "headwise"
+# The tokenizer's BOS, which begins each document.
+document_start = 0
+
+[training]
+# 128 windows of 2,048 tokens per update: 262,144 tokens.
+steps = 44800
+batch_size = 8
+accumulation_steps = 16
+learning_rate = 0.0016
+min_learning_rate = 0.00016
+warmup_steps = 1000
+weight_decay = 0.1
+gradient_clip = 1.0
+eval_every = 1000
+# About every 15 minutes on one GPU, so an interruption loses little.
+save_every = 100
+eval_batches = 16
+log_every = 20
+seed = 42
+schedule = "wsd"
+decay_steps = 6800
+decay_shape = "1-sqrt"
+sampling = "sequential"
+optimizer = "muon"

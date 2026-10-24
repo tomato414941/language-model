@@ -96,6 +96,27 @@ def main(argv=None):
         type=int,
         help="どれかの回答がこのトークン数を超える会話を除く",
     )
+    preferences = commands.add_parser(
+        "prepare-preferences",
+        help="好ましい回答と好ましくない回答の組を会話形式にし、最後の回答を学習対象として並べる",
+    )
+    preferences.add_argument("--source", type=Path, required=True, help="言語ごとの組の JSON 行を置いた場所")
+    preferences.add_argument("--tokenizer", type=Path, required=True)
+    preferences.add_argument("--output", type=Path, required=True)
+    preferences.add_argument("--context", type=int, default=2048)
+    preferences.add_argument("--validation-pairs", type=int, default=500)
+    preferences.add_argument("--benchmarks", type=Path, help="このベンチマークの問題を含む組を除く")
+    preferences.add_argument("--seed", type=int, default=42)
+    optimization = commands.add_parser(
+        "train-preferences",
+        help="チェックポイントから、好ましい回答を選ぶように DPO で学習する",
+    )
+    optimization.add_argument("--config", type=Path, required=True)
+    optimization.add_argument("--data", type=Path, required=True)
+    optimization.add_argument("--initialize-from", type=Path, required=True)
+    optimization.add_argument("--output", type=Path, required=True)
+    optimization.add_argument("--device", choices=("cpu", "cuda", "auto"), default="cuda")
+    optimization.add_argument("--precision", default="auto")
     prepare = commands.add_parser(
         "prepare", help="文書を重複除去し、BPEと学習・検証データを作る"
     )
@@ -390,6 +411,31 @@ def main(argv=None):
                 args.benchmarks,
                 args.seed,
                 args.max_reply_tokens,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "prepare-preferences":
+            from .preference import prepare_preferences
+
+            result = prepare_preferences(
+                args.source,
+                args.output,
+                args.tokenizer,
+                args.context,
+                args.validation_pairs,
+                args.benchmarks,
+                args.seed,
+            )
+            print(json.dumps(result["pairs"], ensure_ascii=False, indent=2))
+        elif args.command == "train-preferences":
+            from .preference import read_config, train_preferences
+
+            result = train_preferences(
+                args.data,
+                args.output,
+                args.initialize_from,
+                read_config(args.config),
+                select_device(args.device),
+                args.precision,
             )
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command == "prepare":

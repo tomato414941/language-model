@@ -287,6 +287,8 @@ prefix = "ja/math/"
 format = "jsonl.gz"
 license = "Apache-2.0, CC-BY-4.0, CC-BY-SA-3.0 or CC-BY-SA-4.0 by component"
 terms_url = "https://gitlab.llm-jp.nii.ac.jp/datasets/llm-jp-corpus-midtraining-v1/-/blob/main/README.md"
+# A question with its answer is often shorter than a web page worth keeping.
+minimum_characters = 100
 exclude_files = ["ja/math/open-math-inst-phi3-ja.jsonl.gz"]
 
 [[sources]]
@@ -299,6 +301,8 @@ prefix = "ja/coding/"
 format = "jsonl.gz"
 license = "Apache-2.0, CC-BY-4.0, CC-BY-SA-3.0 or CC-BY-SA-4.0 by component"
 terms_url = "https://gitlab.llm-jp.nii.ac.jp/datasets/llm-jp-corpus-midtraining-v1/-/blob/main/README.md"
+# A question with its answer is often shorter than a web page worth keeping.
+minimum_characters = 100
 
 # Questions with answers and reasoning for the phase that lowers the learning
 # rate, in the conversation format that instruction tuning reads. Small models
@@ -328,6 +332,8 @@ prefix = "ja/general/"
 format = "jsonl.gz"
 license = "Apache-2.0, CC-BY-4.0, CC-BY-SA-3.0 or CC-BY-SA-4.0 by component"
 terms_url = "https://gitlab.llm-jp.nii.ac.jp/datasets/llm-jp-corpus-midtraining-v1/-/blob/main/README.md"
+# A question with its answer is often shorter than a web page worth keeping.
+minimum_characters = 100
 
 [[sources]]
 id = "ja-reasoning-llmjp"
@@ -339,6 +345,8 @@ prefix = "ja/reasoning/"
 format = "jsonl.gz"
 license = "Apache-2.0, CC-BY-4.0, CC-BY-SA-3.0 or CC-BY-SA-4.0 by component"
 terms_url = "https://gitlab.llm-jp.nii.ac.jp/datasets/llm-jp-corpus-midtraining-v1/-/blob/main/README.md"
+# A question with its answer is often shorter than a web page worth keeping.
+minimum_characters = 100
 
 [[sources]]
 id = "en-general-llmjp"
@@ -350,6 +358,8 @@ prefix = "en/general/"
 format = "jsonl.gz"
 license = "Apache-2.0, ODC-By-1.0, CC-BY-4.0 or CC-BY-SA-4.0 by component"
 terms_url = "https://gitlab.llm-jp.nii.ac.jp/datasets/llm-jp-corpus-midtraining-v1/-/blob/main/README.md"
+# A question with its answer is often shorter than a web page worth keeping.
+minimum_characters = 100
 
 [[sources]]
 id = "en-reasoning-llmjp"
@@ -361,6 +371,8 @@ prefix = "en/reasoning/"
 format = "jsonl.gz"
 license = "Apache-2.0, ODC-By-1.0, CC-BY-4.0 or CC-BY-SA-4.0 by component"
 terms_url = "https://gitlab.llm-jp.nii.ac.jp/datasets/llm-jp-corpus-midtraining-v1/-/blob/main/README.md"
+# A question with its answer is often shorter than a web page worth keeping.
+minimum_characters = 100
 
 [[sources]]
 id = "en-math-llmjp"
@@ -372,6 +384,8 @@ prefix = "en/math/"
 format = "jsonl.gz"
 license = "Apache-2.0, ODC-By-1.0, CC-BY-4.0 or CC-BY-SA-4.0 by component"
 terms_url = "https://gitlab.llm-jp.nii.ac.jp/datasets/llm-jp-corpus-midtraining-v1/-/blob/main/README.md"
+# A question with its answer is often shorter than a web page worth keeping.
+minimum_characters = 100
 # OLMo 2's synthetic mathematics, whose generating models are not all stated,
 # and GSM8K's training questions, which decontamination would drop anyway.
 exclude_files = ["en/math/dolmino-synth-math-en.jsonl.gz", "en/math/gsm8k-en.jsonl.gz"]
@@ -386,3 +400,5 @@ prefix = "en/coding/"
 format = "jsonl.gz"
 license = "Apache-2.0, ODC-By-1.0, CC-BY-4.0 or CC-BY-SA-4.0 by component"
 terms_url = "https://gitlab.llm-jp.nii.ac.jp/datasets/llm-jp-corpus-midtraining-v1/-/blob/main/README.md"
+# A question with its answer is often shorter than a web page worth keeping.
+minimum_characters = 100
