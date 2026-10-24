@@ -16,6 +16,16 @@ class ModelConfig:
     kv_heads: int | None = None
     intermediate_size: int | None = None
     rope_theta: float = 10000.0
+    # Scale each head's queries and keys to unit RMS before rotation, as
+    # Qwen3 and Gemma 3 do, which steadies training.
+    qk_norm: bool = False
+    # A sigmoid gate on the attention output, computed from the block's
+    # normalized input (Qiu et al., NeurIPS 2025): "headwise" gives each head
+    # one gate, "elementwise" one for each of its output dimensions.
+    attention_gate: str | None = None
+    # The token that begins each document. When set, attention stays within
+    # documents, so the documents packed into a window do not see one another.
+    document_start: int | None = None
 
     def __post_init__(self):
         if any(
@@ -41,11 +51,24 @@ class ModelConfig:
             raise ValueError("rope_theta must be finite and positive")
         if self.architecture == "llama" and (self.width // self.heads) % 2:
             raise ValueError("rotary attention requires an even head dimension")
+        if type(self.qk_norm) is not bool:
+            raise ValueError("qk_norm must be true or false")
+        if self.attention_gate not in (None, "headwise", "elementwise"):
+            raise ValueError("attention_gate must be headwise or elementwise")
+        if self.document_start is not None and (
+            type(self.document_start) is not int or self.document_start < 0
+        ):
+            raise ValueError("document_start must be a token id")
         if self.architecture == "gpt" and (
-            self.kv_heads is not None or self.intermediate_size is not None
+            self.kv_heads is not None
+            or self.intermediate_size is not None
+            or self.qk_norm
+            or self.attention_gate is not None
+            or self.document_start is not None
         ):
             raise ValueError(
-                "kv_heads and intermediate_size require llama architecture"
+                "kv_heads, intermediate_size, qk_norm, attention_gate and "
+                "document_start require llama architecture"
             )
 
 
@@ -88,6 +111,13 @@ class LlamaBlock(nn.Module):
         )
         self.attention_output = nn.Linear(config.width, config.width, bias=False)
         self.rotary = Rotary(self.head_width, config.rope_theta)
+        self.query_norm = self.key_norm = self.attention_gate = None
+        if config.qk_norm:
+            self.query_norm = nn.RMSNorm(self.head_width, eps=1e-6)
+            self.key_norm = nn.RMSNorm(self.head_width, eps=1e-6)
+        if config.attention_gate is not None:
+            gates = config.heads if config.attention_gate == "headwise" else config.width
+            self.attention_gate = nn.Linear(config.width, gates, bias=False)
         self.gate = nn.Linear(config.width, intermediate, bias=False)
         self.up = nn.Linear(config.width, intermediate, bias=False)
         self.down = nn.Linear(intermediate, config.width, bias=False)
@@ -96,12 +126,14 @@ class LlamaBlock(nn.Module):
         batch, length, width = hidden.shape
         normalized = self.norm_attention(hidden)
         query = self.query(normalized).view(batch, length, self.heads, self.head_width)
-        key, value = self.key_value(normalized).chunk(2, dim=-1)
         key, value = [
-            tensor.view(batch, length, self.kv_heads, self.head_width).transpose(1, 2)
-            for tensor in (key, value)
+            tensor.view(batch, length, self.kv_heads, self.head_width)
+            for tensor in self.key_value(normalized).chunk(2, dim=-1)
         ]
-        query, key = self.rotary(query.transpose(1, 2), key, positions)
+        if self.query_norm is not None:
+            query, key = self.query_norm(query), self.key_norm(key)
+        query, key = self.rotary(query.transpose(1, 2), key.transpose(1, 2), positions)
+        value = value.transpose(1, 2)
         if cache is not None:
             key, value = cache.extend(key, value)
         attended = F.scaled_dot_product_attention(
@@ -111,9 +143,11 @@ class LlamaBlock(nn.Module):
             attn_mask=mask,
             is_causal=mask is None,
             enable_gqa=self.heads != self.kv_heads,
-        )
-        attended = attended.transpose(1, 2).contiguous().view(batch, length, width)
-        hidden = hidden + self.attention_output(attended)
+        ).transpose(1, 2)
+        if self.attention_gate is not None:
+            gate = torch.sigmoid(self.attention_gate(normalized))
+            attended = attended * gate.view(batch, length, self.heads, -1)
+        hidden = hidden + self.attention_output(attended.reshape(batch, length, width))
         normalized = self.norm_mlp(hidden)
         return hidden + self.down(F.silu(self.gate(normalized)) * self.up(normalized))
 
@@ -198,6 +232,18 @@ class LanguageModel(nn.Module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
             nn.init.normal_(module.weight, std=0.02)
 
+    def document_mask(self, tokens):
+        """Which earlier positions each position sees within its own document.
+
+        None when documents are not separated, for plain causal attention.
+        """
+        if self.config.document_start is None:
+            return None
+        documents = (tokens == self.config.document_start).cumsum(1)
+        length = tokens.shape[1]
+        causal = torch.ones(length, length, dtype=torch.bool, device=tokens.device).tril()
+        return ((documents[:, :, None] == documents[:, None, :]) & causal)[:, None]
+
     def forward(self, tokens, targets=None):
         if tokens.ndim != 2 or not 0 < tokens.shape[1] <= self.config.context:
             raise ValueError("input must be a nonempty batch within the context length")
@@ -205,8 +251,11 @@ class LanguageModel(nn.Module):
         if self.position is not None:
             positions = torch.arange(tokens.shape[1], device=tokens.device)
             hidden = hidden + self.position(positions)
+        mask = self.document_mask(tokens)
+        for block in self.blocks:
+            hidden = block(hidden, mask=mask)
         # Input and output embeddings share the same learned weights.
-        logits = F.linear(self.norm(self.blocks(hidden)), self.embedding.weight)
+        logits = F.linear(self.norm(hidden), self.embedding.weight)
         if targets is None:
             return logits
         return F.cross_entropy(logits.flatten(0, 1), targets.flatten())

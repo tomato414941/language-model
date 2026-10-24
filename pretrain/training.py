@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from tokenizers import Tokenizer
 
-from .data import LANGUAGES, file_digest, open_corpus, to_device, token_bytes
+from .data import BOS, LANGUAGES, file_digest, open_corpus, to_device, token_bytes
 from .model import LanguageModel, ModelConfig
 
 
@@ -415,6 +415,8 @@ def train(
     torch.manual_seed(config.seed)
     if device.type == "cuda":
         torch.cuda.manual_seed_all(config.seed)
+    if model_config.document_start not in (None, corpus.tokenizer.token_to_id(BOS)):
+        raise ValueError("document_start must be the token that begins each document")
     model = LanguageModel(corpus.tokenizer.get_vocab_size(), model_config).to(device)
     optimizer = make_optimizer(model, config, device)
     scaler = torch.amp.GradScaler("cuda", enabled=precision == "float16")

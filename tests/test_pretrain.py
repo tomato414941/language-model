@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 import importlib.util
 import io
 import itertools
@@ -177,6 +178,21 @@ class PretrainingTests(unittest.TestCase):
                 architecture="llama",
                 intermediate_size=64,
             ),
+            *(
+                ModelConfig(
+                    width=24,
+                    heads=4,
+                    kv_heads=2,
+                    layers=2,
+                    context=64,
+                    architecture="llama",
+                    intermediate_size=64,
+                    qk_norm=True,
+                    attention_gate=gate,
+                    document_start=bos,
+                )
+                for gate in ("headwise", "elementwise")
+            ),
         ):
             torch.manual_seed(3)
             model = LanguageModel(258, config).eval()
@@ -212,6 +228,57 @@ class PretrainingTests(unittest.TestCase):
         )
         self.assertEqual(stopped, [whole[0][:2], whole[1]])
         self.assertEqual(len(whole[1]), 6)
+
+    def test_文書を区切ると同じ窓に詰めた前の文書を見ずに予測する(self):
+        """文書の始まりの記号を指定すると、同じ窓に詰めた前の文書を見ずに、その文書だけのときと同じ予測をする。"""
+        bos = self.corpus.tokenizer.token_to_id("<|bos|>")
+        config = dataclasses.replace(self.llama_config(), document_start=bos)
+        torch.manual_seed(5)
+        model = LanguageModel(258, config).eval()
+        # Larger weights make each prediction depend on the earlier positions.
+        with torch.no_grad():
+            for parameter in model.parameters():
+                parameter.normal_(std=0.3)
+        earlier, later = [bos, 5, 6, 7, 8], [bos, 9, 10, 11]
+        packed = model(torch.tensor([earlier + later]))[0, len(earlier) :]
+        torch.testing.assert_close(packed, model(torch.tensor([later]))[0], rtol=1e-4, atol=1e-4)
+        unseparated = LanguageModel(258, dataclasses.replace(config, document_start=None)).eval()
+        unseparated.load_state_dict(model.state_dict())
+        mixed = unseparated(torch.tensor([earlier + later]))[0, len(earlier) :]
+        self.assertFalse(torch.allclose(mixed, packed, atol=1e-3))
+
+    def test_文書の区切りには文書を始める記号を求める(self):
+        """文書の始まりとして、語彙の文書開始記号以外を指定した学習を断る。"""
+        bos = self.corpus.tokenizer.token_to_id("<|bos|>")
+        self.model_config = dataclasses.replace(self.llama_config(), document_start=bos + 1)
+        with self.assertRaisesRegex(ValueError, "document_start"):
+            self.run_training("other-start")
+
+    def test_QKの正規化と注意のゲートと文書の区切りを入れて両言語を学ぶ(self):
+        """クエリとキーの正規化、注意の出力のゲート、文書の区切りを入れても、両言語の検証損失を下げる。"""
+        bos = self.corpus.tokenizer.token_to_id("<|bos|>")
+        for gate in ("headwise", "elementwise"):
+            self.model_config = dataclasses.replace(
+                self.llama_config(), qk_norm=True, attention_gate=gate, document_start=bos
+            )
+            torch.manual_seed(42)
+            before = evaluate(
+                LanguageModel(258, self.model_config),
+                self.corpus,
+                torch.device("cpu"),
+                batches=2,
+                batch_size=4,
+            )
+            after = self.run_training(f"gated-{gate}", self.config(steps=24))["validation"]
+            for language in ("ja", "en"):
+                self.assertLess(after[language]["loss"], before[language]["loss"] * 0.8)
+
+    def test_注意の設定の誤りを学習の前に知らせる(self):
+        """未知のゲートの種類や、llama 以外での新しい注意の設定を断る。"""
+        with self.assertRaisesRegex(ValueError, "attention_gate"):
+            dataclasses.replace(self.llama_config(), attention_gate="scalar")
+        with self.assertRaisesRegex(ValueError, "require llama"):
+            ModelConfig(width=24, heads=4, layers=1, context=16, qk_norm=True)
 
     def test_checkpoint_restores_predictions_and_seeded_long_prompt_generation(self):
         """保存した重みと語彙を復元し、長い日英の接頭辞を保って再現可能に生成する。"""
@@ -606,19 +673,23 @@ class PretrainingTests(unittest.TestCase):
 
     def test_muon_updates_block_matrices_and_adamw_the_embedding_and_norms(self):
         """Muon はブロック内の行列を、AdamW は埋め込みと正規化の重みを受け持ち、どの重みも一度だけ更新する。"""
-        model = LanguageModel(258, self.llama_config())
         config = TrainConfig(**{**self.config().__dict__, "optimizer": "muon"})
-        muon, adamw = make_optimizer(model, config, torch.device("cpu")).optimizers
-        owners = {}
-        for name, optimizer in (("muon", muon), ("adamw", adamw)):
-            for group in optimizer.param_groups:
-                for parameter in group["params"]:
-                    owners.setdefault(id(parameter), []).append(name)
-        for name, parameter in model.named_parameters():
-            matrix = name.startswith("blocks.") and parameter.ndim == 2
-            self.assertEqual(
-                owners[id(parameter)], ["muon" if matrix else "adamw"], name
-            )
+        for model_config in (
+            self.llama_config(),
+            dataclasses.replace(self.llama_config(), qk_norm=True, attention_gate="elementwise"),
+        ):
+            model = LanguageModel(258, model_config)
+            muon, adamw = make_optimizer(model, config, torch.device("cpu")).optimizers
+            owners = {}
+            for name, optimizer in (("muon", muon), ("adamw", adamw)):
+                for group in optimizer.param_groups:
+                    for parameter in group["params"]:
+                        owners.setdefault(id(parameter), []).append(name)
+            for name, parameter in model.named_parameters():
+                matrix = name.startswith("blocks.") and parameter.ndim == 2
+                self.assertEqual(
+                    owners[id(parameter)], ["muon" if matrix else "adamw"], name
+                )
 
     def test_muon_training_learns_and_resumes_the_same_updates(self):
         """Muon で両言語の検証損失を下げ、途中保存から再開しても連続学習と同じ重みを得る。"""
