@@ -1,4 +1,5 @@
 import contextlib
+import gzip
 import importlib.util
 import io
 import json
@@ -7,8 +8,11 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import threading
 import unittest
+import urllib.parse
 from collections import Counter
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -44,6 +48,7 @@ from pretrain.recipe import (
     read_recipe,
     recipe_fingerprint,
     validate_corpus,
+    validate_source,
     validation_document,
     validation_fraction,
     write_sft_config,
@@ -698,9 +703,7 @@ mix = {{ ja-hq = 25, ja-wiki = 25, en-web = 25, en-wiki = 25 }}
         with self.assertRaisesRegex(ValueError, "begins to decay"):
             read_recipe(recipe)
 
-    def test_圧縮したJSON行から必要な項目だけを読み取る(self):
-        import gzip
-
+    def test_JSON行から必要な項目だけを読み取る(self):
         import zstandard
 
         rows = [
@@ -711,6 +714,7 @@ mix = {{ ja-hq = 25, ja-wiki = 25, en-web = 25, en-wiki = 25 }}
         from types import SimpleNamespace
 
         for form, data in (
+            ("jsonl", lines),
             ("jsonl.gz", gzip.compress(lines)),
             ("jsonl.zst", zstandard.ZstdCompressor().compress(lines)),
         ):
@@ -743,6 +747,89 @@ mix = {{ ja-hq = 25, ja-wiki = 25, en-web = 25, en-wiki = 25 }}
             self.assertTrue(all(row["meta"] == {"kind": "modern"} for row in loaded))
             self.assertTrue(all("extra" not in row for row in loaded))
             self.assertEqual({row["source_file"] for row in loaded}, {"part-0." + form})
+
+    def test_GitLabの固定した版から読み途中で切れた応答は続きから読む(self):
+        revision = "a" * 40
+        rows = [{"text": f"数学の問題 {index}", "category": "math"} for index in range(400)]
+        data = gzip.compress("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows).encode())
+        files = {
+            "ja/math/questions.jsonl.gz": data,
+            "ja/math/excluded.jsonl.gz": gzip.compress(b'{"text": "excluded"}\n'),
+            "ja/coding/programs.jsonl.gz": gzip.compress(b'{"text": "code"}\n'),
+        }
+        project = "/api/v4/projects/" + urllib.parse.quote("datasets/corpus", safe="")
+        ranges, cut = [], [True]
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                path, _, query = self.path.partition("?")
+                if path == f"{project}/repository/commits/{revision}":
+                    body, status, headers = json.dumps({"id": revision}).encode(), 200, {}
+                elif path == f"{project}/repository/tree":
+                    asked = urllib.parse.parse_qs(query)
+                    self.server_test.assertEqual(asked["ref"], [revision])
+                    entries = [
+                        {"path": name, "type": "blob"}
+                        for name in files
+                        if name.startswith(asked["path"][0] + "/")
+                    ]
+                    body, status, headers = json.dumps(entries).encode(), 200, {}
+                else:
+                    name = path.removeprefix(f"/datasets/corpus/-/raw/{revision}/")
+                    content = files[urllib.parse.unquote(name)]
+                    start = int(self.headers["Range"].removeprefix("bytes=").rstrip("-"))
+                    ranges.append(start)
+                    body, status = content[start:], 206
+                    headers = {"Content-Range": f"bytes {start}-{len(content) - 1}/{len(content)}"}
+                self.send_response(status)
+                for key, value in headers.items():
+                    self.send_header(key, value)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                if status == 206 and cut[0]:
+                    # The first response for a file stops partway through.
+                    body, cut[0] = body[: len(body) // 2], False
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        Handler.server_test = self
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        source = {
+            "id": "fixture",
+            "host": f"http://127.0.0.1:{server.server_port}",
+            "repository": "datasets/corpus",
+            "revision": revision,
+            "prefix": "ja/math/",
+            "format": "jsonl.gz",
+            "exclude_files": ["ja/math/excluded.jsonl.gz"],
+        }
+        with patch("pretrain.recipe.time.sleep"):
+            loaded = list(iter_source(source, 42))
+        self.assertEqual(sorted(row["text"] for row in loaded), sorted(row["text"] for row in rows))
+        self.assertEqual({row["source_file"] for row in loaded}, {"ja/math/questions.jsonl.gz"})
+        # The second request asks for the rest after the bytes that arrived.
+        self.assertEqual(ranges, [0, len(data) // 2])
+
+    def test_GitLabのデータ源はhttpsの接続先だけを受け付ける(self):
+        source = {
+            "id": "fixture",
+            "language": "ja",
+            "repository": "datasets/corpus",
+            "revision": "a" * 40,
+            "prefix": "ja/math/",
+            "license": "Apache-2.0",
+            "terms_url": "https://example.org/terms",
+        }
+        validate_source({**source, "host": "https://gitlab.example.org"})
+        with self.assertRaisesRegex(ValueError, "https address"):
+            validate_source({**source, "host": "http://gitlab.example.org"})
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 
 import gzip
 import hashlib
+import http.client
 import io
 import itertools
 import json
@@ -14,8 +15,11 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import time
 import tomllib
 import unicodedata
+import urllib.parse
+import urllib.request
 from collections import Counter
 from contextlib import ExitStack, closing, contextmanager
 from dataclasses import asdict
@@ -32,6 +36,7 @@ from .training import TrainConfig, read_config
 
 SOURCE_FORMATS = {
     "parquet": ".parquet",
+    "jsonl": ".jsonl",
     "jsonl.zst": ".jsonl.zst",
     "jsonl.gz": ".jsonl.gz",
 }
@@ -39,6 +44,7 @@ FILTERS = ("equal", "minimum", "maximum", "any_minimum")
 SOURCE_FIELDS = {
     "id",
     "language",
+    "host",
     "repository",
     "revision",
     "prefix",
@@ -79,6 +85,9 @@ def validate_source(source):
         raise ValueError(f"{source['id']} uses an unsupported file format")
     if not isinstance(source.get("prefix"), str) or not source.get("repository"):
         raise ValueError(f"{source['id']} needs a repository and file prefix")
+    # Sources come from the Hugging Face Hub unless they name a GitLab server.
+    if "host" in source and not re.fullmatch(r"https://[a-z0-9.-]+", source["host"]):
+        raise ValueError(f"{source['id']} host must be a GitLab server's https address")
     for name in FILTERS:
         conditions = source.get(name, {})
         if not isinstance(conditions, dict) or not all(
@@ -646,35 +655,149 @@ def source_columns(source):
     return sorted(fields)
 
 
-def read_json_lines(handle, compression):
-    if compression == "jsonl.zst":
+def read_json_lines(handle, form):
+    if form == "jsonl.zst":
         import zstandard
 
         stream = zstandard.ZstdDecompressor().stream_reader(handle)
-    else:
+    elif form == "jsonl.gz":
         stream = gzip.GzipFile(fileobj=handle)
+    else:
+        stream = handle
     for line in io.TextIOWrapper(stream, encoding="utf-8"):
         if line.strip():
             yield json.loads(line)
 
 
-def iter_source(source, seed, part=None):
+class RemoteFile(io.RawIOBase):
+    """A file read in order over HTTP, continuing where a response stopped early.
+
+    Only reads that bring nothing count against the attempts.
+    """
+
+    def __init__(self, url, attempts=5):
+        self.url, self.attempts = url, attempts
+        self.position, self.size, self.response = 0, None, None
+
+    def readable(self):
+        return True
+
+    def connect(self):
+        request = urllib.request.Request(
+            self.url, headers={"Range": f"bytes={self.position}-"}
+        )
+        self.response = urllib.request.urlopen(request, timeout=120)
+        if self.response.status == 206:
+            size = int(self.response.headers["Content-Range"].rpartition("/")[2])
+        elif self.position == 0:
+            size = int(self.response.headers["Content-Length"])
+        else:
+            raise ValueError("the host ignored a range request")
+        if self.size not in (None, size):
+            raise ValueError("the file changed while it was read")
+        self.size = size
+
+    def readinto(self, buffer):
+        stalled = 0
+        while self.size is None or self.position < self.size:
+            error = None
+            try:
+                if self.response is None:
+                    self.connect()
+                count = self.response.readinto(buffer)
+                if count:
+                    self.position += count
+                    return count
+            except (OSError, http.client.HTTPException) as failure:
+                error = failure
+            if self.response is not None:
+                self.response.close()
+                self.response = None
+            stalled += 1
+            if stalled == self.attempts:
+                raise error or ValueError("the file ended before its size")
+            time.sleep(2**stalled)
+        return 0
+
+    def close(self):
+        if self.response is not None:
+            self.response.close()
+        super().close()
+
+
+def read_url(url):
+    with urllib.request.urlopen(url, timeout=120) as response:
+        return response.read()
+
+
+def hub_files(source):
+    """A Hugging Face dataset's files at the source's commit, and how to open one."""
     from huggingface_hub import HfApi, HfFileSystem
-    from pyarrow import parquet
 
     info = HfApi(token=False).dataset_info(
         source["repository"], revision=source["revision"]
     )
     if info.sha != source["revision"]:
         raise ValueError("the resolved dataset revision does not match the recipe")
+    filesystem = HfFileSystem(token=False)
+
+    def open_file(name):
+        # Large reads keep the requests few, well within the Hub's rate limits
+        # when many parts read at once.
+        return filesystem.open(
+            f"datasets/{source['repository']}@{source['revision']}/{name}",
+            "rb",
+            block_size=16 * 1024 * 1024,
+        )
+
+    return [item.rfilename for item in info.siblings], open_file
+
+
+def gitlab_files(source):
+    """A GitLab project's files at the source's commit, and how to open one."""
+    project = "{}/api/v4/projects/{}".format(
+        source["host"], urllib.parse.quote(source["repository"], safe="")
+    )
+    commit = json.loads(read_url(f"{project}/repository/commits/{source['revision']}"))
+    if commit["id"] != source["revision"]:
+        raise ValueError("the resolved dataset revision does not match the recipe")
+    names = []
+    for page in itertools.count(1):
+        query = urllib.parse.urlencode(
+            {
+                "ref": source["revision"],
+                "path": source["prefix"].rpartition("/")[0],
+                "recursive": "true",
+                "per_page": 100,
+                "page": page,
+            }
+        )
+        entries = json.loads(read_url(f"{project}/repository/tree?{query}"))
+        names += [entry["path"] for entry in entries if entry["type"] == "blob"]
+        if len(entries) < 100:
+            break
+
+    def open_file(name):
+        url = "{}/{}/-/raw/{}/{}".format(
+            source["host"], source["repository"], source["revision"], urllib.parse.quote(name)
+        )
+        return io.BufferedReader(RemoteFile(url), 16 * 1024 * 1024)
+
+    return names, open_file
+
+
+def iter_source(source, seed, part=None):
+    from pyarrow import parquet
+
+    names, open_file = (gitlab_files if "host" in source else hub_files)(source)
     form = source.get("format", "parquet")
     excluded = set(source.get("exclude_files", ()))
     shards = sorted(
-        item.rfilename
-        for item in info.siblings
-        if item.rfilename.startswith(source["prefix"])
-        and item.rfilename.endswith(SOURCE_FORMATS[form])
-        and item.rfilename not in excluded
+        name
+        for name in names
+        if name.startswith(source["prefix"])
+        and name.endswith(SOURCE_FORMATS[form])
+        and name not in excluded
     )
     if not shards:
         raise ValueError(f"no {form} files found for {source['id']}")
@@ -684,16 +807,9 @@ def iter_source(source, seed, part=None):
             raise ValueError(f"{source['id']} has fewer files than parts")
         shards = shards[part["index"] :: part["count"]]
     columns = source_columns(source)
-    filesystem = HfFileSystem(token=False)
     for shard in shards:
         generator = random.Random(f"{seed}:{source['id']}:{shard}")
-        # Large reads keep the requests few, well within the Hub's rate limits
-        # when many parts read at once.
-        with filesystem.open(
-            f"datasets/{source['repository']}@{source['revision']}/{shard}",
-            "rb",
-            block_size=16 * 1024 * 1024,
-        ) as handle:
+        with open_file(shard) as handle:
             if form == "parquet":
                 with parquet.ParquetFile(handle) as table:
                     present = set(table.schema_arrow.names)
