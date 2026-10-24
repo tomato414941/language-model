@@ -117,6 +117,16 @@ def main(argv=None):
     optimization.add_argument("--output", type=Path, required=True)
     optimization.add_argument("--device", choices=("cpu", "cuda", "auto"), default="cuda")
     optimization.add_argument("--precision", default="auto")
+    reinforcement = commands.add_parser(
+        "train-reinforcement",
+        help="チェックポイントから、答えを確かめられる問題で強化学習する（GRPO の系統）",
+    )
+    reinforcement.add_argument("--config", type=Path, required=True)
+    reinforcement.add_argument("--prompts", type=Path, required=True, help="会話と答えの確かめ方を並べた JSON 行")
+    reinforcement.add_argument("--initialize-from", type=Path, required=True)
+    reinforcement.add_argument("--output", type=Path, required=True)
+    reinforcement.add_argument("--device", choices=("cpu", "cuda", "auto"), default="cuda")
+    reinforcement.add_argument("--precision", default="auto")
     prepare = commands.add_parser(
         "prepare", help="文書を重複除去し、BPEと学習・検証データを作る"
     )
@@ -435,6 +445,19 @@ def main(argv=None):
                 args.output,
                 args.initialize_from,
                 read_preference_config(args.config),
+                select_device(args.device),
+                args.precision,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "train-reinforcement":
+            from .reinforcement import read_config as read_reinforcement_config
+            from .reinforcement import train_reinforcement
+
+            result = train_reinforcement(
+                args.prompts,
+                args.output,
+                args.initialize_from,
+                read_reinforcement_config(args.config),
                 select_device(args.device),
                 args.precision,
             )

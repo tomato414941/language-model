@@ -253,6 +253,27 @@ class PretrainingTests(unittest.TestCase):
         self.assertEqual(stopped, [whole[0][:2], whole[1]])
         self.assertEqual(len(whole[1]), 6)
 
+    def test_まとめた生成は温度に応じて選び同じ乱数なら同じ結果を返す(self):
+        """まとめた生成は、上位の確率の範囲が狭いと最も確からしい単語を選び、同じ乱数の種なら同じ結果を返す。"""
+        torch.manual_seed(3)
+        model = LanguageModel(
+            258, ModelConfig(width=24, heads=4, layers=2, context=64)
+        ).eval()
+        sequences = [[0, 5, 6], [0, 7]]
+        greedy = model.continue_greedily(sequences, 6, -1)
+        narrow = model.continue_sequences(
+            sequences, 6, -1, temperature=1.0, top_p=1e-9, generator=torch.Generator().manual_seed(1)
+        )
+        self.assertEqual(narrow, greedy)
+        sampled = [
+            model.continue_sequences(sequences, 6, -1, temperature=1.0, generator=torch.Generator().manual_seed(1))
+            for _ in range(2)
+        ]
+        self.assertEqual(sampled[0], sampled[1])
+        self.assertEqual([len(row) for row in sampled[0]], [6, 6])
+        with self.assertRaisesRegex(ValueError, "top_p"):
+            model.continue_sequences(sequences, 6, -1, temperature=1.0, top_p=0)
+
     def test_終わりの記号のどれかが出た入力の生成を止める(self):
         """終わりの記号を複数渡すと、そのどれかを生成した入力の生成をそこで止める。"""
         torch.manual_seed(3)

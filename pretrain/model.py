@@ -555,6 +555,17 @@ class Block(nn.Module):
         return hidden + self.mlp(self.norm_mlp(hidden)), 0.0
 
 
+def sampled(logits, top_p, generator):
+    """Sample one token per row from the smallest set whose probability reaches top_p."""
+    if top_p < 1:
+        ordered, indices = logits.sort(-1, descending=True)
+        excluded = ordered.softmax(-1).cumsum(-1) > top_p
+        excluded[:, 1:] = excluded[:, :-1].clone()
+        excluded[:, 0] = False
+        logits = logits.scatter(-1, indices, ordered.masked_fill(excluded, -torch.inf))
+    return torch.multinomial(logits.softmax(-1), 1, generator=generator).squeeze(1)
+
+
 class KeyValueCache:
     """Keep one layer's keys and values so later steps process only new positions."""
 
@@ -765,13 +776,25 @@ class LanguageModel(nn.Module):
         finally:
             self.train(was_training)
 
-    @torch.inference_mode()
     def continue_greedily(self, sequences, max_new_tokens, end, banned=(), finished=None):
-        """Return each sequence's greedy continuation before `end`, decoding all at once.
+        """Return each sequence's greedy continuation before `end`, decoding all at once."""
+        return self.continue_sequences(sequences, max_new_tokens, end, banned, finished)
+
+    @torch.inference_mode()
+    def continue_sequences(
+        self, sequences, max_new_tokens, end, banned=(), finished=None, temperature=0.0, top_p=1.0, generator=None
+    ):
+        """Return each sequence's continuation before `end`, decoding all at once.
 
         `end` is a token ID or a collection of them. A sequence also stops
-        once `finished(row, continuation)` is true of it.
+        once `finished(row, continuation)` is true of it. A temperature of 0
+        picks the likeliest token; above 0, tokens are sampled from the
+        smallest set whose probability reaches top_p, with `generator`.
         """
+        if not math.isfinite(temperature) or temperature < 0:
+            raise ValueError("temperature must be finite and nonnegative")
+        if not math.isfinite(top_p) or not 0 < top_p <= 1:
+            raise ValueError("top_p must be finite and within (0, 1]")
         ends = {end} if isinstance(end, int) else set(end)
         if type(max_new_tokens) is not int or max_new_tokens <= 0:
             raise ValueError("max_new_tokens must be a positive integer")
@@ -827,7 +850,9 @@ class LanguageModel(nn.Module):
                 logits = F.linear(self.norm(hidden[:, -1]), self.embedding.weight)
                 logits = logits.float()
                 logits[:, banned] = -torch.inf
-                chosen = logits.argmax(-1)
+                chosen = (
+                    logits.argmax(-1) if temperature == 0 else sampled(logits / temperature, top_p, generator)
+                )
                 for row, token in enumerate(chosen.tolist()):
                     if active[row]:
                         if token in ends:
