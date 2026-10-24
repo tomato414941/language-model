@@ -322,6 +322,14 @@ class PretrainingTests(unittest.TestCase):
         for flash, dense in zip(results[0][1], results[1][1]):
             torch.testing.assert_close(flash, dense, rtol=0.05, atol=2e-3)
 
+    def test_文書の始まりの記号がないモデルでは文書を区切った速さの測定を断る(self):
+        """文書の始まりの記号を持たないモデルでは、文書の区切りを入れた学習の速さの測定を断る。"""
+        from pretrain.throughput import measure_training
+
+        config = {"model": dataclasses.asdict(self.llama_config()), "training": {"steps": 2, "warmup_steps": 1}}
+        with self.assertRaisesRegex(ValueError, "document_start"):
+            measure_training(config, vocabulary_size=258, document_length=100)
+
     def test_文書の区切りには文書を始める記号を求める(self):
         """文書の始まりとして、語彙の文書開始記号以外を指定した学習を断る。"""
         bos = self.corpus.tokenizer.token_to_id("<|bos|>")

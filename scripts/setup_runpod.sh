@@ -13,6 +13,12 @@ if [[ ! -x "$project_root/.tools/uv" ]] || [[ $("$project_root/.tools/uv" --vers
   UV_INSTALL_DIR="$project_root/.tools" UV_NO_MODIFY_PATH=1 sh "$installer"
 fi
 "$project_root/.tools/uv" sync --frozen --extra train --extra hub --extra eval --extra corpus
+# torch.compile builds small C helpers for its Triton kernels, and CUDA's base
+# images leave out a C compiler.
+if ! command -v cc >/dev/null; then
+  { apt-get update -qq && apt-get install -y -qq gcc >/dev/null; } ||
+    echo "no C compiler could be installed; torch.compile will not run" >&2
+fi
 # The lock pins the CUDA 13 build of PyTorch. On a host whose driver predates
 # CUDA 13, use the same PyTorch version built for CUDA 12.6 instead.
 if ! "$project_root/.tools/uv" run --no-sync python -c \

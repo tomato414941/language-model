@@ -5,22 +5,34 @@ import math
 from time import perf_counter
 
 import torch
+from torch._dynamo.utils import counters
 
 from .model import LanguageModel, ModelConfig
 from .training import TrainConfig, autocast, make_optimizer
 
 
 def measure_training(
-    config, vocabulary_size=32768, batches=(1, 2, 4, 8), compiled=False
+    config,
+    vocabulary_size=32768,
+    batches=(1, 2, 4, 8),
+    compiled=False,
+    document_length=None,
+    warmup_steps=2,
 ):
     """Time optimizer steps of the configured size at each micro-batch size.
 
     Every step covers the configuration's tokens per step and accumulates
     gradients over as many micro-batches as that takes, as training does.
+    With document_length, a document starts at each position with one chance
+    in that many, so attention within documents meets the varying bounds of
+    real text; compiled code then compiles once per shape it meets, during
+    the warmup_steps if they are enough.
     """
+    model_config = ModelConfig(**config["model"])
+    if document_length is not None and model_config.document_start is None:
+        raise ValueError("documents need the model's document_start token")
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
         raise ValueError("Run this measurement on a CUDA GPU with bfloat16 support")
-    model_config = ModelConfig(**config["model"])
     training = TrainConfig(**config["training"])
     rows = training.batch_size * training.accumulation_steps
     device = torch.device("cuda")
@@ -29,7 +41,11 @@ def measure_training(
     torch.cuda.manual_seed_all(training.seed)
     model = LanguageModel(vocabulary_size, model_config).to(device).train()
     if compiled:
-        # Training shapes never change, so each micro-batch size compiles once.
+        # Each micro-batch size compiles once, and again for each padded count
+        # of documents it meets. Code compiled for an earlier model would
+        # count against this one's limit on recompilations.
+        torch._dynamo.reset()
+        counters.clear()
         model.compile(dynamic=False)
     optimizer = make_optimizer(model, training, device)
 
@@ -42,6 +58,10 @@ def measure_training(
                 (batch_size, model_config.context + 1),
                 device=device,
             )
+            if document_length is not None:
+                tokens[torch.rand(tokens.shape, device=device) < 1 / document_length] = (
+                    model_config.document_start
+                )
             inputs, targets = tokens[:, :-1].contiguous(), tokens[:, 1:].contiguous()
             with autocast(device, "bfloat16"):
                 loss = model(inputs, targets)
@@ -64,7 +84,7 @@ def measure_training(
             continue
         try:
             started = perf_counter()
-            for _ in range(2):
+            for _ in range(warmup_steps):
                 update(batch_size, accumulation)
             torch.cuda.synchronize()
             warmup = perf_counter() - started
@@ -101,11 +121,14 @@ def measure_training(
         "torch_version": str(torch.__version__),
         "precision": "bfloat16",
         "compiled": compiled,
+        "compiled_graphs": counters["stats"]["unique_graphs"] if compiled else None,
+        "graph_breaks": sum(counters["graph_break"].values()) if compiled else None,
         "parameters": sum(parameter.numel() for parameter in model.parameters()),
         "vocabulary_size": vocabulary_size,
         "context": model_config.context,
         "tokens_per_step": rows * model_config.context,
         "input": "synthetic_tokens",
+        "document_length": document_length,
         "includes": [
             "forward",
             "backward",

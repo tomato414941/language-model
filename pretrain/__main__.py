@@ -237,7 +237,7 @@ def main(argv=None):
         "benchmark", help="保存したモデルをLM Evaluation Harnessの標準タスクで評価する"
     )
     benchmark.add_argument(
-        "--tasks", nargs="+", help="評価するタスク名（既定は標準評価の10課題）"
+        "--tasks", nargs="+", help="評価するタスク名（既定は標準評価の全課題）"
     )
     benchmark.add_argument(
         "--limit", type=int, help="動作確認で各タスクに使う問題数（正式な評価は全問）"
@@ -253,7 +253,7 @@ def main(argv=None):
     hub_benchmark.add_argument("--model", required=True, help="Hubのモデル名（例: openai-community/gpt2）")
     hub_benchmark.add_argument("--revision", required=True, help="評価するモデルのコミット")
     hub_benchmark.add_argument(
-        "--tasks", nargs="+", help="評価するタスク名（既定は標準評価の10課題）"
+        "--tasks", nargs="+", help="評価するタスク名（既定は標準評価の全課題）"
     )
     hub_benchmark.add_argument(
         "--limit", type=int, help="動作確認で各タスクに使う問題数（正式な評価は全問）"
