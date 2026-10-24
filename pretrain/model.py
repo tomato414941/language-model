@@ -142,6 +142,9 @@ class Documents(NamedTuple):
     bounds: torch.Tensor
 
 
+# Compiled code receives only the padded bounds: traced, the count of
+# documents would compile the model anew for nearly every batch.
+@torch.compiler.disable
 def document_bounds(starts):
     """Each row's documents as one sequence each, the first starting at the row.
 
