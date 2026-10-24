@@ -37,6 +37,7 @@ from tokenizers import Tokenizer
 
 from pretrain.__main__ import main
 from pretrain.data import Corpus, file_digest
+from pretrain.conversation import conversation_text
 from pretrain.instructions import BenchmarkFilter, InstructionCorpus, prepare_instructions
 from pretrain.recipe import (
     accepted_documents,
@@ -487,6 +488,12 @@ class RecipeTests(unittest.TestCase):
             )
 
     def test_指示データの量から同じモデルの追加学習設定を作成する(self):
+        # The conversation format marks turns with reserved tokens.
+        self.recipe_path.write_text(
+            self.recipe_path.read_text().replace(
+                "vocabulary_size = 258", "vocabulary_size = 264\nreserved_tokens = 6"
+            )
+        )
         self.prepare()
         source = self.root / "instruction-source"
         source.mkdir()
@@ -653,7 +660,9 @@ mix = {{ ja-hq = 25, ja-wiki = 25, en-web = 25, en-wiki = 25 }}
         turns = [{"from": "human", "value": "Why is the sky blue?"}, {"from": "gpt", "value": answer}]
         self.assertEqual(
             document_text({"conversations": turns}, talk, corpus),
-            f"User: Why is the sky blue?\n\nAssistant: {answer}".strip(),
+            conversation_text(
+                [{"role": "user", "content": "Why is the sky blue?"}, {"role": "assistant", "content": answer}]
+            )[0].strip(),
         )
         unknown = [{"from": "narrator", "value": answer}]
         self.assertIsNone(document_text({"conversations": unknown}, talk, corpus))

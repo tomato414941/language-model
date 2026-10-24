@@ -28,15 +28,19 @@ from pretrain.preference import (
 from pretrain.training import atomic_save, load_model
 
 
+# The special tokens, six reserved tokens that mark conversations, and bytes.
+VOCABULARY = 264
+
+
 def byte_tokenizer():
-    """A tokenizer whose vocabulary holds only the special tokens and bytes."""
+    """A tokenizer whose vocabulary holds only the special and reserved tokens and bytes."""
     tokenizer = Tokenizer(models.BPE())
     tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
     tokenizer.decoder = decoders.ByteLevel()
     trainer = trainers.BpeTrainer(
-        vocab_size=258,
+        vocab_size=VOCABULARY,
         show_progress=False,
-        special_tokens=["<|bos|>", "<|eos|>"],
+        special_tokens=["<|bos|>", "<|eos|>", *(f"<|reserved_{index}|>" for index in range(6))],
         initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
     )
     tokenizer.train_from_iterator(["abc"], trainer=trainer)
@@ -95,7 +99,7 @@ class PreferenceTests(unittest.TestCase):
 
     def checkpoint(self, config):
         torch.manual_seed(0)
-        model = LanguageModel(258, config)
+        model = LanguageModel(VOCABULARY, config)
         path = self.root / "start.pt"
         atomic_save(
             {
@@ -119,7 +123,7 @@ class PreferenceTests(unittest.TestCase):
         ]
         tokens, mask = encode_reply(self.tokenizer, turns)
         learned = self.tokenizer.decode([int(t) for t, m in zip(tokens, mask) if m], skip_special_tokens=True)
-        self.assertEqual(learned, " See you")
+        self.assertEqual(learned, "See you")
         self.assertEqual(tokens[-1], self.tokenizer.token_to_id("<|eos|>"))
         self.assertEqual(mask[-1], 1)
 
@@ -155,7 +159,7 @@ class PreferenceTests(unittest.TestCase):
         )
         corpus = PreferenceCorpus(self.root / "pairs")
         torch.manual_seed(0)
-        policy = LanguageModel(258, ModelConfig(width=24, heads=4, layers=1, context=64, architecture="llama"))
+        policy = LanguageModel(VOCABULARY, ModelConfig(width=24, heads=4, layers=1, context=64, architecture="llama"))
         inputs, targets = corpus.load("train", corpus.pick("train", 0, 4, 42), torch.device("cpu"))
         for length_normalized in (False, True):
             config = PreferenceConfig(steps=2, warmup_steps=0, length_normalized=length_normalized)

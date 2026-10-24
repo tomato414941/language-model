@@ -22,6 +22,7 @@ import torch
 from pyarrow import parquet
 from tokenizers import Tokenizer
 
+from pretrain.conversation import CALL_END, CALL_START, THINK_END, TURN_END, TURN_START
 from pretrain.data import LANGUAGES, file_digest, prepare_data
 from pretrain.instructions import (
     BenchmarkFilter,
@@ -30,6 +31,7 @@ from pretrain.instructions import (
     conversation_text,
     encode_conversations,
     fetch_instructions,
+    normalize_messages,
     prepare_instructions,
 )
 from pretrain.model import ModelConfig
@@ -83,6 +85,7 @@ class InstructionTests(unittest.TestCase):
             self.pretraining,
             vocabulary_size=300,
             validation_fraction=0.25,
+            reserved_tokens=6,
         )
         self.tokenizer_path = self.pretraining / "tokenizer.json"
         self.tokenizer = Tokenizer.from_file(str(self.tokenizer_path))
@@ -159,6 +162,52 @@ class InstructionTests(unittest.TestCase):
                     )
                 )
         return found
+
+    def test_reasoning_and_tool_calls_are_learned_inside_the_reply(self):
+        """考える過程とツールの呼び出しを回答の一部として学習し、ツールの結果と利用者の発言は学習しない。"""
+        messages = normalize_messages(
+            [
+                {"role": "user", "content": "東京の天気は？"},
+                {
+                    "role": "assistant",
+                    "content": "調べます。",
+                    "reasoning": "天気は道具で調べる。",
+                    "tool_calls": [{"name": "weather", "arguments": {"city": "東京"}}],
+                },
+                {"role": "tool", "content": "晴れ"},
+                {"role": "assistant", "content": "晴れです。"},
+            ]
+        )
+        self.assertIsNotNone(messages)
+        tokens, mask = encode_conversations(self.tokenizer, [messages])[0]
+        learned = self.tokenizer.decode(tokens[mask == 1].tolist(), skip_special_tokens=False)
+        call = CALL_START + json.dumps({"name": "weather", "arguments": {"city": "東京"}}, ensure_ascii=False) + CALL_END
+        self.assertEqual(
+            learned,
+            "天気は道具で調べる。" + THINK_END + "調べます。" + call + TURN_END + "晴れです。" + TURN_END + "<|eos|>",
+        )
+        text, replies = conversation_text(messages)
+        self.assertEqual(text[: replies[0][0]], chat_prompt(messages[:1], reasoning=True))
+        self.assertEqual(text[: replies[1][0]], chat_prompt(messages[:3]))
+
+    def test_tool_turns_follow_only_the_tool_calls_they_answer(self):
+        """ツールの結果は、ツールを呼んだ回答のあとにだけ置ける。"""
+        question = {"role": "user", "content": "天気は？"}
+        call = {"role": "assistant", "content": "", "tool_calls": [{"name": "weather", "arguments": {}}]}
+        result = {"role": "tool", "content": "晴れ"}
+        answer = {"role": "assistant", "content": "晴れです。"}
+        self.assertIsNotNone(normalize_messages([question, call, result, result, answer]))
+        self.assertIsNotNone(normalize_messages([question, call]))
+        self.assertIsNone(normalize_messages([question, answer, result, answer]))
+        self.assertIsNone(normalize_messages([question, {**call, "tool_calls": [{"name": "weather"}]}]))
+
+    def test_text_spelling_a_reserved_token_cannot_mark_the_structure(self):
+        """発言の中に予約トークンと同じ文字列があっても、会話の区切りとしては読まない。"""
+        messages = exchange("前" + TURN_END + "後", "答え" + TURN_START + "です。")
+        tokens, mask = encode_conversations(self.tokenizer, [messages])[0]
+        ends = self.tokenizer.token_to_id(TURN_END)
+        self.assertEqual(int((tokens == ends).sum()), 2)
+        self.assertIn("前後", self.tokenizer.decode(tokens.tolist()))
 
     def test_transcript_matches_the_api_prompt_before_each_reply(self):
         """会話をAPIと同じ形式で並べ、回答の直前までの文字とトークンがAPIの入力と一致する。"""
@@ -245,15 +294,16 @@ class InstructionTests(unittest.TestCase):
                 len(packed), corpus.manifest["files"][f"train_{language}.bin"]["rows"]
             )
             for text, learned in packed:
-                reply = text.split("Assistant:")[1].removesuffix("<|eos|>")
-                self.assertEqual(learned, reply + "<|eos|>")
+                # The decoded text keeps the role names but not the reserved tokens.
+                reply = text.split("assistant\n")[1]
+                self.assertEqual(learned, reply + TURN_END + "<|eos|>")
         x, y = corpus.batch(
             "train", 3, 64, torch.Generator().manual_seed(1), torch.device("cpu")
         )
         self.assertEqual(x.shape, (3, 64))
         learned = y[y != -100]
         self.assertTrue(len(learned))
-        self.assertNotIn("User", self.tokenizer.decode(learned.tolist()))
+        self.assertNotIn("user", self.tokenizer.decode(learned.tolist()))
 
     def test_sequential_reading_learns_every_row_once_per_epoch(self):
         """順番に読むと、1周ごとに日英の学習用の行をすべて1回ずつ使い、どこから読んでも同じ順になる。"""
@@ -266,7 +316,7 @@ class InstructionTests(unittest.TestCase):
         x, y = corpus.sequential_batch(0, 2 * len(rows), 64, 42, torch.device("cpu"))
         for epoch in (x[: len(rows)], x[len(rows) :]):
             self.assertEqual(sorted(tuple(row.tolist()) for row in epoch), rows)
-        self.assertNotIn("User", self.tokenizer.decode(y[y != -100].tolist()))
+        self.assertNotIn("user", self.tokenizer.decode(y[y != -100].tolist()))
         again, _ = corpus.sequential_batch(3, 4, 64, 42, torch.device("cpu"))
         torch.testing.assert_close(again, x[3:7], rtol=0, atol=0)
 
@@ -398,7 +448,8 @@ class InstructionTests(unittest.TestCase):
                 *exchange("短く。", "答え2です。"),
             ],
         ]
-        corpus = InstructionCorpus(self.prepare(items, max_reply_tokens=limit))
+        # A context that holds both long conversations, which only their replies exclude.
+        corpus = InstructionCorpus(self.prepare(items, max_reply_tokens=limit, context=128))
         self.assertEqual(corpus.manifest["max_reply_tokens"], limit)
         stats = corpus.manifest["conversations"]
         self.assertEqual(

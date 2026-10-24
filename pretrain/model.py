@@ -714,7 +714,9 @@ class LanguageModel(nn.Module):
         seed=42,
         top_p=1.0,
         stop_requested=None,
+        stops=None,
     ):
+        """Yield sampled tokens until one of `stops`, by default the end of the text."""
         if type(max_new_tokens) is not int or max_new_tokens <= 0:
             raise ValueError("max_new_tokens must be a positive integer")
         if not math.isfinite(temperature) or temperature < 0:
@@ -726,6 +728,7 @@ class LanguageModel(nn.Module):
         device = self.embedding.weight.device
         bos = tokenizer.token_to_id("<|bos|>")
         eos = tokenizer.token_to_id("<|eos|>")
+        ends = {eos} if stops is None else set(stops)
         tokens = [bos, *tokenizer.encode(prompt, add_special_tokens=False).ids]
         generator = torch.Generator(device=device).manual_seed(seed)
         was_training = self.training
@@ -756,7 +759,7 @@ class LanguageModel(nn.Module):
                             logits.softmax(-1), 1, generator=generator
                         ).item()
                 yield token
-                if token == eos:
+                if token in ends:
                     break
                 tokens.append(token)
         finally:
@@ -766,8 +769,10 @@ class LanguageModel(nn.Module):
     def continue_greedily(self, sequences, max_new_tokens, end, banned=(), finished=None):
         """Return each sequence's greedy continuation before `end`, decoding all at once.
 
-        A sequence also stops once `finished(row, continuation)` is true of it.
+        `end` is a token ID or a collection of them. A sequence also stops
+        once `finished(row, continuation)` is true of it.
         """
+        ends = {end} if isinstance(end, int) else set(end)
         if type(max_new_tokens) is not int or max_new_tokens <= 0:
             raise ValueError("max_new_tokens must be a positive integer")
         if not sequences or not all(sequences):
@@ -825,7 +830,7 @@ class LanguageModel(nn.Module):
                 chosen = logits.argmax(-1)
                 for row, token in enumerate(chosen.tolist()):
                     if active[row]:
-                        if token == end:
+                        if token in ends:
                             active[row] = False
                         else:
                             continuations[row].append(token)

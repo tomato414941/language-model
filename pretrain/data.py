@@ -84,9 +84,12 @@ def prepare_data(
     provenance=None,
     tokenizer_bytes_per_language=8 * 1024 * 1024,
     tokenizer_path=None,
+    reserved_tokens=0,
 ):
     if type(vocabulary_size) is not int or not 258 <= vocabulary_size <= 2**32 - 1:
         raise ValueError("vocabulary_size must be an integer of at least 258")
+    if type(reserved_tokens) is not int or not 0 <= reserved_tokens <= vocabulary_size - 258:
+        raise ValueError("reserved_tokens must leave room for the special tokens and bytes")
     if not 0 < validation_fraction < 1:
         raise ValueError("validation_fraction must be between 0 and 1")
     if (
@@ -183,7 +186,7 @@ def prepare_data(
             vocab_size=vocabulary_size,
             min_frequency=2,
             show_progress=False,
-            special_tokens=[BOS, EOS],
+            special_tokens=[BOS, EOS, *(f"<|reserved_{index}|>" for index in range(reserved_tokens))],
             initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
         )
         per_language = min(

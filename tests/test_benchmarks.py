@@ -33,6 +33,7 @@ from pretrain.benchmarks import (
     source_url,
 )
 from pretrain.comparison import compare_benchmarks
+from pretrain.conversation import TURN_START, chat_prompt
 from pretrain.data import file_digest, prepare_data
 from pretrain.evaluation import (
     DEFAULT_TASKS,
@@ -314,15 +315,15 @@ def jmmlu_archive(rows):
     return buffer.getvalue()
 
 
-def byte_tokenizer():
-    """A tokenizer whose vocabulary holds only the special tokens and bytes."""
+def byte_tokenizer(reserved_tokens=0):
+    """A tokenizer whose vocabulary holds only the special and reserved tokens and bytes."""
     tokenizer = Tokenizer(models.BPE())
     tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
     tokenizer.decoder = decoders.ByteLevel()
     trainer = trainers.BpeTrainer(
-        vocab_size=258,
+        vocab_size=258 + reserved_tokens,
         show_progress=False,
-        special_tokens=["<|bos|>", "<|eos|>"],
+        special_tokens=["<|bos|>", "<|eos|>", *(f"<|reserved_{index}|>" for index in range(reserved_tokens))],
         initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
     )
     tokenizer.train_from_iterator(["abc"], trainer=trainer)
@@ -758,13 +759,17 @@ class BenchmarkTests(unittest.TestCase):
 
     def test_instruction_following_asks_in_the_conversation_format(self):
         """Asks IFEval in the conversation format and keeps published choice prompts."""
-        tokenizer = byte_tokenizer()
-        model = LanguageModel(258, ModelConfig(width=8, heads=2, layers=1, context=64))
+        # The conversation format's reserved tokens mark the turns.
+        tokenizer = byte_tokenizer(reserved_tokens=6)
+        model = LanguageModel(
+            tokenizer.get_vocab_size(), ModelConfig(width=8, heads=2, layers=1, context=64)
+        )
         asked, limits = [], []
 
         def reply(sequences, max_new_tokens, *args, **kwargs):
+            # Each sequence starts with the BOS token, which the prompt leaves out.
             asked.extend(
-                tokenizer.decode(sequence, skip_special_tokens=True)
+                tokenizer.decode(sequence[1:], skip_special_tokens=False)
                 for sequence in sequences
             )
             limits.append(max_new_tokens)
@@ -785,11 +790,11 @@ class BenchmarkTests(unittest.TestCase):
             result = evaluate_benchmarks(
                 model, tokenizer, torch.device("cpu"), tasks=["arc_easy", "ifeval"]
             )
-        prompt = "User: Describe rain without using commas.\n\nAssistant:"
+        prompt = chat_prompt([{"role": "user", "content": "Describe rain without using commas."}])
         self.assertEqual(asked, [prompt])
         self.assertEqual(limits, [1280])
         texts = [call.args[1] for call in encoded.call_args_list]
-        self.assertEqual([text for text in texts if "User:" in text], [prompt])
+        self.assertEqual([text for text in texts if TURN_START in text], [prompt])
         self.assertIn("Question: Which gas do plants take in?\nAnswer:", texts)
         self.assertEqual(result["results"]["ifeval"]["prompt_level_strict_acc,none"], 1)
         self.assertIn("acc,none", result["results"]["arc_easy"])

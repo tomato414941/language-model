@@ -253,6 +253,21 @@ class PretrainingTests(unittest.TestCase):
         self.assertEqual(stopped, [whole[0][:2], whole[1]])
         self.assertEqual(len(whole[1]), 6)
 
+    def test_終わりの記号のどれかが出た入力の生成を止める(self):
+        """終わりの記号を複数渡すと、そのどれかを生成した入力の生成をそこで止める。"""
+        torch.manual_seed(3)
+        model = LanguageModel(
+            258, ModelConfig(width=24, heads=4, layers=2, context=64)
+        ).eval()
+        sequences = [[0, 5, 6], [0, 7]]
+        whole = model.continue_greedily(sequences, 6, -1)
+        ends = {whole[0][-1], -1}
+        stopped = model.continue_greedily(sequences, 6, ends)
+        for row, tokens in zip(stopped, whole):
+            cut = next(index for index, token in enumerate([*tokens, -1]) if token in ends)
+            self.assertEqual(row, tokens[:cut])
+        self.assertLess(len(stopped[0]), len(whole[0]))
+
     def test_文書を区切ると同じ窓に詰めた前の文書を見ずに予測する(self):
         """文書の始まりの記号を指定すると、同じ窓に詰めた前の文書を見ずに、その文書だけのときと同じ予測をする。"""
         bos = self.corpus.tokenizer.token_to_id("<|bos|>")

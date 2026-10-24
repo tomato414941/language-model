@@ -28,7 +28,7 @@ import torch
 from tokenizers import Tokenizer
 from torch.nn import functional as F
 
-from .conversation import conversation_text
+from .conversation import conversation_text, require_markers
 from .data import BOS, EOS, LANGUAGES, TOKEN_DTYPE, file_digest
 from .instructions import MASK_DTYPE, BenchmarkFilter, contaminated, normalize_messages
 from .training import atomic_save, autocast, load_checkpoint, load_model, select_precision
@@ -76,6 +76,7 @@ def read_config(path):
 
 def encode_reply(tokenizer, turns):
     """Tokens of a conversation and the mask of its final reply and end token."""
+    require_markers(tokenizer)
     bos, eos = tokenizer.token_to_id(BOS), tokenizer.token_to_id(EOS)
     text, replies = conversation_text(turns)
     start, end = replies[-1]

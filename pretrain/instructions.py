@@ -16,7 +16,7 @@ import torch
 from tokenizers import Tokenizer
 
 from .benchmarks import SOURCE_URL, load_benchmarks
-from .conversation import ROLE_LABELS, conversation_text
+from .conversation import ROLES, conversation_text, require_markers
 from .conversation import chat_prompt as chat_prompt
 from .data import BOS, EOS, LANGUAGES, TOKEN_DTYPE, batch_languages, file_digest
 
@@ -90,28 +90,61 @@ KEY_MINIMUM = {"ja": 12, "en": 24}
 QUESTION_WRAPPER = re.compile(r"^(?:Question:|質問：)\s*|\s*(?:Answer:|回答：)$")
 
 
-def normalize_messages(messages):
-    """Return nonempty turns that alternate from the user to a final reply, or None."""
-    if not isinstance(messages, list):
+def normalize_turn(message):
+    """Return a turn's normalized fields, or None if it is malformed or empty.
+
+    An assistant turn may carry its reasoning and the tool calls it ends with,
+    each a name and its arguments.
+    """
+    if (
+        not isinstance(message, dict)
+        or message.get("role") not in ROLES
+        or not isinstance(message.get("content"), str)
+    ):
         return None
-    turns = []
-    for message in messages:
-        if (
-            not isinstance(message, dict)
-            or message.get("role") not in ROLE_LABELS
-            or not isinstance(message.get("content"), str)
+    turn = {"role": message["role"], "content": unicodedata.normalize("NFC", message["content"]).strip()}
+    if message["role"] == "assistant":
+        reasoning = message.get("reasoning")
+        if reasoning is not None and not isinstance(reasoning, str):
+            return None
+        if reasoning and (reasoning := unicodedata.normalize("NFC", reasoning).strip()):
+            turn["reasoning"] = reasoning
+        calls = message.get("tool_calls") or []
+        if not isinstance(calls, list) or not all(
+            isinstance(call, dict) and isinstance(call.get("name"), str) and isinstance(call.get("arguments"), dict)
+            for call in calls
         ):
             return None
-        content = unicodedata.normalize("NFC", message["content"]).strip()
-        if not content:
-            return None
-        turns.append({"role": message["role"], "content": content})
+        if calls:
+            turn["tool_calls"] = [{"name": call["name"], "arguments": call["arguments"]} for call in calls]
+    return turn if turn["content"] or turn.get("tool_calls") else None
+
+
+def normalize_messages(messages):
+    """Return nonempty turns from the user to a final reply, or None.
+
+    The user and the assistant take turns, except that tool turns return the
+    results of an assistant turn's tool calls before the assistant goes on.
+    """
+    if not isinstance(messages, list):
+        return None
+    turns = [normalize_turn(message) for message in messages]
+    if not all(turns):
+        return None
     while turns and turns[-1]["role"] != "assistant":
         turns.pop()
     start = 1 if turns and turns[0]["role"] == "system" else 0
-    roles = [turn["role"] for turn in turns[start:]]
-    if len(roles) < 2 or roles != ["user", "assistant"] * (len(roles) // 2):
+    if len(turns) - start < 2:
         return None
+    expected = ("user",)
+    for turn in turns[start:]:
+        if turn["role"] not in expected:
+            return None
+        expected = {
+            "user": ("assistant",),
+            "assistant": ("tool",) if turn.get("tool_calls") else ("user",),
+            "tool": ("tool", "assistant"),
+        }[turn["role"]]
     return turns
 
 
@@ -286,6 +319,7 @@ def contaminated(messages, benchmarks, language):
 
 def encode_conversations(tokenizer, conversations):
     """Encode transcripts and mark the reply and final end tokens to predict."""
+    require_markers(tokenizer)
     bos, eos = tokenizer.token_to_id(BOS), tokenizer.token_to_id(EOS)
     texts, replies = zip(*(conversation_text(messages) for messages in conversations))
     examples = []

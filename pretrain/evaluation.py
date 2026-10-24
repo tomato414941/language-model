@@ -36,7 +36,7 @@ try:
 except ImportError as error:
     raise ImportError("Install evaluation dependencies with --extra eval") from error
 
-from .conversation import chat_prompt
+from .conversation import chat_prompt, reply_ends, require_markers
 from .data import BOS, EOS
 from .training import autocast
 
@@ -341,6 +341,7 @@ class NativeLM(TemplateLM):
             raise ValueError(
                 "the conversation format does not continue a started reply"
             )
+        require_markers(self.tokenizer)
         return chat_prompt(chat_history)
 
     def tok_encode(self, string, add_special_tokens=None, **kwargs):
@@ -462,7 +463,7 @@ class NativeLM(TemplateLM):
                 continuations = self.model.continue_greedily(
                     [prompts[index] for index in batch],
                     limits[first],
-                    self.eot_token_id,
+                    reply_ends(self.tokenizer),
                     banned=[self.prefix_token_id],
                     finished=lambda row, tokens: self.stopped(tokens, stops[batch[row]]),
                 )

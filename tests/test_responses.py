@@ -15,6 +15,7 @@ import uvicorn
 from fastapi.testclient import TestClient
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 
+from pretrain.conversation import chat_prompt
 from pretrain.model import LanguageModel, ModelConfig
 from responses_api import ModelSettings
 from server import create_app
@@ -35,9 +36,10 @@ class ResponsesTests(unittest.TestCase):
         self.tokenizer.train_from_iterator(
             ["日本語 English"],
             trainers.BpeTrainer(
-                vocab_size=258,
+                vocab_size=264,
                 initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
-                special_tokens=["<|bos|>", "<|eos|>"],
+                # The special tokens, then the reserved tokens that mark conversations.
+                special_tokens=["<|bos|>", "<|eos|>", *(f"<|reserved_{index}|>" for index in range(6))],
                 show_progress=False,
             ),
         )
@@ -137,7 +139,7 @@ class ResponsesTests(unittest.TestCase):
         self.assertEqual(response["metadata"], {"purpose": "test"})
         self.assertEqual(response["usage"]["output_tokens"], 4)
         expected = 1 + len(
-            self.tokenizer.encode("User: 日本語 English\n\nAssistant:").ids
+            self.tokenizer.encode(chat_prompt([{"role": "user", "content": "日本語 English"}])).ids
         )
         self.assertEqual(response["usage"]["input_tokens"], expected)
         self.assertEqual(response["usage"]["total_tokens"], expected + 4)
@@ -161,9 +163,13 @@ class ResponsesTests(unittest.TestCase):
         self.assertEqual(second.status_code, 200, second.text)
         self.assertEqual(second.json()["instructions"], "Continue in Japanese.")
         self.assertEqual(second.json()["output"][0]["content"][0]["text"], "aaaa")
-        prompt = (
-            "System: Continue in Japanese.\n\nUser: 日本語\n\n"
-            "Assistant: aaaa\n\nUser: English\n\nAssistant:"
+        prompt = chat_prompt(
+            [
+                {"role": "system", "content": "Continue in Japanese."},
+                {"role": "user", "content": "日本語"},
+                {"role": "assistant", "content": "aaaa"},
+                {"role": "user", "content": "English"},
+            ]
         )
         self.assertEqual(
             second.json()["usage"]["input_tokens"],
@@ -438,7 +444,7 @@ class ResponsesTests(unittest.TestCase):
         """Lists models and retrieves generated text and usage through the official SDK."""
         sdk, _ = self.sdk()
         self.assertEqual(sdk.models.list().data[0].id, "test-model")
-        prompt = "System: Continue in Japanese.\n\nUser: 日本語 English\n\nAssistant:"
+        prompt = chat_prompt([{"role": "system", "content": "Continue in Japanese."}, {"role": "user", "content": "日本語 English"}])
         cases = (
             {"input": "日本語 English", "instructions": "Continue in Japanese."},
             {
@@ -519,7 +525,7 @@ class ResponsesTests(unittest.TestCase):
         self.assertEqual(final.output_text, text)
         self.assertEqual(final.status, "completed")
         self.assertEqual(final.usage.output_tokens, 5)
-        prompt = "System: Continue in Japanese.\n\nUser: 日本語 English\n\nAssistant:"
+        prompt = chat_prompt([{"role": "system", "content": "Continue in Japanese."}, {"role": "user", "content": "日本語 English"}])
         self.assertEqual(
             final.usage.input_tokens, 1 + len(self.tokenizer.encode(prompt).ids)
         )

@@ -4,6 +4,7 @@ import threading
 import torch
 from tokenizers.decoders import DecodeStream
 
+from .conversation import reply_ends, require_markers
 from .training import load_model, select_device
 
 
@@ -15,6 +16,7 @@ class TextModel:
         self.model, self.tokenizer, saved = load_model(
             checkpoint, select_device(device)
         )
+        require_markers(self.tokenizer)
         self.model.eval()
         self.step = saved["step"]
         self.tokens_seen = saved["tokens_seen"]
@@ -40,7 +42,7 @@ class TextGeneration:
         self.finished = False
         self.text = ""
         self.cancelled = threading.Event()
-        self.eos = self.tokenizer.token_to_id("<|eos|>")
+        self.ends = reply_ends(self.tokenizer)
         self.tokens = backend.model.sample_tokens(
             self.tokenizer,
             prompt,
@@ -50,6 +52,7 @@ class TextGeneration:
             seed=secrets.randbits(32),
             top_p=top_p,
             stop_requested=self.cancelled.is_set,
+            stops=self.ends,
         )
         self.deltas = self._decode()
 
@@ -58,7 +61,7 @@ class TextGeneration:
         generated = []
         for token in self.tokens:
             self.output_tokens += 1
-            if token == self.eos:
+            if token in self.ends:
                 self.finished = True
                 break
             generated.append(token)
