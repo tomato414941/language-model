@@ -28,6 +28,7 @@ from pretrain.model import (
     LanguageModel,
     ModelConfig,
     chunked_delta_rule,
+    document_bounds,
     recurrent_delta_rule,
 )
 from pretrain.training import (
@@ -284,6 +285,42 @@ class PretrainingTests(unittest.TestCase):
             unseparated.load_state_dict(model.state_dict())
             mixed = unseparated(torch.tensor([earlier + later]))[0, len(earlier) :]
             self.assertFalse(torch.allclose(mixed, packed, atol=1e-3))
+
+    def test_文書の境目を平らにした並びの位置で表す(self):
+        """各行の文書を、行の始まりも区切りとして平らにした並びの位置で表し、空の文書で数を2の累乗にそろえる。"""
+        starts = torch.tensor([[False, False, True, False], [True, False, False, True]])
+        self.assertEqual(document_bounds(starts).tolist(), [0, 2, 4, 7, 8])
+        starts = torch.tensor([[False, True, False, True], [False, False, False, False]])
+        self.assertEqual(document_bounds(starts).tolist(), [0, 1, 3, 4, 8])
+        self.assertEqual(document_bounds(torch.zeros(3, 4, dtype=torch.bool)).tolist(), [0, 4, 8, 12, 12])
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA GPU required")
+    def test_GPUでは文書ごとの注意をマスクと同じ結果で速い計算に任せる(self):
+        """GPUの半精度では文書ごとの注意をFlashAttentionで計算し、密なマスクと同じ損失と勾配を返す。"""
+        bos = self.corpus.tokenizer.token_to_id("<|bos|>")
+        # FlashAttention needs heads at least 8 wide.
+        config = dataclasses.replace(
+            self.llama_config(), width=64, context=64, document_start=bos, qk_norm=True,
+            attention_gate="headwise", prediction_depth=1,
+        )
+        torch.manual_seed(0)
+        model = LanguageModel(258, config).cuda()
+        tokens = torch.randint(2, 258, (2, config.context + 1), device="cuda")
+        tokens[0, [0, 5, 40]] = bos
+        tokens[1, 17] = bos
+        results = []
+        for flash in (True, False):
+            model.zero_grad()
+            with (
+                patch("pretrain.model.flash_dtype", return_value=None) if not flash else contextlib.nullcontext(),
+                torch.autocast("cuda", dtype=torch.bfloat16),
+            ):
+                loss = model(tokens[:, :-1], tokens[:, 1:])
+            loss.backward()
+            results.append((loss.item(), [p.grad.float().clone() for p in model.parameters()]))
+        self.assertAlmostEqual(results[0][0], results[1][0], places=2)
+        for flash, dense in zip(results[0][1], results[1][1]):
+            torch.testing.assert_close(flash, dense, rtol=0.05, atol=2e-3)
 
     def test_文書の区切りには文書を始める記号を求める(self):
         """文書の始まりとして、語彙の文書開始記号以外を指定した学習を断る。"""

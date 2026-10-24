@@ -1,9 +1,11 @@
 import math
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.nn.attention.varlen import varlen_attn
 
 
 @dataclass(frozen=True)
@@ -131,6 +133,38 @@ class Rotary(nn.Module):
             return value * cosine + torch.cat((-second, first), dim=-1) * sine
 
         return rotate(query), rotate(key)
+
+
+class Documents(NamedTuple):
+    """Where each document begins in the flattened batch, then where the batch
+    ends, for FlashAttention to attend within documents without a dense mask."""
+
+    bounds: torch.Tensor
+
+
+def document_bounds(starts):
+    """Each row's documents as one sequence each, the first starting at the row.
+
+    Empty documents at the end round the count up to a power of two, so that
+    compiled code meets only a few shapes.
+    """
+    batch, length = starts.shape
+    beginnings = (starts | (torch.arange(length, device=starts.device) == 0)).flatten().nonzero().flatten()
+    count = beginnings.numel()
+    bounds = torch.full(
+        (max(batch, 1 << (count - 1).bit_length()) + 1,), batch * length, dtype=torch.int32, device=starts.device
+    )
+    bounds[:count] = beginnings
+    return bounds
+
+
+def flash_dtype(device, dtype):
+    """The half precision FlashAttention runs in on this device, or None."""
+    if device.type != "cuda" or torch.cuda.get_device_capability(device) < (8, 0):
+        return None
+    if torch.is_autocast_enabled("cuda"):
+        dtype = torch.get_autocast_dtype("cuda")
+    return dtype if dtype in (torch.float16, torch.bfloat16) else None
 
 
 # Positions the gated delta rule solves together, and the width of the short
@@ -336,14 +370,26 @@ class LlamaBlock(ModernBlock):
         value = value.transpose(1, 2)
         if cache is not None:
             key, value = cache.extend(key, value)
-        attended = F.scaled_dot_product_attention(
-            query,
-            key,
-            value,
-            attn_mask=mask,
-            is_causal=mask is None,
-            enable_gqa=self.heads != self.kv_heads,
-        ).transpose(1, 2)
+        if isinstance(mask, Documents):
+            dtype = flash_dtype(query.device, query.dtype)
+            query, key, value = [
+                tensor.transpose(1, 2).reshape(batch * length, -1, self.head_width).to(dtype)
+                for tensor in (query, key, value)
+            ]
+            # Every document is at most a row long, so the longest stays fixed.
+            attended = varlen_attn(
+                query, key, value, mask.bounds, mask.bounds, length, length,
+                window_size=(-1, 0), enable_gqa=self.heads != self.kv_heads,
+            ).view(batch, length, self.heads, self.head_width)
+        else:
+            attended = F.scaled_dot_product_attention(
+                query,
+                key,
+                value,
+                attn_mask=mask,
+                is_causal=mask is None,
+                enable_gqa=self.heads != self.kv_heads,
+            ).transpose(1, 2)
         if self.attention_gate is not None:
             gate = torch.sigmoid(self.attention_gate(normalized))
             attended = attended * gate.view(batch, length, self.heads, -1)
@@ -566,9 +612,13 @@ class LanguageModel(nn.Module):
         """Which earlier positions each position sees within its own document.
 
         None when documents are not separated, for plain causal attention.
+        Where FlashAttention runs, the documents' bounds instead: a dense mask
+        would keep attention on a slower kernel.
         """
         if starts is None:
             return None
+        if flash_dtype(starts.device, self.embedding.weight.dtype) is not None:
+            return Documents(document_bounds(starts))
         documents = starts.cumsum(1)
         length = starts.shape[1]
         causal = torch.ones(length, length, dtype=torch.bool, device=starts.device).tril()
@@ -601,11 +651,12 @@ class LanguageModel(nn.Module):
             span = tokens.shape[1] - depth
             if span <= 0:
                 break
+            shortened = None if starts is None else starts[:, :span]
             hidden, extra = predictor(
                 hidden[:, :span],
                 self.embedding(tokens[:, depth:]),
-                None if mask is None else mask[..., :span, :span],
-                None if starts is None else starts[:, :span],
+                self.document_mask(shortened),
+                shortened,
             )
             objective = objective + extra
             logits = F.linear(self.norm(hidden), self.embedding.weight)
