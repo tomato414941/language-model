@@ -27,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
+from tokenizers import Regex, Tokenizer, decoders, models, pre_tokenizers, trainers
 
 from .data import BOS, EOS, LANGUAGES, Corpus, file_digest, read_documents
 from .instructions import BenchmarkFilter
@@ -62,6 +62,14 @@ PURPOSES = ("phase", "alternative", "evaluation", "pool")
 # from it takes either a random sample or the documents a model learns most from.
 SELECTIONS = ("random", "learnable")
 TOKEN_PIECE_DTYPE = "<u2"
+# GPT-4's pre-tokenization, which OLMo 2 and Llama 3 use: it keeps runs of
+# whitespace and line breaks apart from words, so code's indentation and line
+# endings become tokens of their own. DIGITS stands for how numbers split.
+GPT4_SPLIT = (
+    r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|DIGITS"
+    r"| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+)
+PRETOKENIZERS = ("gpt2", "gpt4")
 # Each part reads this much beyond its share of a source, so the merge can drop
 # documents another part or source already supplied without falling short.
 PART_SLACK = 0.15
@@ -137,6 +145,13 @@ def read_recipe(path):
         or not 258 <= tokenizer["vocabulary_size"] <= 65536
     ):
         raise ValueError("the vocabulary must fit in unsigned 16-bit token IDs")
+    if tokenizer.get("pretokenizer", "gpt2") not in PRETOKENIZERS:
+        raise ValueError(f"pretokenizer must be one of {PRETOKENIZERS}")
+    if type(tokenizer.get("single_digits", False)) is not bool:
+        raise ValueError("single_digits must be true or false")
+    reserved = tokenizer.get("reserved_tokens", 0)
+    if type(reserved) is not int or not 0 <= reserved <= tokenizer["vocabulary_size"] - 258:
+        raise ValueError("reserved_tokens must leave room for the special tokens and bytes")
     if "reuse_sha256" in tokenizer:
         if not re.fullmatch(r"[0-9a-f]{64}", tokenizer["reuse_sha256"]) or not (
             tokenizer.get("reuse_from")
@@ -981,6 +996,29 @@ def prepare_tokenizer(recipe_path, output, benchmarks_path):
     return manifest
 
 
+def pre_tokenizer(settings):
+    """How text splits before merging: GPT-2's split by default, or GPT-4's.
+
+    Numbers split into groups of up to three digits under GPT-4's split, or
+    into single digits when the recipe asks for them.
+    """
+    single = settings.get("single_digits", False)
+    if settings.get("pretokenizer", "gpt2") == "gpt4":
+        pattern = GPT4_SPLIT.replace("DIGITS", r"\p{N}" if single else r"\p{N}{1,3}")
+        return pre_tokenizers.Sequence(
+            [
+                pre_tokenizers.Split(Regex(pattern), behavior="isolated"),
+                pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False),
+            ]
+        )
+    byte_level = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    if single:
+        return pre_tokenizers.Sequence(
+            [pre_tokenizers.Digits(individual_digits=True), byte_level]
+        )
+    return byte_level
+
+
 def train_tokenizer(recipe, staging, stack, benchmarks_path):
     benchmarks = BenchmarkFilter(benchmarks_path)
     sources = sources_by_id(recipe)
@@ -1019,14 +1057,18 @@ def train_tokenizer(recipe, staging, stack, benchmarks_path):
         samples[source_id] = dict(stats)
     for destination in destinations.values():
         destination.flush()
+    settings = recipe["tokenizer"]
     tokenizer = Tokenizer(models.BPE())
-    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    tokenizer.pre_tokenizer = pre_tokenizer(settings)
     tokenizer.decoder = decoders.ByteLevel()
+    # Unused special tokens hold places for markers that later training may
+    # need, since the vocabulary cannot grow once a model learns from it.
+    reserved = [f"<|reserved_{index}|>" for index in range(settings.get("reserved_tokens", 0))]
     trainer = trainers.BpeTrainer(
-        vocab_size=recipe["tokenizer"]["vocabulary_size"],
+        vocab_size=settings["vocabulary_size"],
         min_frequency=2,
         show_progress=False,
-        special_tokens=[BOS, EOS],
+        special_tokens=[BOS, EOS, *reserved],
         initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
     )
     balanced = itertools.chain.from_iterable(

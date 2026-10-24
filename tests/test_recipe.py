@@ -33,6 +33,7 @@ import numpy as np
 import pyarrow as arrow
 import torch
 from pyarrow import parquet
+from tokenizers import Tokenizer
 
 from pretrain.__main__ import main
 from pretrain.data import Corpus, file_digest
@@ -319,6 +320,34 @@ class RecipeTests(unittest.TestCase):
         self.assertTrue(
             all(not validation_document(digest, 0.25) for _, digest, _ in documents)
         )
+
+    def test_GPT4の区切りで数字を一桁ずつにし空きの記号を確保した語彙を作る(self):
+        """GPT-4 の区切りの規則で数字を一桁ずつに分け、文書の始まりと終わりの後ろに空きの記号を置いた語彙を作る。"""
+        recipe = self.recipe_path.read_text()
+        self.assertIn("vocabulary_size = 258", recipe)
+        self.recipe_path.write_text(
+            recipe.replace(
+                "vocabulary_size = 258",
+                'vocabulary_size = 300\npretokenizer = "gpt4"\nsingle_digits = true\nreserved_tokens = 4',
+            )
+        )
+        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)
+        tokenizer = Tokenizer.from_file(str(self.root / "tokenizer/tokenizer.json"))
+        self.assertEqual(tokenizer.get_vocab_size(), 300)
+        self.assertEqual(
+            [tokenizer.token_to_id(token) for token in ("<|bos|>", "<|eos|>", "<|reserved_0|>", "<|reserved_3|>")],
+            [0, 1, 2, 5],
+        )
+        text = "歴史の説明は1400年前から。\n    return x"
+        ids = tokenizer.encode(text, add_special_tokens=False).ids
+        self.assertEqual(tokenizer.decode(ids), text)
+        pieces = [tokenizer.decode([index]) for index in ids]
+        self.assertEqual([piece for piece in pieces if any(c.isdigit() for c in piece)], ["1", "4", "0", "0"])
+        # The indentation is not joined to the line break before it, as GPT-2's split joins them.
+        self.assertFalse(any("\n " in piece for piece in pieces))
+        self.recipe_path.write_text(recipe.replace("vocabulary_size = 258", 'vocabulary_size = 258\npretokenizer = "gpt3"'))
+        with self.assertRaisesRegex(ValueError, "pretokenizer"):
+            read_recipe(self.recipe_path)
 
     def test_同じ設定から同じ語彙とトークン列を再現する(self):
         first = self.prepare()
