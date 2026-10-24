@@ -16,7 +16,7 @@ corpus = ["huggingface-hub>=0.35,<2", "pyarrow>=21,<30", "pyahocorasick>=2.3,<3"
 hub = ["huggingface-hub>=0.35,<2"]
 deploy = ["modal>=1.6.1,<2"]
 eval = [
-    "lm-eval[ifeval]==0.4.13",
+    "lm-eval[hf,ifeval]==0.4.13",
 ]
 
 [tool.uv]

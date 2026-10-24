@@ -371,6 +371,40 @@ def evaluate_benchmarks(
     limit=None,
 ):
     """Use the harness's task definitions, default few-shot counts and metrics."""
+    return run_benchmarks(
+        NativeLM(model, tokenizer, device, precision, batch_tokens), tasks, limit
+    )
+
+
+def evaluate_hub_benchmarks(
+    repository, revision, device, precision="float32", batch_size=32, tasks=None, limit=None
+):
+    """Evaluate a model from the Hugging Face Hub on the same tasks and metrics.
+
+    The harness's own Hugging Face backend runs the model, as published
+    evaluations of it do.
+    """
+    from lm_eval.models.huggingface import HFLM
+
+    backend = HFLM(
+        pretrained=repository,
+        revision=revision,
+        device=str(device),
+        dtype=precision,
+        batch_size=batch_size,
+    )
+    result = run_benchmarks(backend, tasks, limit)
+    result["model"] = {
+        "repository": repository,
+        "revision": revision,
+        "parameters": sum(parameter.numel() for parameter in backend.model.parameters()),
+        "precision": precision,
+    }
+    return result
+
+
+def run_benchmarks(backend, tasks=None, limit=None):
+    """Ask a harness backend the standard tasks and record each question's results."""
     if limit is not None and (type(limit) is not int or limit <= 0):
         raise ValueError("limit must be a positive integer")
     manager = TaskManager(include_path=str(TASK_DEFINITIONS))
@@ -388,7 +422,6 @@ def evaluate_benchmarks(
         name: loaded["groups"][name] if name in loaded["groups"] else loaded["tasks"][name]
         for name in selected
     }
-    backend = NativeLM(model, tokenizer, device, precision, batch_tokens)
     result, items = None, {}
     for conversation in (False, True):
         group = [

@@ -226,6 +226,23 @@ def main(argv=None):
     benchmark.add_argument(
         "--output", type=Path, required=True, help="問題ごとの記録を含む結果のJSONファイル"
     )
+    hub_benchmark = commands.add_parser(
+        "benchmark-hub", help="Hugging Face Hubのモデルを、標準評価と同じ課題と指標で評価する"
+    )
+    hub_benchmark.add_argument("--model", required=True, help="Hubのモデル名（例: openai-community/gpt2）")
+    hub_benchmark.add_argument("--revision", required=True, help="評価するモデルのコミット")
+    hub_benchmark.add_argument(
+        "--tasks", nargs="+", help="評価するタスク名（既定は標準評価の10課題）"
+    )
+    hub_benchmark.add_argument(
+        "--limit", type=int, help="動作確認で各タスクに使う問題数（正式な評価は全問）"
+    )
+    hub_benchmark.add_argument("--batch-size", type=int, default=32)
+    hub_benchmark.add_argument("--threads", type=int, default=4)
+    hub_benchmark.add_argument("--device", choices=("cpu", "cuda", "auto"), default="auto")
+    hub_benchmark.add_argument(
+        "--output", type=Path, required=True, help="問題ごとの記録を含む結果のJSONファイル"
+    )
     growth = commands.add_parser(
         "grow", help="学習したモデルの層を増やし、同じ予測から学習を始められる重みを作る"
     )
@@ -317,6 +334,31 @@ def main(argv=None):
 
             result = fetch_benchmarks(args.output)
             print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "benchmark-hub":
+            from lm_eval.utils import setup_logging
+
+            from .evaluation import evaluate_hub_benchmarks
+
+            if args.threads <= 0:
+                raise ValueError("threads must be positive")
+            torch.set_num_threads(args.threads)
+            # Show each task's steps on stderr while a long evaluation runs.
+            setup_logging(logging.INFO)
+            device = select_device(args.device)
+            # The harness also prints notes; they join its log on stderr.
+            with contextlib.redirect_stdout(sys.stderr):
+                result = evaluate_hub_benchmarks(
+                    args.model,
+                    args.revision,
+                    device,
+                    select_precision(device),
+                    args.batch_size,
+                    args.tasks,
+                    args.limit,
+                )
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+            print(json.dumps(result["by_language"], indent=2))
         elif args.command == "grow":
             from .growth import grow_checkpoint
 

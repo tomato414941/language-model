@@ -31,7 +31,13 @@ from pretrain.benchmarks import (
 )
 from pretrain.comparison import compare_benchmarks
 from pretrain.data import file_digest, prepare_data
-from pretrain.evaluation import DEFAULT_TASKS, STANDARD_TASKS, NativeLM, evaluate_benchmarks
+from pretrain.evaluation import (
+    DEFAULT_TASKS,
+    STANDARD_TASKS,
+    NativeLM,
+    evaluate_benchmarks,
+    evaluate_hub_benchmarks,
+)
 from pretrain.model import LanguageModel, ModelConfig
 from pretrain.training import TrainConfig, train
 from scripts import inspect_pretrain
@@ -734,6 +740,41 @@ class BenchmarkTests(unittest.TestCase):
         blimp = comparison["en"]["blimp"]
         self.assertEqual(blimp["questions"], 2 * 67)
         self.assertAlmostEqual(blimp["difference"], blimp["other"] - blimp["base"])
+
+    def test_Hubのモデルも同じ課題と指標で評価し問題ごとに記録する(self):
+        """Asks a Hugging Face model the standard tasks through the harness's own backend."""
+        from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
+
+        directory = self.root / "hub-model"
+        torch.manual_seed(0)
+        model = LlamaForCausalLM(
+            LlamaConfig(
+                vocab_size=258,
+                hidden_size=16,
+                intermediate_size=32,
+                num_hidden_layers=1,
+                num_attention_heads=2,
+                num_key_value_heads=1,
+                max_position_embeddings=128,
+            )
+        )
+        model.save_pretrained(directory)
+        PreTrainedTokenizerFast(
+            tokenizer_object=byte_tokenizer(), bos_token="<|bos|>", eos_token="<|eos|>"
+        ).save_pretrained(directory)
+        with patch(
+            "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
+        ):
+            result = evaluate_hub_benchmarks(
+                str(directory), None, torch.device("cpu"), tasks=["arc_easy", "kuci"]
+            )
+        summary = result["by_language"]
+        self.assertEqual(summary["en"]["arc_easy"]["metric"], "acc_norm")
+        self.assertEqual(set(summary["ja"]), {"kuci"})
+        self.assertEqual(len(result["items"]["arc_easy"]["gold_bits_per_byte"]), 2)
+        self.assertEqual(
+            result["model"]["parameters"], sum(p.numel() for p in model.parameters())
+        )
 
     def test_指標を見直しても前の評価を評価し直さずに比べる(self):
         """Reads a revised accuracy from each question's record, without evaluating again."""
