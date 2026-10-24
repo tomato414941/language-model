@@ -1,11 +1,14 @@
 import contextlib
+import csv
 import hashlib
 import importlib.util
 import io
 import json
 import math
+import statistics
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -37,6 +40,7 @@ from pretrain.evaluation import (
     NativeLM,
     evaluate_benchmarks,
     evaluate_hub_benchmarks,
+    result_keys,
 )
 from pretrain.model import LanguageModel, ModelConfig
 from pretrain.training import TrainConfig, train
@@ -95,6 +99,8 @@ ROWS = {
     ],
 }
 ID_FIELDS = {"hellaswag": "ind", "arc_easy": "id", "jcommonsenseqa": "q_id"}
+# Tasks answered by choosing, which a model with a short context can take.
+CHOICE_TASKS = ["hellaswag", "arc_easy", "blimp", "kuci", "ja_leaderboard_jnli"]
 IFEVAL_ROWS = [
     {
         "key": 1,
@@ -177,6 +183,135 @@ ROWS["blimp"] = [
         "sentence_bad": "Raymond is selling this sketches.",
     }
 ]
+ROWS["arc_challenge"] = ROWS["arc_easy"]
+ID_FIELDS["arc_challenge"] = "id"
+ROWS["mmlu"] = [
+    {
+        "question": "What is 2 + 2?",
+        "subject": "elementary_mathematics",
+        "choices": ["3", "4", "five", "22"],
+        "answer": 1,
+    },
+    {
+        "question": "Which planet is the largest?",
+        "subject": "astronomy",
+        "choices": ["Mars", "Jupiter", "Venus", "Mercury"],
+        "answer": 1,
+    },
+]
+ROWS["gsm8k"] = [
+    {
+        "question": "Tom has 3 apples and buys 2 more. How many apples does he have?",
+        "answer": "He has 3 + 2 = <<3+2=5>>5 apples.\n#### 5",
+    },
+    {
+        "question": "A box holds 4 pens. How many pens do 2 boxes hold?",
+        "answer": "They hold 2 * 4 = <<2*4=8>>8 pens.\n#### 8",
+    },
+]
+ROWS["humaneval"] = [
+    {
+        "task_id": "HumanEval/0",
+        "prompt": 'def add(a, b):\n    """Return the sum of a and b."""\n',
+        "canonical_solution": "    return a + b\n",
+        "test": "def check(candidate):\n    assert candidate(2, 3) == 5\n",
+        "entry_point": "add",
+    },
+    {
+        "task_id": "HumanEval/1",
+        "prompt": 'def double(x):\n    """Return twice x."""\n',
+        "canonical_solution": "    return 2 * x\n",
+        "test": "def check(candidate):\n    assert candidate(4) == 8\n",
+        "entry_point": "double",
+    },
+]
+ID_FIELDS["humaneval"] = "task_id"
+ROWS["jhumaneval"] = [
+    {
+        **row,
+        "task_id": f"J{row['task_id']}",
+        "prompt_en": row["prompt"],
+        "prompt": row["prompt"].replace(english, japanese),
+    }
+    for row, (english, japanese) in zip(
+        ROWS["humaneval"],
+        (("Return the sum of a and b.", "aとbの和を返す。"), ("Return twice x.", "xの2倍を返す。")),
+    )
+]
+ID_FIELDS["jhumaneval"] = "task_id"
+ROWS["mbpp"] = [
+    {
+        "task_id": 11,
+        "text": "Write a function to add two numbers.",
+        "code": "def add(a, b):\r\n  return a + b",
+        "test_list": ["assert add(1, 2) == 3", "assert add(0, 0) == 0", "assert add(-1, 1) == 0"],
+        "test_setup_code": "",
+        "challenge_test_list": [],
+    }
+]
+ID_FIELDS["mbpp"] = "task_id"
+ROWS["jmmlu"] = [
+    {"question": "日本の首都はどこか。", "A": "大阪", "B": "東京", "C": "京都", "D": "札幌", "answer": "B"},
+    {"question": "富士山がある県は？", "A": "静岡県", "B": "長野県", "C": "新潟県", "D": "青森県", "answer": "A"},
+]
+ROWS["mgsm_ja"] = [
+    {
+        "question": "問題：りんごが3個あり、2個買いました。全部で何個ですか？",
+        "answer": "ステップごとの答え：3+2=5。答えは5です。",
+        "answer_number": 5,
+        "equation_solution": "3 + 2 = 5.",
+    }
+]
+ROWS["jsquad"] = [
+    {
+        "id": "a1p0q0",
+        "title": "梅雨",
+        "context": "梅雨 [SEP] 梅雨は、北海道と小笠原諸島を除く日本でみられる。",
+        "question": "梅雨がないのは北海道とどこか。",
+        "answers": [{"text": "小笠原諸島", "answer_start": 13}],
+        "is_impossible": False,
+    },
+    {
+        "id": "a1p0q1",
+        "title": "梅雨",
+        "context": "梅雨 [SEP] 梅雨は、北海道と小笠原諸島を除く日本でみられる。",
+        "question": "梅雨がみられるのはどこか。",
+        "answers": [{"text": "日本", "answer_start": 22}],
+        "is_impossible": False,
+    },
+]
+ID_FIELDS["jsquad"] = "id"
+
+
+def squad_articles(rows):
+    """SQuAD's JSON layout of questions: each in a paragraph of an article."""
+    return [
+        {
+            "title": row["title"],
+            "paragraphs": [
+                {
+                    "context": row["context"],
+                    "qas": [
+                        {key: row[key] for key in ("id", "question", "answers", "is_impossible")}
+                    ],
+                }
+            ],
+        }
+        for row in rows
+    ]
+
+
+def jmmlu_archive(rows):
+    """JMMLU's zip of CSV files, with the files macOS added beside them."""
+    text = io.StringIO()
+    writer = csv.DictWriter(text, fieldnames=["question", "A", "B", "C", "D", "answer"])
+    writer.writeheader()
+    writer.writerows(rows)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("JMMLU/test/japanese_history.csv", "\ufeff" + text.getvalue())
+        archive.writestr("__MACOSX/JMMLU/test/._japanese_history.csv", b"\x00\x05\x16\x07")
+    return buffer.getvalue()
 
 
 def byte_tokenizer():
@@ -196,6 +331,30 @@ def byte_tokenizer():
 
 def benchmark_dataset(path, name=None, **kwargs):
     """Supply source records while using the harness's real task definitions."""
+    def examples(rows):
+        return Dataset.from_list([rows[index % len(rows)] for index in range(6)])
+
+    if path == "cais/mmlu":
+        rows = Dataset.from_list(ROWS["mmlu"])
+        return DatasetDict(test=rows, validation=rows, dev=rows)
+    if path in ("openai/gsm8k", "juletxara/mgsm"):
+        rows = ROWS["gsm8k" if path == "openai/gsm8k" else "mgsm_ja"]
+        return DatasetDict(train=examples(rows), test=Dataset.from_list(rows))
+    if path == "google-research-datasets/mbpp":
+        rows = Dataset.from_list(ROWS["mbpp"])
+        return DatasetDict(train=rows, validation=rows, test=rows, prompt=rows)
+    if path == "openai/openai_humaneval":
+        return DatasetDict(test=Dataset.from_list(ROWS["humaneval"]))
+    if path == "parquet" and "jhumaneval" in kwargs["data_files"]["test"]:
+        return DatasetDict(test=Dataset.from_list(ROWS["jhumaneval"]))
+    if path == "csv" and "JMMLU" in kwargs["data_files"]["test"]:
+        return DatasetDict(test=Dataset.from_list(ROWS["jmmlu"]))
+    if path == "json" and "jsquad" in str(kwargs["data_files"]):
+        assert kwargs["field"] == "data"
+        return DatasetDict(
+            train=Dataset.from_list(squad_articles(examples(ROWS["jsquad"]).to_list())),
+            validation=Dataset.from_list(squad_articles(ROWS["jsquad"])),
+        )
     if path == "google/IFEval":
         return DatasetDict(train=Dataset.from_list(IFEVAL_ROWS))
     if path == "nyu-mll/blimp":
@@ -254,6 +413,44 @@ class FixedModel(torch.nn.Module):
         return self.logits.expand(*tokens.shape, -1)
 
 
+class AnsweringModel(FixedModel):
+    """Predict like FixedModel, and answer each prompt that ends with a key of `answers`."""
+
+    def __init__(self, probabilities, answers=None):
+        super().__init__(probabilities, context=4096)
+        self.answers = answers or {}
+
+    def continue_greedily(self, sequences, max_new_tokens, end, banned=(), finished=None):
+        tokenizer = byte_tokenizer()
+        written = []
+        for sequence in sequences:
+            prompt = tokenizer.decode(sequence, skip_special_tokens=True)
+            ending = next((key for key in self.answers if prompt.endswith(key)), None)
+            written.append(tokenizer.encode(self.answers.get(ending, "")).ids)
+        return written
+
+
+class CodeChecker:
+    """Run each program with its tests, as the code_eval metric does, in this process."""
+
+    def compute(self, references, predictions, k):
+        passed = []
+        for test, (program, *_) in zip(references, predictions, strict=True):
+            try:
+                exec(program + "\n" + test, {})
+                passed.append(1.0)
+            except Exception:
+                passed.append(0.0)
+        return {"pass@1": statistics.fmean(passed)}, {}
+
+
+def load_metric(name, **kwargs):
+    """Stand in for the evaluate library, which the programming tasks load code_eval from."""
+    if name != "code_eval":
+        raise ValueError(f"unexpected metric: {name}")
+    return CodeChecker()
+
+
 class CpuTorch:
     """Stand in for torch so the GPU inspection script runs on the CPU."""
 
@@ -293,7 +490,11 @@ class BenchmarkTests(unittest.TestCase):
                     for row in ROWS[name]
                 ]
                 buffer = io.BytesIO()
-                if path.endswith((".json", ".jsonl")):
+                if path.endswith(".zip"):
+                    buffer.write(jmmlu_archive(rows))
+                elif task.get("format") == "squad":
+                    buffer.write(json.dumps({"data": squad_articles(rows)}).encode())
+                elif path.endswith((".json", ".jsonl")):
                     buffer.write(
                         "".join(json.dumps(row) + "\n" for row in rows).encode()
                     )
@@ -371,6 +572,20 @@ class BenchmarkTests(unittest.TestCase):
         )
         self.assertEqual(benchmarks["jnli"][0]["context"], "犬が芝生の上を走っている。")
         self.assertEqual(benchmarks["kuci"][0]["context"], "電池の減りは早いので、予備の電池を買う")
+        # JMMLU's CSV files are read from its zip, without the files macOS added.
+        self.assertEqual(
+            [item["context"] for item in benchmarks["jmmlu"]],
+            ["質問：日本の首都はどこか。\n回答：", "質問：富士山がある県は？\n回答："],
+        )
+        # JSQuAD's questions are read one by one from SQuAD's articles.
+        self.assertEqual(
+            benchmarks["jsquad"][1]["context"], "質問：梅雨がみられるのはどこか。\n回答："
+        )
+        self.assertEqual(
+            benchmarks["mgsm_ja"][0]["context"], "りんごが3個あり、2個買いました。全部で何個ですか？"
+        )
+        self.assertEqual(benchmarks["humaneval"][0]["context"], ROWS["humaneval"][0]["prompt"])
+        self.assertEqual(benchmarks["mbpp"][0]["context"], "Write a function to add two numbers.")
         # Questions without identifiers of their own are numbered by file and row.
         self.assertEqual(benchmarks["sciq"][1]["id"], "data/validation-00000-of-00001.parquet:0")
         self.assertEqual(
@@ -484,11 +699,12 @@ class BenchmarkTests(unittest.TestCase):
 
     def test_standard_tasks_use_held_out_splits_and_published_fewshot_counts(self):
         """Uses published evaluation splits, examples and metrics."""
-        with patch(
-            "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
+        with (
+            patch("lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset),
+            patch("evaluate.load", side_effect=load_metric),
         ):
             result = evaluate_benchmarks(
-                FixedModel(torch.full((258,), 1 / 258)),
+                AnsweringModel(torch.full((258,), 1 / 258)),
                 byte_tokenizer(),
                 torch.device("cpu"),
             )
@@ -511,12 +727,33 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(configs["piqa"]["validation_split"], "validation")
         self.assertEqual(result["n-shot"]["ja_leaderboard_jnli"], 3)
         self.assertEqual(configs["kuci"]["test_split"], "test")
+        for name, shots in (
+            ("gsm8k", 5),
+            ("ja_leaderboard_mgsm", 5),
+            ("mbpp", 3),
+            ("ja_leaderboard_jsquad", 2),
+            ("humaneval", 0),
+            ("jhumaneval", 0),
+            ("jmmlu", 0),
+            ("arc_challenge", 0),
+        ):
+            self.assertEqual(result["n-shot"][name], shots)
+        self.assertEqual(configs["ja_leaderboard_jsquad"]["validation_split"], "validation")
+        for name in ("gsm8k", "ja_leaderboard_mgsm", "mbpp", "humaneval", "jmmlu"):
+            self.assertEqual(configs[name]["test_split"], "test")
+        # MMLU's questions come from the test split of each of its 57 subjects.
+        subjects = [name for name in configs if name.startswith("mmlu_")]
+        self.assertEqual(len(subjects), 57)
+        self.assertTrue(all(configs[name]["test_split"] == "test" for name in subjects))
         for name in DEFAULT_TASKS:
-            self.assertIn("acc,none", result["results"][name])
-        # BLiMP's group carries a version of its own.
+            self.assertIn(result_keys(STANDARD_TASKS[name][1])[0], result["results"][name])
+        # BLiMP's and MMLU's groups and GSM8K carry versions of their own.
         self.assertEqual(
             {name: float(result["versions"][name]) for name in DEFAULT_TASKS},
-            {name: 2.0 if name == "blimp" else 1.0 for name in DEFAULT_TASKS},
+            {
+                name: {"blimp": 2.0, "mmlu_continuation": 2.0, "gsm8k": 3.0}.get(name, 1.0)
+                for name in DEFAULT_TASKS
+            },
         )
 
     def test_instruction_following_asks_in_the_conversation_format(self):
@@ -596,6 +833,8 @@ class BenchmarkTests(unittest.TestCase):
                     "1",
                     "--output",
                     str(output),
+                    "--tasks",
+                    *CHOICE_TASKS,
                 ]
             )
         result = json.loads(output.read_text(encoding="utf-8"))
@@ -607,7 +846,7 @@ class BenchmarkTests(unittest.TestCase):
         )
         # The results also list each of BLiMP's phenomena.
         tasks = {name for name in result["results"] if not name.startswith("blimp_")}
-        self.assertEqual(tasks, set(DEFAULT_TASKS))
+        self.assertEqual(tasks, set(CHOICE_TASKS))
         for metrics in result["results"].values():
             self.assertTrue(0 <= metrics["acc,none"] <= 1)
 
@@ -630,7 +869,7 @@ class BenchmarkTests(unittest.TestCase):
                     "--results",
                     str(self.root / "results"),
                     "--benchmark-tasks",
-                    *DEFAULT_TASKS,
+                    *CHOICE_TASKS,
                 ]
             )
         summary = json.loads(
@@ -639,7 +878,7 @@ class BenchmarkTests(unittest.TestCase):
         benchmarks = summary["benchmarks"]
         self.assertEqual(benchmarks["framework"]["version"], "0.4.13")
         tasks = {name for name in benchmarks["results"] if not name.startswith("blimp_")}
-        self.assertEqual(tasks, set(DEFAULT_TASKS))
+        self.assertEqual(tasks, set(CHOICE_TASKS))
         for metrics in benchmarks["results"].values():
             self.assertTrue(0 <= metrics["acc,none"] <= 1)
 
@@ -871,6 +1110,138 @@ class BenchmarkTests(unittest.TestCase):
         values = result["items"]["ja_leaderboard_jnli"]["gold_bits_per_byte"]
         for value, label in zip(values, ("\n含意", "\n矛盾"), strict=True):
             self.assertAlmostEqual(value, bits(label), places=4)
+
+
+    def test_生成で答える課題では同じ問いに続く参照解答を1バイトあたりのビット数で測る(self):
+        """Scores each generation task's reference answer after the very prompt it asked."""
+        probabilities = skewed_probabilities()
+        with patch(
+            "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
+        ):
+            result = evaluate_benchmarks(
+                AnsweringModel(probabilities),
+                byte_tokenizer(),
+                torch.device("cpu"),
+                tasks=["gsm8k", "ja_leaderboard_jsquad"],
+            )
+        for name, answers in (
+            ("gsm8k", [" " + row["answer"] for row in ROWS["gsm8k"]]),
+            ("ja_leaderboard_jsquad", ["\n" + row["answers"][0]["text"] for row in ROWS["jsquad"]]),
+        ):
+            values = result["items"][name]["gold_bits_per_byte"]
+            for value, answer in zip(values, answers, strict=True):
+                self.assertAlmostEqual(
+                    value, continuation_bits(byte_tokenizer(), probabilities, answer), places=4
+                )
+            self.assertAlmostEqual(
+                result["results"][name]["gold_bits_per_byte,none"], statistics.fmean(values), places=5
+            )
+        # GSM8K's answers are scored question by question under each of its filters.
+        self.assertEqual(
+            set(result["items"]["gsm8k"]["correct"]),
+            {"exact_match,strict-match", "exact_match,flexible-extract"},
+        )
+        self.assertEqual(result["by_language"]["en"]["gsm8k"]["metric"], "exact_match,strict-match")
+
+    def test_プログラムを書く課題では書いたプログラムをテストで確かめて正解を数える(self):
+        """Checks the written programs against their tests and scores the reference programs."""
+        probabilities = skewed_probabilities()
+        answers = {
+            ROWS["humaneval"][0]["prompt"]: ROWS["humaneval"][0]["canonical_solution"],
+            ROWS["jhumaneval"][0]["prompt"]: ROWS["jhumaneval"][0]["canonical_solution"],
+            "[BEGIN]\n": ROWS["mbpp"][0]["code"] + "\n[DONE] and more",
+        }
+        with (
+            patch("lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset),
+            patch("evaluate.load", side_effect=load_metric),
+        ):
+            result = evaluate_benchmarks(
+                AnsweringModel(probabilities, answers),
+                byte_tokenizer(),
+                torch.device("cpu"),
+                tasks=["humaneval", "jhumaneval", "mbpp"],
+            )
+        items = result["items"]
+        self.assertEqual(items["humaneval"]["correct"]["pass@1,create_test"], [1.0, 0.0])
+        self.assertEqual(items["jhumaneval"]["correct"]["pass@1,create_test"], [1.0, 0.0])
+        self.assertEqual(items["mbpp"]["correct"]["pass_at_1"], [1.0])
+        self.assertEqual(result["by_language"]["ja"]["jhumaneval"]["accuracy"], 0.5)
+        for name, rows, field in (
+            ("humaneval", ROWS["humaneval"], "canonical_solution"),
+            ("jhumaneval", ROWS["jhumaneval"], "canonical_solution"),
+            ("mbpp", ROWS["mbpp"], "code"),
+        ):
+            for value, row in zip(items[name]["gold_bits_per_byte"], rows, strict=True):
+                # The prompt's final line break is scored with the program.
+                self.assertAlmostEqual(
+                    value,
+                    continuation_bits(byte_tokenizer(), probabilities, "\n" + row[field]),
+                    places=4,
+                )
+
+    def test_参照解答のない生成の課題は正答率だけを問題ごとに比べる(self):
+        """Pairs a generation task without reference answers by its accuracy alone."""
+        with patch(
+            "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
+        ):
+            base, other = (
+                evaluate_benchmarks(
+                    AnsweringModel(torch.full((258,), 1 / 258), answers),
+                    byte_tokenizer(),
+                    torch.device("cpu"),
+                    tasks=["ja_leaderboard_mgsm"],
+                )
+                for answers in ({}, {"### 応答：": "3+2=5。答えは5です。"})
+            )
+        mgsm = compare_benchmarks(base, other)["ja"]["ja_leaderboard_mgsm"]
+        self.assertEqual((mgsm["base"], mgsm["other"], mgsm["difference"]), (0.0, 1.0, 1.0))
+        self.assertNotIn("bits_difference", mgsm)
+
+    def test_MMLUは科目のまとまりでも文字数で正規化した正答率を読み問題ごとに比べる(self):
+        """Reads MMLU's per-character accuracy over all its subjects and pairs every question."""
+        result, _ = self.evaluate_skewed(["mmlu_continuation"])
+        subjects = [name for name in result["items"] if name.startswith("mmlu_")]
+        self.assertEqual(len(subjects), 57)
+        read = result["by_language"]["en"]["mmlu_continuation"]
+        self.assertEqual(read["metric"], "acc_norm")
+        # Each subject weighs as much as its questions, as the group weighs their accuracy.
+        for field, values in (
+            ("accuracy", [v for name in subjects for v in result["items"][name]["correct"]["acc_norm"]]),
+            ("gold_bits_per_byte", [v for name in subjects for v in result["items"][name]["gold_bits_per_byte"]]),
+        ):
+            self.assertAlmostEqual(read[field], statistics.fmean(values), places=5)
+        base, other = self.evaluate_two_models(["mmlu_continuation"])
+        mmlu = compare_benchmarks(base, other)["en"]["mmlu_continuation"]
+        self.assertEqual(mmlu["questions"], 57 * len(ROWS["mmlu"]))
+        self.assertAlmostEqual(mmlu["difference"], mmlu["other"] - mmlu["base"])
+
+    def test_JMMLUは選択肢の文を答えとして測る(self):
+        """Scores the text of JMMLU's correct choice as the answer, without examples."""
+        result, bits = self.evaluate_skewed(["jmmlu"])
+        self.assertEqual(result["n-shot"]["jmmlu"], 0)
+        values = result["items"]["jmmlu"]["gold_bits_per_byte"]
+        for value, answer in zip(values, ("東京", "静岡県"), strict=True):
+            self.assertAlmostEqual(value, bits(answer), places=4)
+
+    def test_生成は止める文字列に達したところで打ち切り長すぎる問いは末尾を残す(self):
+        """Stops decoding at a stop sequence, and keeps the end of a prompt too long to answer."""
+        tokenizer = byte_tokenizer()
+        model = LanguageModel(258, ModelConfig(width=8, heads=2, layers=1, context=32))
+        backend = NativeLM(model, tokenizer, torch.device("cpu"))
+        received = {}
+
+        def continuations(sequences, max_new_tokens, end, banned=(), finished=None):
+            received.update(sequences=sequences, finished=finished)
+            return [[] for _ in sequences]
+
+        with patch.object(model, "continue_greedily", side_effect=continuations):
+            backend.generate_until(
+                [SimpleNamespace(args=("a" * 40, {"until": ["STOP"], "max_gen_toks": 8}))]
+            )
+        # The prompt leaves room in the context for the eight tokens of its answer.
+        self.assertEqual(received["sequences"], [tokenizer.encode("a" * 25).ids])
+        self.assertTrue(received["finished"](0, tokenizer.encode("日本語 STOP").ids))
+        self.assertFalse(received["finished"](0, tokenizer.encode("日本語 STO").ids))
 
 
 if __name__ == "__main__":

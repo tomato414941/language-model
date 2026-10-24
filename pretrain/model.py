@@ -289,8 +289,11 @@ class LanguageModel(nn.Module):
             self.train(was_training)
 
     @torch.inference_mode()
-    def continue_greedily(self, sequences, max_new_tokens, end, banned=()):
-        """Return each sequence's greedy continuation before `end`, decoding all at once."""
+    def continue_greedily(self, sequences, max_new_tokens, end, banned=(), finished=None):
+        """Return each sequence's greedy continuation before `end`, decoding all at once.
+
+        A sequence also stops once `finished(row, continuation)` is true of it.
+        """
         if type(max_new_tokens) is not int or max_new_tokens <= 0:
             raise ValueError("max_new_tokens must be a positive integer")
         if not sequences or not all(sequences):
@@ -347,6 +350,8 @@ class LanguageModel(nn.Module):
                             active[row] = False
                         else:
                             continuations[row].append(token)
+                            if finished is not None and finished(row, continuations[row]):
+                                active[row] = False
                 if not any(active) or step == max_new_tokens - 1:
                     break
                 tokens, start = chosen[:, None], stop

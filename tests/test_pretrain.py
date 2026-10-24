@@ -198,6 +198,21 @@ class PretrainingTests(unittest.TestCase):
                 model.continue_greedily(sequences, 20, eos, banned=[bos]), alone
             )
 
+    def test_終わったと判定された入力だけ生成を止める(self):
+        """終わったと判定された入力の生成だけを止め、ほかの入力は同じトークンを生成し続ける。"""
+        torch.manual_seed(3)
+        model = LanguageModel(
+            258, ModelConfig(width=24, heads=4, layers=2, context=64)
+        ).eval()
+        sequences = [[0, 5, 6], [0, 7]]
+        # No token is the end here, so only the limit and the judgment stop them.
+        whole = model.continue_greedily(sequences, 6, -1)
+        stopped = model.continue_greedily(
+            sequences, 6, -1, finished=lambda row, tokens: row == 0 and len(tokens) == 2
+        )
+        self.assertEqual(stopped, [whole[0][:2], whole[1]])
+        self.assertEqual(len(whole[1]), 6)
+
     def test_checkpoint_restores_predictions_and_seeded_long_prompt_generation(self):
         """保存した重みと語彙を復元し、長い日英の接頭辞を保って再現可能に生成する。"""
         self.run_training("generation", max_steps=2)

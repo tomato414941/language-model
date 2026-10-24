@@ -1,26 +1,31 @@
 """Evaluate native checkpoints with the published LM Evaluation Harness tasks.
 
-Besides the harness's metrics, each choice and continuation task reports the
-bits per byte of its correct continuation, averaged over the questions as the
-accuracy is. It moves with every gain in the answer's probability, so small
-models show progress before their answers change; see DataDecide
+Besides the harness's metrics, each task with a correct continuation reports
+its bits per byte, averaged over the questions as the accuracy is: the correct
+choice of a choice task, or the reference answer of a generation task scored
+after the same prompt. It moves with every gain in the answer's probability,
+so small models show progress before their answers change; see DataDecide
 (arXiv:2504.11393) and Signal and Noise (arXiv:2508.13144).
 """
 
 import json
 import math
+import os
 import statistics
 from importlib.metadata import version
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
 try:
+    import datasets
     from tqdm import tqdm
 
     from lm_eval import evaluator, utils
     from lm_eval.api.metrics import (
         aggregate_subtask_metrics,
+        mean,
         pooled_sample_stderr,
         unweighted_mean_stderr,
     )
@@ -36,11 +41,13 @@ from .data import BOS, EOS
 from .training import autocast
 
 # The standard tasks, each with the language it asks in and the accuracy read
-# from it. OLMES (arXiv:2406.08446) scores HellaSwag, ARC-Easy and PIQA by each
-# choice's loglikelihood per character, the harness's acc_norm, and KUCI is
-# scored like HellaSwag; the rest use plain accuracy, as OLMo scored SciQ and
-# as the harness defines the others. The easier tasks from SciQ to KUCI
-# separate small models; the two Japanese tasks after them stay near chance
+# from it, written "metric,filter" when the task filters its answers. OLMES
+# (arXiv:2406.08446) scores HellaSwag, ARC-Easy, PIQA and MMLU's cloze form by
+# each choice's loglikelihood per character, the harness's acc_norm; KUCI and
+# JMMLU's cloze form are scored the same way, and so is ARC-Challenge, which
+# OLMES scores by PMI that the harness's task lacks. The rest use plain
+# accuracy, as OLMo scored SciQ, or the harness's own metric. The easier
+# tasks from SciQ to KUCI separate small models; the others stay near chance
 # until a model grows enough to learn them. Add tasks or revise these choices
 # freely, but not to favor particular models.
 STANDARD_TASKS = {
@@ -54,10 +61,31 @@ STANDARD_TASKS = {
     "kuci": ("ja", "acc_norm"),
     "ja_leaderboard_xwinograd": ("ja", "acc"),
     "ja_leaderboard_jnli": ("ja", "acc"),
+    # Knowledge, reasoning, mathematics, programming and reading, which a
+    # general model needs in both languages.
+    "mmlu_continuation": ("en", "acc_norm"),
+    "jmmlu": ("ja", "acc_norm"),
+    "arc_challenge": ("en", "acc_norm"),
+    "gsm8k": ("en", "exact_match,strict-match"),
+    "ja_leaderboard_mgsm": ("ja", "acc"),
+    "humaneval": ("en", "pass@1,create_test"),
+    "mbpp": ("en", "pass_at_1"),
+    "jhumaneval": ("ja", "pass@1,create_test"),
+    "ja_leaderboard_jsquad": ("ja", "exact_match,whitespaces"),
 }
 DEFAULT_TASKS = tuple(STANDARD_TASKS)
 # Definitions of published tasks that the harness lacks, in its own format.
 TASK_DEFINITIONS = Path(__file__).with_name("harness_tasks")
+# The continuation that answers each generation task's question correctly,
+# from its reference answer. MGSM publishes no reference solutions for its
+# test questions.
+REFERENCE_ANSWERS = {
+    "gsm8k": lambda doc: " " + doc["answer"],
+    "humaneval": lambda doc: doc["canonical_solution"],
+    "mbpp": lambda doc: doc["code"],
+    "jhumaneval": lambda doc: doc["canonical_solution"],
+    "ja_leaderboard_jsquad": lambda doc: "\n" + doc["answers"]["text"][0],
+}
 # These tasks ask in the conversation format that the API serves.
 CONVERSATION_TASKS = ("ifeval",)
 RESULT_SECTIONS = (
@@ -76,6 +104,7 @@ JGLUE_URL = (
 JGLUE_TASKS = {
     "ja_leaderboard_jcommonsenseqa": "jcommonsenseqa",
     "ja_leaderboard_jnli": "jnli",
+    "ja_leaderboard_jsquad": "jsquad",
 }
 # JGLUE's loader numbered JNLI's labels in this order, which the task's choices follow.
 JNLI_LABELS = ("entailment", "contradiction", "neutral")
@@ -89,11 +118,33 @@ def number_jnli_labels(dataset):
     return dataset.map(number)
 
 
+def squad_questions(dataset):
+    """One record per question from SQuAD's articles, as JGLUE's loader gave JSQuAD."""
+    return datasets.Dataset.from_list(
+        [
+            {
+                "id": question["id"],
+                "title": article["title"],
+                "context": paragraph["context"],
+                "question": question["question"],
+                "answers": {
+                    key: [answer[key] for answer in question["answers"]]
+                    for key in ("text", "answer_start")
+                },
+                "is_impossible": question["is_impossible"],
+            }
+            for article in dataset
+            for paragraph in article["paragraphs"]
+            for question in paragraph["qas"]
+        ]
+    )
+
+
 def jglue_task(manager, name):
     """Read JGLUE's original JSON directly: datasets 4+ cannot run its loader script."""
     path = manager.task_index[name].yaml_path
     config = load_yaml(path, resolve_func=True)
-    # Keep the published prompts, validation split, three examples and metrics.
+    # Keep the published prompts, validation split, examples and metrics.
     config.update(
         dataset_path="json",
         dataset_name=None,
@@ -106,8 +157,18 @@ def jglue_task(manager, name):
     )
     if name == "ja_leaderboard_jnli":
         config["process_docs"] = number_jnli_labels
+    if name == "ja_leaderboard_jsquad":
+        # JSQuAD's files keep SQuAD's articles under "data".
+        config["dataset_kwargs"]["field"] = "data"
+        config["process_docs"] = squad_questions
     config["metadata"]["config_source"] = str(path)
     return ConfigurableTask(config=config)
+
+
+def bits_per_byte(context, continuation, loglikelihood):
+    # The harness scores the context's trailing spaces with the continuation.
+    scored = context[len(context.rstrip()) :] + continuation
+    return -loglikelihood / (math.log(2) * len(scored.encode("utf-8")))
 
 
 def answer_bits(task, sample):
@@ -125,10 +186,34 @@ def answer_bits(task, sample):
     else:
         return None
     context, continuation = sample["arguments"][gold]
-    # The harness scores the context's trailing spaces with the continuation.
-    scored = context[len(context.rstrip()) :] + continuation
-    loglikelihood = sample["filtered_resps"][gold][0]
-    return -loglikelihood / (math.log(2) * len(scored.encode("utf-8")))
+    return bits_per_byte(context, continuation, sample["filtered_resps"][gold][0])
+
+
+def score_references(backend, samples):
+    """Each generation task's reference answers' bits per byte, in the order of its questions.
+
+    The reference answer continues the very prompt that the task asked.
+    """
+    scored = {}
+    for name, rows in samples.items():
+        if name not in REFERENCE_ANSWERS:
+            continue
+        # A task that filters its answers in several ways records each question once per filter.
+        questions = {}
+        for sample in rows:
+            questions.setdefault(sample["doc_id"], sample)
+        pairs = [
+            (questions[doc]["arguments"][0][0], REFERENCE_ANSWERS[name](questions[doc]["doc"]))
+            for doc in sorted(questions)
+        ]
+        likelihoods = backend.loglikelihood(
+            [SimpleNamespace(args=pair) for pair in pairs], disable_tqdm=True
+        )
+        scored[name] = [
+            bits_per_byte(context, continuation, loglikelihood)
+            for (context, continuation), (loglikelihood, _) in zip(pairs, likelihoods)
+        ]
+    return scored
 
 
 def task_reading(name):
@@ -139,31 +224,44 @@ def task_reading(name):
     return STANDARD_TASKS.get(name, ("other", "acc"))
 
 
-def add_answer_bits(result, tasks, groups):
-    """Report each task's and group's answer bits; return the questions' records."""
+def result_keys(metric):
+    """The harness's keys for a metric's value and standard error, which name its filter."""
+    name, _, kept = metric.partition(",")
+    return f"{name},{kept or 'none'}", f"{name}_stderr,{kept or 'none'}"
+
+
+def record_questions(result, tasks, groups, references):
+    """Record each question's scores and answer bits; report each task's and group's bits.
+
+    `references` holds the generation tasks' reference answers' bits by question.
+    """
     results, items = result["results"], {}
     for name, samples in result.pop("samples").items():
-        samples = sorted(samples, key=lambda sample: sample["doc_id"])
-        bits = [answer_bits(tasks[name], sample) for sample in samples]
-        if not bits or bits[0] is None:
-            continue
-        results[name][f"{ANSWER_BITS},none"] = statistics.fmean(bits)
-        results[name][f"{ANSWER_BITS}_stderr,none"] = (
-            statistics.stdev(bits) / math.sqrt(len(bits)) if len(bits) > 1 else "N/A"
-        )
-        result["higher_is_better"][name][ANSWER_BITS] = False
+        task = tasks[name]
+        filtered = {}
+        for sample in sorted(samples, key=lambda sample: sample["doc_id"]):
+            filtered.setdefault(sample["filter"], []).append(sample)
         # Kept per question so that models can be compared on the same
-        # questions, with every accuracy the task reports, so that a revised
+        # questions, with every score the task averages, so that a revised
         # choice of accuracy still reads this evaluation.
-        items[name] = {
-            "doc_id": [sample["doc_id"] for sample in samples],
-            "correct": {
-                metric: [sample[metric] for sample in samples]
-                for metric in samples[0]["metrics"]
-                if metric.startswith("acc")
-            },
-            ANSWER_BITS: [round(value, 6) for value in bits],
+        record = {"doc_id": [sample["doc_id"] for sample in next(iter(filtered.values()))]}
+        record["correct"] = {
+            metric if kept == "none" else f"{metric},{kept}": [sample[metric] for sample in rows]
+            for kept, rows in filtered.items()
+            for metric in rows[0]["metrics"]
+            if task.aggregation().get(metric) is mean
         }
+        bits = references.get(name) or [
+            answer_bits(task, sample) for sample in filtered.get("none", [])
+        ]
+        if bits and bits[0] is not None:
+            results[name][f"{ANSWER_BITS},none"] = statistics.fmean(bits)
+            results[name][f"{ANSWER_BITS}_stderr,none"] = (
+                statistics.stdev(bits) / math.sqrt(len(bits)) if len(bits) > 1 else "N/A"
+            )
+            result["higher_is_better"][name][ANSWER_BITS] = False
+            record[ANSWER_BITS] = [round(value, 6) for value in bits]
+        items[name] = record
     for name, group in groups.items():
         members = [task.task_name for task in group.get_all_tasks()]
         weighting = [
@@ -173,20 +271,22 @@ def add_answer_bits(result, tasks, groups):
         ]
         if name not in results or not weighting or any(m not in items for m in members):
             continue
-        # Combine the tasks as the group combines their accuracy.
-        values = [results[member][f"{ANSWER_BITS},none"] for member in members]
-        errors = [results[member][f"{ANSWER_BITS}_stderr,none"] for member in members]
+        # Combine the tasks' other scores as the group combines their accuracy.
         sizes = [len(items[member]["doc_id"]) for member in members]
-        results[name][f"{ANSWER_BITS},none"] = aggregate_subtask_metrics(
-            values, sizes, weighting[0]
-        )
-        results[name][f"{ANSWER_BITS}_stderr,none"] = (
-            "N/A"
-            if "N/A" in errors
-            else pooled_sample_stderr(errors, sizes)
-            if weighting[0]
-            else unweighted_mean_stderr(errors)
-        )
+        for metric in [*items[members[0]]["correct"], ANSWER_BITS]:
+            value, error = result_keys(metric)
+            if value in results[name] or any(value not in results[m] for m in members):
+                continue
+            values = [results[member][value] for member in members]
+            errors = [results[member][error] for member in members]
+            results[name][value] = aggregate_subtask_metrics(values, sizes, weighting[0])
+            results[name][error] = (
+                "N/A"
+                if "N/A" in errors
+                else pooled_sample_stderr(errors, sizes)
+                if weighting[0]
+                else unweighted_mean_stderr(errors)
+            )
     return items
 
 
@@ -195,12 +295,13 @@ def by_language(result, names):
     summary = {}
     for name in names:
         row, (language, metric) = result["results"][name], task_reading(name)
-        if f"{metric},none" not in row:  # Instruction following reports other metrics.
+        value, error = result_keys(metric)
+        if value not in row:  # Instruction following reports other metrics.
             continue
         summary.setdefault(language, {})[name] = {
             "metric": metric,
-            "accuracy": row[f"{metric},none"],
-            "stderr": row[f"{metric}_stderr,none"],
+            "accuracy": row[value],
+            "stderr": row[error],
             ANSWER_BITS: row.get(f"{ANSWER_BITS},none"),
         }
     return summary
@@ -316,6 +417,16 @@ class NativeLM(TemplateLM):
             results.append(sum(score for score, _ in scores))
         return results
 
+    def stopped(self, tokens, stops):
+        """Whether a continuation has just reached one of its stop sequences."""
+        if not stops:
+            return False
+        # A sequence of n characters spans at most 4n bytes, so it begins
+        # within the last 4n tokens before the one that completed it.
+        window = 4 * max(map(len, stops)) + 1
+        text = self.tokenizer.decode(tokens[-window:], skip_special_tokens=True)
+        return any(stop in text for stop in stops)
+
     def generate_until(self, requests, disable_tqdm=False):
         prompts, limits, stops = [], [], []
         for request in requests:
@@ -323,8 +434,13 @@ class NativeLM(TemplateLM):
             if options.get("do_sample") or options.get("temperature", 0) != 0:
                 raise ValueError("evaluation generation uses greedy decoding")
             until = options.get("until", [])
-            prompts.append(self.tok_encode(prompt))
-            limits.append(options.get("max_gen_toks", 256))
+            limit = options.get("max_gen_toks", 256)
+            tokens = self.tok_encode(prompt)
+            # Keep the end of a prompt that leaves too little room to answer,
+            # as the harness's own backends do.
+            room = self.model.config.context - limit + 1
+            prompts.append(tokens[-room:] if 0 < room < len(tokens) else tokens)
+            limits.append(limit)
             stops.append([until] if isinstance(until, str) else until)
         # Decode prompts with the same limit together, longest first, within batch_tokens.
         order = sorted(
@@ -348,6 +464,7 @@ class NativeLM(TemplateLM):
                     limits[first],
                     self.eot_token_id,
                     banned=[self.prefix_token_id],
+                    finished=lambda row, tokens: self.stopped(tokens, stops[batch[row]]),
                 )
             for index, continuation in zip(batch, continuations):
                 text = self.tokenizer.decode(continuation, skip_special_tokens=True)
@@ -414,6 +531,9 @@ def run_benchmarks(backend, tasks=None, limit=None):
     for name in selected:
         if name not in manager.all_subtasks and name not in manager.all_groups:
             raise ValueError(f"unknown harness task: {name}")
+    # The programming tasks run the model's programs against their tests,
+    # which the code_eval metric makes its caller allow, as the harness does.
+    os.environ["HF_ALLOW_CODE_EVAL"] = "1"
     # Keep the loaded tasks: their records tell which continuation is correct.
     loaded = manager.load(
         [jglue_task(manager, name) if name in JGLUE_TASKS else name for name in selected]
@@ -438,8 +558,10 @@ def run_benchmarks(backend, tasks=None, limit=None):
             limit=limit,
             log_samples=True,
             apply_chat_template=conversation,
+            confirm_run_unsafe_code=True,
         )
-        items.update(add_answer_bits(part, loaded["tasks"], loaded["groups"]))
+        references = score_references(backend, part["samples"])
+        items.update(record_questions(part, loaded["tasks"], loaded["groups"], references))
         if result is None:
             result = part
         else:

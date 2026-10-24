@@ -1,3 +1,4 @@
+import csv
 import hashlib
 import io
 import json
@@ -7,6 +8,7 @@ import re
 import shutil
 import tempfile
 import urllib.request
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -201,6 +203,100 @@ TASKS = {
             "ifeval_input_data.jsonl": "6a85310ca8ce15eff755aa08a3a4ff931c7e273e7515ebb3c492ea85fd8288f2",
         },
     },
+    "arc_challenge": {
+        "language": "en",
+        "repository": "allenai/ai2_arc",
+        "revision": "210d026faf9955653af8916fad021475a3f00453",
+        "license": "CC-BY-SA-4.0",
+        "files": {
+            "ARC-Challenge/train-00000-of-00001.parquet": "e488c1587ffdcfc8443f916c53488a95cd471c5790e0746c6bfe4cecf20962cb",
+            "ARC-Challenge/validation-00000-of-00001.parquet": "395a5c88d1580d69855fbaee9450270578df1ad5af6259771cd0a42c20e99f05",
+            "ARC-Challenge/test-00000-of-00001.parquet": "62f03257e737aed263f55c6abf87c7bb0028a44a6bdd2a26eb1279eb42c1d1e9",
+        },
+    },
+    "mmlu": {
+        "language": "en",
+        "repository": "cais/mmlu",
+        "revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+        "license": "MIT",
+        "files": {
+            "all/dev-00000-of-00001.parquet": "2b19bde1ed8ca6b482fb283abc90e8e0d9d228947029c0b91795d64b28b3bc3f",
+            "all/validation-00000-of-00001.parquet": "66cdf0b090ccb657d18d13cd81e31fdc55c3467da9642ffb178653268a97c8ef",
+            "all/test-00000-of-00001.parquet": "74a41822ce7d3def56e1682f958469c04642a5336a5ce912fa375fdb90fb25d7",
+        },
+    },
+    "gsm8k": {
+        "language": "en",
+        "repository": "openai/gsm8k",
+        "revision": "740312add88f781978c0658806c59bc2815b9866",
+        "license": "MIT",
+        "files": {
+            "main/train-00000-of-00001.parquet": "ea82612ea9582142387730c793eb67d3b12849002bc0b7fa6f8efafa7351419d",
+            "main/test-00000-of-00001.parquet": "ee7b8da9e381df27b9e3f7758a159ab2bdaa4dbaa910546cbbc47e0cb44e4f59",
+        },
+    },
+    "humaneval": {
+        "language": "en",
+        "repository": "openai/openai_humaneval",
+        "revision": "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544",
+        "license": "MIT",
+        "files": {
+            "openai_humaneval/test-00000-of-00001.parquet": "2f2871a15fbc95b6c683043359f4ed8e144c5a1c4f24f25f66bc51f598dfcfb6",
+        },
+    },
+    "mbpp": {
+        "language": "en",
+        "repository": "google-research-datasets/mbpp",
+        "revision": "4bb6404fdc6cacfda99d4ac4205087b89d32030c",
+        "license": "CC-BY-4.0",
+        "files": {
+            "full/prompt-00000-of-00001.parquet": "a053e4bb85ceb77430ae80592addb4ca4dc6ba087592f9e04537800ee88b7431",
+            "full/train-00000-of-00001.parquet": "09d125ca31edacb7800be8c67c45abff618faf0214ff551291817d06bdb914ae",
+            "full/validation-00000-of-00001.parquet": "3f0ec060987432d99fe8fb409d31e6c67445b208a01741c5583517c80a10fe80",
+            "full/test-00000-of-00001.parquet": "566fd53060ffba5766dace1d1e2f4c38906781526de222b0dfbdbc325b696c77",
+        },
+    },
+    "jmmlu": {
+        "language": "ja",
+        "repository": "nlp-waseda/JMMLU",
+        "revision": "3637b25e444ccfdcde4d23a783cbe8e674faa01b",
+        "license": "CC-BY-NC-ND-4.0",
+        "files": {
+            "JMMLU.zip": "3ba7d912943ede44fb7ec06aa1df067ac6bee157e65c5588736b9b983f0e684d",
+        },
+    },
+    "mgsm_ja": {
+        "language": "ja",
+        "repository": "juletxara/mgsm",
+        "revision": "b2f13d426afe3be8d69a7e739b36724db8b66bbc",
+        "license": "CC-BY-SA-4.0",
+        "files": {
+            "ja/train-00000-of-00001.parquet": "eff3111bb371ee8748406995264230280ea314c5254c3811b793f439a821a3c8",
+            "ja/test-00000-of-00001.parquet": "9f8868e9245f99454171fca529d9c5ab5c77f2b70c0297379a67eec4464e7aea",
+        },
+    },
+    "jhumaneval": {
+        "language": "ja",
+        "repository": "kogi-jwu/jhumaneval",
+        "revision": "35c54b74c11ec8f5699283c29e0d3ec9a94702ca",
+        "license": "MIT",
+        "files": {
+            "jhumaneval/test-00000-of-00001.parquet": "eb3b085bf70d9c2a934a9da52eefa5e3fbaae7dbacea1f715232f777095be53d",
+        },
+    },
+    "jsquad": {
+        "language": "ja",
+        "host": "github",
+        "repository": "yahoojapan/JGLUE",
+        "revision": "c96c6af54200a404f31a3a4cd0b289786aa78809",
+        "license": "CC-BY-SA-4.0",
+        # SQuAD's JSON nests the questions in the paragraphs of articles.
+        "format": "squad",
+        "files": {
+            "datasets/jsquad-v1.2/train-v1.2.json": "24a0233a5d2cc80571e499de487fe2188981126312f159fc90136db82f3584b5",
+            "datasets/jsquad-v1.2/valid-v1.2.json": "fb0a57a35281ff03bbe7f0e878cff5b577985fbe6fcb242e7e8ddb63d1c0ab11",
+        },
+    },
 }
 
 
@@ -276,6 +372,32 @@ def ifeval_item(row):
     return {"id": str(row["key"]), "context": row["prompt"]}
 
 
+def question_item(row):
+    return {"context": f"Question: {row['question'].strip()}\nAnswer:"}
+
+
+def program_item(row):
+    # The function's signature and description, which its copies share.
+    return {"id": row["task_id"], "context": row["prompt"]}
+
+
+def mbpp_item(row):
+    return {"id": str(row["task_id"]), "context": row["text"]}
+
+
+def jmmlu_item(row):
+    return {"context": f"質問：{row['question'].strip()}\n回答："}
+
+
+def mgsm_item(row):
+    # The examples label their questions, which texts would not.
+    return {"context": row["question"].removeprefix("問題：")}
+
+
+def jsquad_item(row):
+    return {"id": row["id"], "context": f"質問：{row['question']}\n回答："}
+
+
 CONVERTERS = {
     "hellaswag": hellaswag_item,
     "arc_easy": arc_item,
@@ -288,6 +410,15 @@ CONVERTERS = {
     "xwinograd_ja": xwinograd_item,
     "jnli": jnli_item,
     "ifeval": ifeval_item,
+    "arc_challenge": arc_item,
+    "mmlu": question_item,
+    "gsm8k": question_item,
+    "humaneval": program_item,
+    "mbpp": mbpp_item,
+    "jmmlu": jmmlu_item,
+    "mgsm_ja": mgsm_item,
+    "jhumaneval": program_item,
+    "jsquad": jsquad_item,
 }
 
 
@@ -301,9 +432,39 @@ def download(url):
         return response.read()
 
 
+def read_rows(task, path, data):
+    """The records of one of a task's source files."""
+    if path.endswith(".zip"):
+        # JMMLU keeps each subject in a CSV file; macOS added files of its own.
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            return [
+                row
+                for name in sorted(archive.namelist())
+                if name.endswith(".csv") and not name.startswith("__MACOSX/")
+                for row in csv.DictReader(
+                    io.TextIOWrapper(archive.open(name), encoding="utf-8-sig")
+                )
+            ]
+    if task.get("format") == "squad":
+        return [
+            {**question, "title": article["title"], "context": paragraph["context"]}
+            for article in json.loads(data)["data"]
+            for paragraph in article["paragraphs"]
+            for question in paragraph["qas"]
+        ]
+    if path.endswith((".json", ".jsonl")):
+        # JGLUE and XWinograd also write one question per line in .json.
+        return [
+            json.loads(line) for line in data.decode("utf-8").splitlines() if line.strip()
+        ]
+    from pyarrow import parquet
+
+    return parquet.read_table(io.BytesIO(data)).to_pylist()
+
+
 def fetch_benchmarks(output):
     try:
-        from pyarrow import parquet
+        import pyarrow.parquet  # noqa: F401  # read_rows reads parquet sources with it
     except ImportError as error:
         raise ValueError("Install corpus dependencies with --extra corpus") from error
     output = Path(output)
@@ -323,17 +484,7 @@ def fetch_benchmarks(output):
                 data = download(source_url(task, path))
                 if hashlib.sha256(data).hexdigest() != expected:
                     raise ValueError(f"{name} source checksum does not match: {path}")
-                rows = (
-                    [
-                        json.loads(line)
-                        for line in data.decode("utf-8").splitlines()
-                        if line.strip()
-                    ]
-                    # JGLUE and XWinograd also write one question per line in .json.
-                    if path.endswith((".json", ".jsonl"))
-                    else parquet.read_table(io.BytesIO(data)).to_pylist()
-                )
-                for index, row in enumerate(rows):
+                for index, row in enumerate(read_rows(task, path, data)):
                     item = CONVERTERS[name](row)
                     # Sources without identifiers number questions by file and row.
                     item.setdefault("id", f"{path}:{index}")
