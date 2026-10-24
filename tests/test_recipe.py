@@ -615,6 +615,37 @@ mix = {{ ja-hq = 25, ja-wiki = 25, en-web = 25, en-wiki = 25 }}
         ):
             self.assertIsNone(document_text({**row, **change}, source, corpus))
 
+    def test_欄を当てはめた文章や会話を文書として読む(self):
+        """型に欄を当てはめた文章や会話の発言の並びを、指示チューニングと同じ書式の文書として読む。"""
+        corpus = self.recipe["corpus"]
+        answer = "Two and three make five. " * 4
+        templated = {"id": "math", "template": "User: {problem}\n\nAssistant: {solution}"}
+        self.assertEqual(
+            document_text({"problem": "What is 2 + 3?", "solution": answer}, templated, corpus),
+            f"User: What is 2 + 3?\n\nAssistant: {answer}".strip(),
+        )
+        self.assertIsNone(document_text({"problem": "What is 2 + 3?"}, templated, corpus))
+        talk = {"id": "talk", "conversation_field": "conversations"}
+        turns = [{"from": "human", "value": "Why is the sky blue?"}, {"from": "gpt", "value": answer}]
+        self.assertEqual(
+            document_text({"conversations": turns}, talk, corpus),
+            f"User: Why is the sky blue?\n\nAssistant: {answer}".strip(),
+        )
+        unknown = [{"from": "narrator", "value": answer}]
+        self.assertIsNone(document_text({"conversations": unknown}, talk, corpus))
+        source = {
+            "id": "both",
+            "language": "en",
+            "repository": "org/data",
+            "revision": "0" * 40,
+            "prefix": "data/",
+            "license": "CC-BY-4.0",
+            "terms_url": "https://example.org/terms",
+        }
+        validate_source({**source, "template": "{question} {answer}"})
+        with self.assertRaisesRegex(ValueError, "one way"):
+            validate_source({**source, "template": "{question}", "conversation_field": "messages"})
+
     def test_カタログに足したデータ源は既存の計画を変えない(self):
         before = recipe_fingerprint(self.recipe_path)
         with (self.root / "sources.toml").open("a") as catalog:

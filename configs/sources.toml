@@ -299,3 +299,90 @@ prefix = "ja/coding/"
 format = "jsonl.gz"
 license = "Apache-2.0, CC-BY-4.0, CC-BY-SA-3.0 or CC-BY-SA-4.0 by component"
 terms_url = "https://gitlab.llm-jp.nii.ac.jp/datasets/llm-jp-corpus-midtraining-v1/-/blob/main/README.md"
+
+# Questions with answers and reasoning for the phase that lowers the learning
+# rate, in the conversation format that instruction tuning reads. Small models
+# learn more from short reasoning than from long traces of large models (Li et
+# al., "Small Models Struggle to Learn from Strong Reasoners", 2025), so the
+# traces are kept to those that fit a 4,096-token window.
+[[sources]]
+id = "en-reasoning-openmath"
+language = "en"
+repository = "nvidia/OpenMathReasoning"
+revision = "d3d08664755704f422af97d43a7ff0ded4bd95df"
+prefix = "data/cot-"
+# Solutions written by DeepSeek-R1 and QwQ-32B, whose licenses leave their
+# outputs free to use.
+license = "CC-BY-4.0"
+terms_url = "https://huggingface.co/datasets/nvidia/OpenMathReasoning"
+template = "User: {problem}\n\nAssistant: {generated_solution}"
+maximum_characters = 12000
+
+[[sources]]
+id = "ja-general-llmjp"
+language = "ja"
+host = "https://gitlab.llm-jp.nii.ac.jp"
+repository = "datasets/llm-jp-corpus-midtraining-v1"
+revision = "4688b0adf28b062a73684ae4d354872a418c462f"
+prefix = "ja/general/"
+format = "jsonl.gz"
+license = "Apache-2.0, CC-BY-4.0, CC-BY-SA-3.0 or CC-BY-SA-4.0 by component"
+terms_url = "https://gitlab.llm-jp.nii.ac.jp/datasets/llm-jp-corpus-midtraining-v1/-/blob/main/README.md"
+
+[[sources]]
+id = "ja-reasoning-llmjp"
+language = "ja"
+host = "https://gitlab.llm-jp.nii.ac.jp"
+repository = "datasets/llm-jp-corpus-midtraining-v1"
+revision = "4688b0adf28b062a73684ae4d354872a418c462f"
+prefix = "ja/reasoning/"
+format = "jsonl.gz"
+license = "Apache-2.0, CC-BY-4.0, CC-BY-SA-3.0 or CC-BY-SA-4.0 by component"
+terms_url = "https://gitlab.llm-jp.nii.ac.jp/datasets/llm-jp-corpus-midtraining-v1/-/blob/main/README.md"
+
+[[sources]]
+id = "en-general-llmjp"
+language = "en"
+host = "https://gitlab.llm-jp.nii.ac.jp"
+repository = "datasets/llm-jp-corpus-midtraining-v1"
+revision = "4688b0adf28b062a73684ae4d354872a418c462f"
+prefix = "en/general/"
+format = "jsonl.gz"
+license = "Apache-2.0, ODC-By-1.0, CC-BY-4.0 or CC-BY-SA-4.0 by component"
+terms_url = "https://gitlab.llm-jp.nii.ac.jp/datasets/llm-jp-corpus-midtraining-v1/-/blob/main/README.md"
+
+[[sources]]
+id = "en-reasoning-llmjp"
+language = "en"
+host = "https://gitlab.llm-jp.nii.ac.jp"
+repository = "datasets/llm-jp-corpus-midtraining-v1"
+revision = "4688b0adf28b062a73684ae4d354872a418c462f"
+prefix = "en/reasoning/"
+format = "jsonl.gz"
+license = "Apache-2.0, ODC-By-1.0, CC-BY-4.0 or CC-BY-SA-4.0 by component"
+terms_url = "https://gitlab.llm-jp.nii.ac.jp/datasets/llm-jp-corpus-midtraining-v1/-/blob/main/README.md"
+
+[[sources]]
+id = "en-math-llmjp"
+language = "en"
+host = "https://gitlab.llm-jp.nii.ac.jp"
+repository = "datasets/llm-jp-corpus-midtraining-v1"
+revision = "4688b0adf28b062a73684ae4d354872a418c462f"
+prefix = "en/math/"
+format = "jsonl.gz"
+license = "Apache-2.0, ODC-By-1.0, CC-BY-4.0 or CC-BY-SA-4.0 by component"
+terms_url = "https://gitlab.llm-jp.nii.ac.jp/datasets/llm-jp-corpus-midtraining-v1/-/blob/main/README.md"
+# OLMo 2's synthetic mathematics, whose generating models are not all stated,
+# and GSM8K's training questions, which decontamination would drop anyway.
+exclude_files = ["en/math/dolmino-synth-math-en.jsonl.gz", "en/math/gsm8k-en.jsonl.gz"]
+
+[[sources]]
+id = "en-code-llmjp"
+language = "en"
+host = "https://gitlab.llm-jp.nii.ac.jp"
+repository = "datasets/llm-jp-corpus-midtraining-v1"
+revision = "4688b0adf28b062a73684ae4d354872a418c462f"
+prefix = "en/coding/"
+format = "jsonl.gz"
+license = "Apache-2.0, ODC-By-1.0, CC-BY-4.0 or CC-BY-SA-4.0 by component"
+terms_url = "https://gitlab.llm-jp.nii.ac.jp/datasets/llm-jp-corpus-midtraining-v1/-/blob/main/README.md"

@@ -14,6 +14,7 @@ import random
 import re
 import shutil
 import sqlite3
+import string
 import tempfile
 import time
 import tomllib
@@ -29,6 +30,7 @@ import numpy as np
 import torch
 from tokenizers import Regex, Tokenizer, decoders, models, pre_tokenizers, trainers
 
+from .conversation import conversation_text
 from .data import BOS, EOS, LANGUAGES, Corpus, file_digest, read_documents
 from .instructions import BenchmarkFilter
 from .model import LanguageModel
@@ -52,6 +54,8 @@ SOURCE_FIELDS = {
     "license",
     "terms_url",
     "text_field",
+    "template",
+    "conversation_field",
     "exclude_files",
     "minimum_characters",
     "maximum_characters",
@@ -70,6 +74,9 @@ GPT4_SPLIT = (
     r"| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
 )
 PRETOKENIZERS = ("gpt2", "gpt4")
+# Speakers as datasets name them, and the roles of the conversation format
+# that instruction tuning also reads.
+SPEAKERS = {"user": "user", "human": "user", "assistant": "assistant", "gpt": "assistant", "system": "system"}
 # Each part reads this much beyond its share of a source, so the merge can drop
 # documents another part or source already supplied without falling short.
 PART_SLACK = 0.15
@@ -96,6 +103,12 @@ def validate_source(source):
     # Sources come from the Hugging Face Hub unless they name a GitLab server.
     if "host" in source and not re.fullmatch(r"https://[a-z0-9.-]+", source["host"]):
         raise ValueError(f"{source['id']} host must be a GitLab server's https address")
+    if sum(name in source for name in ("text_field", "template", "conversation_field")) > 1:
+        raise ValueError(f"{source['id']} reads its text one way: a field, a template or a conversation")
+    if "template" in source and (
+        not isinstance(source["template"], str) or not template_fields(source["template"])
+    ):
+        raise ValueError(f"{source['id']} template must name fields in braces")
     for name in FILTERS:
         conditions = source.get(name, {})
         if not isinstance(conditions, dict) or not all(
@@ -663,8 +676,17 @@ def inspect_recipe(path, workdir):
     }
 
 
+def template_fields(template):
+    return [name for _, name, _, _ in string.Formatter().parse(template) if name]
+
+
 def source_columns(source):
-    fields = {source.get("text_field", "text"), "id", "url"}
+    if "template" in source:
+        fields = {*template_fields(source["template"]), "id", "url"}
+    elif "conversation_field" in source:
+        fields = {source["conversation_field"], "id", "url"}
+    else:
+        fields = {source.get("text_field", "text"), "id", "url"}
     for name in FILTERS:
         fields.update(key.split(".")[0] for key in source.get(name, {}))
     return sorted(fields)
@@ -889,9 +911,36 @@ def passes_filters(row, source):
     )
 
 
-def document_text(row, source, corpus):
+def source_text(row, source):
+    """A row's text: one field, fields filled into a template, or a conversation.
+
+    A conversation reads as instruction tuning writes one, a role and a
+    colon before each turn. None if the row lacks what the source reads.
+    """
+    if "template" in source:
+        values = {name: row.get(name) for name in template_fields(source["template"])}
+        if not all(isinstance(value, str) for value in values.values()):
+            return None
+        return source["template"].format_map(values)
+    if "conversation_field" in source:
+        turns = row.get(source["conversation_field"])
+        if not isinstance(turns, list) or not turns:
+            return None
+        messages = []
+        for turn in turns:
+            role = isinstance(turn, dict) and SPEAKERS.get(turn.get("role", turn.get("from")))
+            content = isinstance(turn, dict) and turn.get("content", turn.get("value"))
+            if not role or not isinstance(content, str):
+                return None
+            messages.append({"role": role, "content": content})
+        return conversation_text(messages)[0]
     text = row.get(source.get("text_field", "text"))
-    if not isinstance(text, str):
+    return text if isinstance(text, str) else None
+
+
+def document_text(row, source, corpus):
+    text = source_text(row, source)
+    if text is None:
         return None
     text = unicodedata.normalize("NFC", text).strip()
     minimum = source.get("minimum_characters", corpus["minimum_characters"])
