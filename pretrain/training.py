@@ -533,7 +533,10 @@ def train(
         phase_row = saved.get("phase_start_row", 0)
         initialization = saved.get("initialization")
     if compiled:
-        # Training and validation batches keep one shape, so each compiles once.
+        # Training and validation batches keep one shape, so each compiles
+        # once, and again for each power of two that their documents' bounds
+        # are padded to; the limit leaves room for every such count in both.
+        torch._dynamo.config.recompile_limit = 2 * (model_config.context * config.batch_size).bit_length()
         model.compile(dynamic=False)
     target = min(config.steps, max_steps) if max_steps is not None else config.steps
     if target <= step:

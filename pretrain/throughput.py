@@ -46,6 +46,7 @@ def measure_training(
         # count against this one's limit on recompilations.
         torch._dynamo.reset()
         counters.clear()
+        torch._dynamo.config.recompile_limit = 2 * (model_config.context * max(batches)).bit_length()
         model.compile(dynamic=False)
     optimizer = make_optimizer(model, training, device)
 
