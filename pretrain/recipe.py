@@ -195,6 +195,17 @@ def read_recipe(path):
         or corpus["maximum_characters"] < corpus["minimum_characters"]
     ):
         raise ValueError("maximum_characters must cover minimum_characters")
+    excluded = corpus.get("excluded_corpora", [])
+    if not isinstance(excluded, list) or any(
+        not isinstance(entry, dict)
+        or set(entry) != {"path", "documents_sha256"}
+        or not isinstance(entry["path"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", str(entry["documents_sha256"]))
+        for entry in excluded
+    ):
+        raise ValueError(
+            "each excluded corpus needs its path and the SHA-256 digest of its documents"
+        )
     sources = read_sources(recipe, path.parent)
     corpora = recipe.get("corpora")
     if not corpora:
@@ -1061,10 +1072,40 @@ def seen_documents(directory=None):
     return database
 
 
+def earlier_documents(recipe):
+    """Yield the digest of every document in the earlier corpora the recipe leaves out.
+
+    Each earlier corpus keeps the digest of every document it holds, so a
+    later corpus can add documents that training has not read yet, as a
+    larger budget or a new phase needs.
+    """
+    for entry in recipe["corpus"].get("excluded_corpora", []):
+        directory = Path(entry["path"])
+        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        if manifest["seed"] != recipe["seed"]:
+            raise ValueError(f"{directory} digests its documents with another seed")
+        documents = directory / manifest["provenance"]["filename"]
+        if file_digest(documents) != entry["documents_sha256"]:
+            raise ValueError(f"the documents of {directory} do not match their checksum")
+        for document in read_json_documents(documents):
+            yield bytes.fromhex(document["digest"])
+
+
 def accepted_documents(
-    source, recipe, benchmarks, database, stats, training_fraction=None, part=None
+    source,
+    recipe,
+    benchmarks,
+    database,
+    stats,
+    training_fraction=None,
+    part=None,
+    earlier=None,
 ):
-    """Yield new clean documents; with training_fraction, only training ones."""
+    """Yield new clean documents; with training_fraction, only training ones.
+
+    Documents recorded in `earlier`, a database of earlier corpora's
+    documents, are passed over.
+    """
     for row in iter_source(source, recipe["seed"], part):
         text = document_text(row, source, recipe["corpus"])
         if text is None:
@@ -1077,6 +1118,14 @@ def accepted_documents(
         if training_fraction is not None and validation_document(
             digest, training_fraction
         ):
+            continue
+        if (
+            earlier is not None
+            and earlier.execute(
+                "SELECT 1 FROM documents WHERE digest = ?", (digest,)
+            ).fetchone()
+        ):
+            stats["used_earlier"] += 1
             continue
         if (
             database.execute(
@@ -1286,10 +1335,18 @@ def prepare_part(recipe_path, tokenizer_directory, benchmarks_path, part, parts_
     output = part_directory(parts_root, part)
     output.mkdir(parents=True)
     scanned = Counter()
-    summary = {}
-    with closing(seen_documents()) as database:
+    summary, collected = {}, {}
+    with closing(seen_documents()) as database, ExitStack() as opened:
+        earlier = None
+        if recipe["corpus"].get("excluded_corpora"):
+            # The stage records the earlier corpora's documents here before any
+            # part is read.
+            location = (Path(parts_root) / "seen.sqlite3").resolve().as_uri()
+            earlier = opened.enter_context(
+                closing(sqlite3.connect(f"{location}?mode=ro", uri=True))
+            )
         stream = accepted_documents(
-            source, recipe, benchmarks, database, scanned, part=part
+            source, recipe, benchmarks, database, scanned, part=part, earlier=earlier
         )
         for name, targets in part["targets"].items():
             fraction = validation_fraction(recipe, corpora[name])
@@ -1342,7 +1399,9 @@ def prepare_part(recipe_path, tokenizer_directory, benchmarks_path, part, parts_
                     ):
                         break
             summary[name] = dict(scanned - before)
+            collected[name] = {split: stats[f"{split}_tokens"] for split in targets}
     (output / "statistics.json").write_text(json.dumps(summary) + "\n")
+    (output / "collected.json").write_text(json.dumps(collected) + "\n")
     print(
         json.dumps({"part": f"{part['source']}-{part['index']}", **summary}), flush=True
     )
@@ -1386,64 +1445,122 @@ def prepare_corpus(
             item["name"]: outputs.enter_context(output_directory(paths[item["name"]]))
             for item in streamed(recipe)
         }
-        with tempfile.TemporaryDirectory(dir=workdir) as scratch:
-            arguments = [
-                (recipe_path, tokenizer_directory, benchmarks_path, part, Path(scratch))
-                for part in parts
-            ]
+        with (
+            tempfile.TemporaryDirectory(dir=workdir) as scratch,
+            closing(seen_documents(scratch)) as database,
+        ):
+            # Documents of earlier corpora count as seen before any part is read.
+            database.executemany(
+                "INSERT OR IGNORE INTO documents VALUES (?)",
+                ((digest,) for digest in earlier_documents(recipe)),
+            )
+            database.commit()
+            finished = set()
+
+            def check(part):
+                finished.add((part["source"], part["index"]))
+                if missing := certain_shortfalls(recipe, parts, finished, Path(scratch)):
+                    raise short_of_budget(missing)
+
+            # Small parts go first, so a source too small for its share is
+            # found within minutes instead of after the large parts.
+            arguments = sorted(
+                (
+                    (recipe_path, tokenizer_directory, benchmarks_path, part, Path(scratch))
+                    for part in parts
+                ),
+                key=lambda argument: sum(
+                    sum(targets.values()) for targets in argument[3]["targets"].values()
+                ),
+            )
             if workers == 1:
                 for argument in arguments:
                     prepare_part(*argument)
+                    check(argument[3])
             else:
-                run_parts(arguments, workers)
-            with closing(seen_documents(scratch)) as database:
-                for item in streamed(recipe):
-                    try:
-                        manifests[item["name"]] = write_corpus(
-                            recipe,
-                            item,
-                            parts,
-                            Path(scratch),
-                            tokenizer,
-                            tokenizer_directory,
-                            tokenizer_manifest,
-                            benchmark_digest,
-                            fingerprint,
-                            database,
-                            staging[item["name"]],
-                        )
-                    except ShortCorpus as error:
-                        short += error.args[0]
+                run_parts(arguments, workers, check)
+            for item in streamed(recipe):
+                try:
+                    manifests[item["name"]] = write_corpus(
+                        recipe,
+                        item,
+                        parts,
+                        Path(scratch),
+                        tokenizer,
+                        tokenizer_directory,
+                        tokenizer_manifest,
+                        benchmark_digest,
+                        fingerprint,
+                        database,
+                        staging[item["name"]],
+                    )
+                except ShortCorpus as error:
+                    short += error.args[0]
         if short:
-            raise ValueError(
-                "sources short of their clean corpus budget, which no source may "
-                "repeat or pad to meet: " + "; ".join(short)
-            )
+            raise short_of_budget(short)
     return manifests
 
 
-def run_parts(arguments, workers):
+def short_of_budget(short):
+    return ValueError(
+        "sources short of their clean corpus budget, which no source may "
+        "repeat or pad to meet: " + "; ".join(short)
+    )
+
+
+def certain_shortfalls(recipe, parts, finished, parts_root):
+    """Name each source that stays short of its share even if its unread parts fill theirs.
+
+    What the finished parts gathered and the most the others may read bound
+    what a source can give, before the merge drops any repeats.
+    """
+    reach = Counter()
+    for part in parts:
+        if (part["source"], part["index"]) in finished:
+            gathered = json.loads(
+                (part_directory(parts_root, part) / "collected.json").read_text()
+            )
+        else:
+            gathered = part["targets"]
+        for name, splits in gathered.items():
+            for split, tokens in splits.items():
+                reach[name, part["source"], split] += tokens
+    return [
+        f"{item['name']} {source_id} lacks at least "
+        f"{target - reach[item['name'], source_id, split]:,} {split} tokens"
+        for item in streamed(recipe)
+        for source_id, share in item["mix"].items()
+        for split, target in source_targets(recipe, item, share).items()
+        if reach[item["name"], source_id, split] < target
+    ]
+
+
+def run_parts(arguments, workers, check=None):
     """Prepare each part in a process of its own, at most `workers` at a time.
 
     A part whose process fails or is ended, as one ended for lack of memory
     is, stops the stage at once instead of leaving it waiting for that part.
+    `check` hears of each finished part and stops the stage by raising.
     """
     context = multiprocessing.get_context("fork")
-    pending, running = list(arguments), []
+    pending, running = list(arguments), {}
     try:
         while pending or running:
             while pending and len(running) < workers:
-                process = context.Process(target=prepare_part, args=pending.pop(0))
+                argument = pending.pop(0)
+                process = context.Process(target=prepare_part, args=argument)
                 process.start()
-                running.append(process)
+                running[process] = argument[3]
             multiprocessing.connection.wait([process.sentinel for process in running])
             for process in [process for process in running if not process.is_alive()]:
                 process.join()
-                running.remove(process)
+                part = running.pop(process)
                 if process.exitcode:
                     raise RuntimeError(
                         f"a corpus part's process ended with exit code {process.exitcode}"
                     )
+                if check is not None:
+                    check(part)
     finally:
         for process in running:
             process.terminate()

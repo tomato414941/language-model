@@ -47,6 +47,7 @@ from pretrain.recipe import (
     inspect_recipe,
     iter_source,
     prepare_corpus,
+    prepare_part,
     prepare_tokenizer,
     read_recipe,
     source_sizes,
@@ -451,24 +452,85 @@ class RecipeTests(unittest.TestCase):
                 self.recipe_path, self.root / "tokenizer", self.root, self.benchmarks, 2
             )
 
-    def test_必要量に満たないデータ源をまとめて通知しコーパスを残さない(self):
+    def test_必要量に満たないとわかった時点で残りを読まずに止めコーパスを残さない(self):
+        """部分を小さい順に読み、データ源が割当に届かないと確かになった時点で、残りの部分を読まずに止める。"""
         prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)
-        self.rows["ja-hq"] = []
-        self.rows["en-math"] = self.rows["en-math"][:1]
+        rows, self.rows["ja-hq"] = self.rows["ja-hq"], []
         with self.assertRaisesRegex(ValueError, "short of the tokenizer sample budget"):
             prepare_tokenizer(
                 self.recipe_path, self.root / "second-tokenizer", self.benchmarks
             )
+        self.rows["ja-hq"] = rows
+        self.rows["en-math"] = self.rows["en-math"][:1]
+        read = []
+        with (
+            patch(
+                "pretrain.recipe.prepare_part",
+                side_effect=lambda *arguments: read.append(arguments[3]["source"])
+                or prepare_part(*arguments),
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(ValueError, r"main en-math lacks at least"),
+        ):
+            prepare_corpus(
+                self.recipe_path, self.root / "tokenizer", self.root, self.benchmarks
+            )
+        # The parts after en-math's, ja-hq's largest of all, are never read.
+        self.assertEqual(read, ["ja-wiki", "en-math"])
+        self.assertFalse((self.root / "corpus").exists())
+
+    def test_ほかのデータ源と重なって足りなくなったデータ源をまとめて通知する(self):
+        """部分ごとには足りていても、まとめるときにほかのデータ源と重なる文書を除いて足りなくなったデータ源を、すべて通知する。"""
+        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)
+        for copy, original in (("ja-wiki", "ja-hq"), ("en-wiki", "en-web")):
+            self.rows[copy] = [
+                {**row, "text": source["text"]}
+                for row, source in zip(self.rows[copy], self.rows[original])
+            ]
         with (
             contextlib.redirect_stdout(io.StringIO()),
-            self.assertRaisesRegex(
-                ValueError, r"main ja-hq lacks 900 train tokens.*main en-math lacks"
-            ),
+            self.assertRaisesRegex(ValueError, r"main ja-wiki lacks .*main en-wiki lacks"),
         ):
             prepare_corpus(
                 self.recipe_path, self.root / "tokenizer", self.root, self.benchmarks
             )
         self.assertFalse((self.root / "corpus").exists())
+
+    def test_前に作ったコーパスの文書を除いて続きのコーパスを作る(self):
+        """前に作ったコーパスが記録した文書を除き、まだ使っていない文書だけで割当を満たすコーパスを作る。"""
+        self.prepare()
+        documents = self.root / "corpus/documents.jsonl"
+        recipe = self.root / "later.toml"
+        text = self.recipe_path.read_text()
+        recipe.write_text(
+            text.replace(
+                "[corpus]\n",
+                f'[corpus]\nexcluded_corpora = [{{ path = "{self.root / "corpus"}", '
+                f'documents_sha256 = "{file_digest(documents)}" }}]\n',
+            )
+        )
+        later = self.root / "later"
+        prepare_tokenizer(recipe, later / "tokenizer", self.benchmarks)
+        with contextlib.redirect_stdout(io.StringIO()):
+            manifest = prepare_corpus(recipe, later / "tokenizer", later, self.benchmarks)[
+                "main"
+            ]
+
+        def digests(path):
+            return {json.loads(line)["digest"] for line in path.read_text().splitlines()}
+
+        self.assertTrue(digests(documents).isdisjoint(digests(later / "corpus/documents.jsonl")))
+        for source in manifest["sources"].values():
+            self.assertGreater(source["statistics"]["used_earlier"], 0)
+            for split, target in source["targets"].items():
+                self.assertGreaterEqual(source["statistics"][f"{split}_tokens"], target)
+        recipe.write_text(recipe.read_text().replace(file_digest(documents), "0" * 64))
+        prepare_tokenizer(recipe, later / "second-tokenizer", self.benchmarks)
+        with self.assertRaisesRegex(ValueError, "do not match their checksum"):
+            prepare_corpus(recipe, later / "second-tokenizer", later / "second", self.benchmarks)
+        recipe.write_text(text.replace("[corpus]\n", '[corpus]\nexcluded_corpora = [{ path = "corpus" }]\n'))
+        with self.assertRaisesRegex(ValueError, "excluded corpus"):
+            read_recipe(recipe)
 
     def test_大きさの違うファイルに分かれたデータ源からも必要量を集める(self):
         """A part dealt only small files is not asked for what the large one holds."""
