@@ -282,6 +282,76 @@ ROWS["jsquad"] = [
     },
 ]
 ID_FIELDS["jsquad"] = "id"
+ROWS["mt_bench"] = [
+    {
+        "question_id": 81,
+        "category": "writing",
+        "prompt": [
+            "Write a short poem about the sea at night.",
+            "Rewrite your poem so that every line starts with the letter S.",
+        ],
+        "reference": [],
+    }
+]
+ID_FIELDS["mt_bench"] = "question_id"
+ROWS["ja_mt_bench"] = [
+    {
+        "question_id": 1,
+        "category": "writing",
+        "turns": ["夏休みの思い出について短い作文を書いてください。", "その作文を小学生向けに書き直してください。"],
+    }
+]
+ID_FIELDS["ja_mt_bench"] = "question_id"
+ROWS["elyza_tasks_100"] = [
+    {
+        "input": "仕事の熱意を取り戻すためのアイデアを3つ挙げてください。",
+        "output": "1. 新しいことを学ぶ。\n2. 休みを取る。\n3. 小さな目標を立てる。",
+        "eval_aspect": "- 3つ挙げていれば5点",
+    }
+]
+ROWS["math500"] = [
+    {
+        "problem": "What is the remainder when $2^{10}$ is divided by 7?",
+        "solution": "$2^3 = 8 \\equiv 1$, so $2^{10} = 2 \\cdot (2^3)^3 \\equiv 2$.",
+        "answer": "2",
+        "subject": "Number Theory",
+        "level": 2,
+        "unique_id": "test/number_theory/1.json",
+    }
+]
+ID_FIELDS["math500"] = "unique_id"
+ROWS["m_ifeval_ja"] = [
+    {
+        "key": 1,
+        "prompt": "フランス語で、地球の大気について説明してください。",
+        "instruction_id_list": ["ja:language:response_language"],
+        "kwargs": [{"language": "fr"}],
+    }
+]
+ID_FIELDS["m_ifeval_ja"] = "key"
+ROWS["bfcl"] = [
+    {
+        "id": "simple_0",
+        "question": [[{"role": "user", "content": "Find the area of a triangle with a base of 10 and a height of 5."}]],
+        "function": [{"name": "triangle_area"}],
+    },
+    {
+        "id": "multi_turn_base_0",
+        "question": [
+            [{"role": "user", "content": "Move final_report.pdf into the temp folder."}],
+            [{"role": "user", "content": "Now list every file in the temp folder."}],
+        ],
+        "function": [],
+    },
+    {
+        "id": "sql_0",
+        "question": [{"role": "user", "content": "Select every customer who lives in Tokyo."}],
+        "function": [],
+    },
+]
+ID_FIELDS["bfcl"] = "id"
+# Questions asked in several messages give an item for each message.
+ITEMS_PER_FILE = {"mt_bench": 2, "ja_mt_bench": 2, "bfcl": 4}
 
 
 def squad_articles(rows):
@@ -495,6 +565,12 @@ class BenchmarkTests(unittest.TestCase):
                     buffer.write(jmmlu_archive(rows))
                 elif task.get("format") == "squad":
                     buffer.write(json.dumps({"data": squad_articles(rows)}).encode())
+                elif path.endswith(".csv"):
+                    text = io.StringIO()
+                    writer = csv.DictWriter(text, fieldnames=list(rows[0]))
+                    writer.writeheader()
+                    writer.writerows(rows)
+                    buffer.write(text.getvalue().encode())
                 elif path.endswith((".json", ".jsonl")):
                     buffer.write(
                         "".join(json.dumps(row) + "\n" for row in rows).encode()
@@ -587,6 +663,29 @@ class BenchmarkTests(unittest.TestCase):
         )
         self.assertEqual(benchmarks["humaneval"][0]["context"], ROWS["humaneval"][0]["prompt"])
         self.assertEqual(benchmarks["mbpp"][0]["context"], "Write a function to add two numbers.")
+        # Each turn of a conversation is a question of its own.
+        self.assertEqual(
+            [item["context"] for item in benchmarks["mt_bench"]], ROWS["mt_bench"][0]["prompt"]
+        )
+        self.assertEqual(
+            [item["context"] for item in benchmarks["ja_mt_bench"]], ROWS["ja_mt_bench"][0]["turns"]
+        )
+        # ELYZA-tasks-100's CSV holds answers over several lines; only the task is a question.
+        self.assertEqual(
+            benchmarks["elyza_tasks_100"][0]["context"], ROWS["elyza_tasks_100"][0]["input"]
+        )
+        self.assertEqual(benchmarks["math500"][0]["context"], ROWS["math500"][0]["problem"])
+        self.assertEqual(benchmarks["m_ifeval_ja"][0]["context"], ROWS["m_ifeval_ja"][0]["prompt"])
+        # Tool requests come in turns of messages, or in one list of messages as SQL's do.
+        self.assertEqual(
+            [item["context"] for item in benchmarks["bfcl"][:4]],
+            [
+                "Find the area of a triangle with a base of 10 and a height of 5.",
+                "Move final_report.pdf into the temp folder.",
+                "Now list every file in the temp folder.",
+                "Select every customer who lives in Tokyo.",
+            ],
+        )
         # Questions without identifiers of their own are numbered by file and row.
         self.assertEqual(benchmarks["sciq"][1]["id"], "data/validation-00000-of-00001.parquet:0")
         self.assertEqual(
@@ -597,7 +696,10 @@ class BenchmarkTests(unittest.TestCase):
             self.assertEqual(metadata["revision"], task["revision"])
             self.assertEqual(metadata["license"], task["license"])
             self.assertEqual(metadata["sha256"], file_digest(output / f"{name}.jsonl"))
-            self.assertEqual(metadata["items"], len(ROWS[name]) * len(task["files"]))
+            self.assertEqual(
+                metadata["items"],
+                ITEMS_PER_FILE.get(name, len(ROWS[name])) * len(task["files"]),
+            )
 
     def test_fetch_reports_a_source_whose_checksum_differs(self):
         """取得したファイルのチェックサムが記録と異なれば、何も保存せずに通知する。"""

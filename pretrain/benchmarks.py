@@ -297,6 +297,87 @@ TASKS = {
             "datasets/jsquad-v1.2/valid-v1.2.json": "fb0a57a35281ff03bbe7f0e878cff5b577985fbe6fcb242e7e8ddb63d1c0ab11",
         },
     },
+    "mt_bench": {
+        "language": "en",
+        "repository": "HuggingFaceH4/mt_bench_prompts",
+        "revision": "e3a795c5e9a82ee40611c416b8a7786c73198991",
+        "license": "Apache-2.0",
+        # The questions of MT-Bench, which grades conversations in two turns.
+        "files": {
+            "raw/question.jsonl": "420ae1d63cbf0f499d8afc3b28d86714e77f13e44c133eedf942ed16c544dd34",
+        },
+    },
+    "ja_mt_bench": {
+        "language": "ja",
+        "host": "github",
+        "repository": "Stability-AI/FastChat",
+        "revision": "e37eb28ee490480f6f4989274ed47c55f7dfce82",
+        "license": "Apache-2.0",
+        # Japanese MT-Bench, all eight categories.
+        "files": {
+            "fastchat/llm_judge/data/japanese_mt_bench/question_full.jsonl": "8f56c8bd5ff93d2120409bc8f77f0020e673c74548c9637f2aace12a323834e5",
+        },
+    },
+    "elyza_tasks_100": {
+        "language": "ja",
+        "repository": "elyza/ELYZA-tasks-100",
+        "revision": "240fc800c4695d86ce0f32a713e199cd2ba66ab6",
+        "license": "CC-BY-SA-4.0",
+        "files": {
+            "test.csv": "51412fbfc955e06e59f6cae2cb564b43758cb5360d6dd65715e6558861dd524c",
+        },
+    },
+    "math500": {
+        "language": "en",
+        "repository": "HuggingFaceH4/MATH-500",
+        "revision": "6e4ed1a2a79af7d8630a6b768ec859cb5af4d3be",
+        "license": "MIT",
+        "files": {
+            "test.jsonl": "35dc41080a3680858b27fa7e0533d2d547825316fc5dafe5d316f4ccc5a06132",
+        },
+    },
+    "m_ifeval_ja": {
+        "language": "ja",
+        "repository": "tokyotech-llm/M-IFEval-Ja",
+        "revision": "f42d9f0c9bd3e1be76b47c84143cd94d98eada8b",
+        "license": "Apache-2.0",
+        "files": {
+            "test.jsonl": "d74fbbd10fe512ad0a487e1dc85823ecfb9addcdc08fb9182d68616d6056782e",
+        },
+    },
+    "bfcl": {
+        "language": "en",
+        "repository": "gorilla-llm/Berkeley-Function-Calling-Leaderboard",
+        "revision": "61fc0608cfd831fcfbbaa676ebdfef0ed963eeda",
+        "license": "Apache-2.0",
+        # The Berkeley Function Calling Leaderboard's requests; its chat-only category is left out.
+        "files": {
+            "BFCL_v3_exec_multiple.json": "180ccd36814856574a2a488e026ace22ef2631fe17f404a8a4168ceffaab4cb6",
+            "BFCL_v3_exec_parallel.json": "67826cdd638e1416a3b9f0243872ce91b95f438b467faa3f8d9351e80d39153d",
+            "BFCL_v3_exec_parallel_multiple.json": "e3134c946b215d34a79dbe3eef0fbfe78f9e3a18e67e9a9adf891f01b2e7977d",
+            "BFCL_v3_exec_simple.json": "120eb383a8ec801b47e56d7337b61158944ae35b935c86e8d846948fa27215f6",
+            "BFCL_v3_irrelevance.json": "975f51c51f688649fd190078efd87081241e0a326f9114a2ea3c1ca2440d8690",
+            "BFCL_v3_java.json": "261d327d50c1bb505614dd5f75a29167d5bd9f938e5cefefef989c325cb67848",
+            "BFCL_v3_javascript.json": "b69b6a99548f72e151be7abed4beb0ed70873d3370d5b78feed75b66f33795d3",
+            "BFCL_v3_live_irrelevance.json": "0d259e1c3ab6ba06c2a51911e2f49ecaa2eac3723a4a14f183a7687955e61338",
+            "BFCL_v3_live_multiple.json": "af2520ac5bb0b05aa9b8abe14a79b87198e5a3137a707d4f5633c792330f0cee",
+            "BFCL_v3_live_parallel.json": "6c26e9fdc3350cf596e6d1ea9c179cbff834761bccf562f4141ed29a839ca421",
+            "BFCL_v3_live_parallel_multiple.json": "21d4b9319c1faac431e22757b367ea28917fe467364c3a4b17f16ec06d4f6e79",
+            "BFCL_v3_live_relevance.json": "294ef3f21909e6f84c735faf688f5cbd72226ad012b7ea53c1e177c40cbbf053",
+            "BFCL_v3_live_simple.json": "b398743e6c0dfd2a87cee97a3bc1b9b90b81edc228c3153a820a93b51186fc00",
+            "BFCL_v3_multi_turn_base.json": "edaea7666e0089062c30f3ac511914d5c27414dbe9b8214488191980d873b145",
+            "BFCL_v3_multi_turn_composite.json": "1fda0310e176317af7184132ff5fb5daa8ee7984b1cfbf69ce4bfb58c3151ae1",
+            "BFCL_v3_multi_turn_long_context.json": "a7c2b44cfe14e243e66acbb0737970f1085460fed5793bfa0137fb4782ff8fc4",
+            "BFCL_v3_multi_turn_miss_func.json": "e6cfbd225ac1182c82bfcd0a83410babd410a8cf2050942894017829e9a57e23",
+            "BFCL_v3_multi_turn_miss_param.json": "21a850b8bb0b41aba63e0bbcd9b4af6c7997144180eadd4bcdf4bdfd98077c1a",
+            "BFCL_v3_multiple.json": "aef168155ebd74b7ac2401198b201343bc7d16d7a3d7e0d4e6d8ee82c6969b2a",
+            "BFCL_v3_parallel.json": "fad375d68295776efb63e5aa331dd884f8635e7bb50e05908113c74f14281c3c",
+            "BFCL_v3_parallel_multiple.json": "8863ea8433239f55c5f016154cf0830853c89f693c6ea270396a2fa121960579",
+            "BFCL_v3_rest.json": "b064f9eefc257dba383227177f570fd9038588dd058e5a9e869007f81d5cc5f2",
+            "BFCL_v3_simple.json": "fbc37b2ad252bf9af985582e0e07b456173fe627d957491472ea9cef5fb83158",
+            "BFCL_v3_sql.json": "2cf021e2e4f81f1097aab31763423b785b3aaa73df8203a4f4ae3900822b0d53",
+        },
+    },
 }
 
 
@@ -398,6 +479,39 @@ def jsquad_item(row):
     return {"id": row["id"], "context": f"質問：{row['question']}\n回答："}
 
 
+def turn_items(field, key):
+    """Convert a question asked over several turns into an item for each turn."""
+
+    def items(row):
+        return [
+            {"id": f"{row[key]}:{turn}", "context": text}
+            for turn, text in enumerate(row[field])
+        ]
+
+    return items
+
+
+def elyza_item(row):
+    return {"context": row["input"]}
+
+
+def math_item(row):
+    return {"id": row["unique_id"], "context": row["problem"]}
+
+
+def tool_items(row):
+    # Each of the user's requests; the functions offered are documentation.
+    question = row["question"]
+    # Requests come in turns of messages, or as one list of messages as SQL's do.
+    turns = [question] if question and isinstance(question[0], dict) else question
+    return [
+        {"id": f"{row['id']}:{turn}:{index}", "context": message["content"]}
+        for turn, messages in enumerate(turns)
+        for index, message in enumerate(messages)
+        if message["role"] == "user"
+    ]
+
+
 CONVERTERS = {
     "hellaswag": hellaswag_item,
     "arc_easy": arc_item,
@@ -419,6 +533,12 @@ CONVERTERS = {
     "mgsm_ja": mgsm_item,
     "jhumaneval": program_item,
     "jsquad": jsquad_item,
+    "mt_bench": turn_items("prompt", "question_id"),
+    "ja_mt_bench": turn_items("turns", "question_id"),
+    "elyza_tasks_100": elyza_item,
+    "math500": math_item,
+    "m_ifeval_ja": ifeval_item,
+    "bfcl": tool_items,
 }
 
 
@@ -452,6 +572,8 @@ def read_rows(task, path, data):
             for paragraph in article["paragraphs"]
             for question in paragraph["qas"]
         ]
+    if path.endswith(".csv"):
+        return list(csv.DictReader(io.StringIO(data.decode("utf-8-sig"))))
     if path.endswith((".json", ".jsonl")):
         # JGLUE and XWinograd also write one question per line in .json.
         return [
@@ -485,10 +607,12 @@ def fetch_benchmarks(output):
                 if hashlib.sha256(data).hexdigest() != expected:
                     raise ValueError(f"{name} source checksum does not match: {path}")
                 for index, row in enumerate(read_rows(task, path, data)):
-                    item = CONVERTERS[name](row)
-                    # Sources without identifiers number questions by file and row.
-                    item.setdefault("id", f"{path}:{index}")
-                    items.append(item)
+                    converted = CONVERTERS[name](row)
+                    # A question asked in several messages gives an item for each.
+                    for item in converted if isinstance(converted, list) else [converted]:
+                        # Sources without identifiers number questions by file and row.
+                        item.setdefault("id", f"{path}:{index}")
+                        items.append(item)
             if len({item["id"] for item in items}) != len(items):
                 raise ValueError(f"{name} items need unique identifiers")
             for item in items:
