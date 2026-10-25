@@ -486,6 +486,9 @@ class PretrainingTests(unittest.TestCase):
         ]
         for actual, expected in zip(*gradients, strict=True):
             torch.testing.assert_close(actual.float(), expected.float(), rtol=5e-2, atol=5e-3)
+        # Under autocast the values come in bfloat16 and the normalized query and key in float32.
+        mixed, _ = kernel_delta_rule(query.detach(), key.detach(), value.detach().bfloat16(), decay.detach(), beta.detach())
+        torch.testing.assert_close(mixed.float(), chunked[0].detach(), rtol=5e-2, atol=5e-2)
 
     def test_専門家の混合は各単語を点数の高い専門家に送り点数で混ぜる(self):
         """専門家の混合は、各単語を点数の高い専門家だけに送り、その出力を点数の比で混ぜ、偏りと点数の大きさを抑える損失を返す。"""

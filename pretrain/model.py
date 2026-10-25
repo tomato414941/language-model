@@ -270,15 +270,17 @@ def kernel_delta_rule(query, key, value, decay, beta, state=None, keep_state=Fal
     It takes and gives what chunked_delta_rule does, with the positions before
     the heads, and gives the final state only when asked to keep it.
     """
-    query, key, value = (part.contiguous() for part in (query, key, value))
-    # The kernels take the write strength in the inputs' precision, and the
-    # decay and state in single precision, as Qwen3-Next passes them.
+    # The kernels take the query, key, value and write strength in one
+    # precision, the values', and the decay and state in single precision, as
+    # Qwen3-Next passes them; autocast leaves the normalized query and key in
+    # single precision.
+    query, key, value, beta = (part.to(value.dtype).contiguous() for part in (query, key, value, beta))
     return chunk_gated_delta_rule(
         query,
         key,
         value,
         decay.float().contiguous(),
-        beta.to(query.dtype).contiguous(),
+        beta,
         initial_state=state,
         output_final_state=keep_state,
     )
