@@ -22,7 +22,9 @@ reserved_tokens = 256
 
 [corpus]
 validation_tokens_per_language = 5_000_000
-validation_fraction = 0.001
+# No fixed held-out fraction: each phase holds out the share of documents its
+# own budgets call for, so both splits fill together. The decay phase holds
+# out more of its smaller corpus than the stable phase does.
 minimum_characters = 300
 maximum_characters = 100000
 
