@@ -1421,6 +1421,8 @@ def prepare_part(recipe_path, tokenizer_directory, benchmarks_path, part, parts_
             collected[name] = {split: stats[f"{split}_tokens"] for split in targets}
     (output / "statistics.json").write_text(json.dumps(summary) + "\n")
     (output / "collected.json").write_text(json.dumps(collected) + "\n")
+    # Written last, so a later run keeps only parts that finished.
+    (output / "finished.json").write_text(json.dumps(part) + "\n")
     print(
         json.dumps({"part": f"{part['source']}-{part['index']}", **summary}), flush=True
     )
@@ -1433,6 +1435,7 @@ def prepare_corpus(
     """Write every corpus read from the sources; no document appears in two of them.
 
     Corpora that select from a pool are written afterwards by the select stage.
+    The parts an interrupted run finished are kept and not read again.
     """
     recipe = read_recipe(recipe_path)
     tokenizer_directory = Path(tokenizer_directory)
@@ -1456,7 +1459,16 @@ def prepare_corpus(
         raise ValueError("tokenizer vocabulary does not match the recipe")
     paths = corpus_paths(recipe, workdir)
     parts = source_parts(recipe)
-    Path(workdir).mkdir(parents=True, exist_ok=True)
+    parts_root = Path(workdir) / ".corpus-parts"
+    finished = keep_finished_parts(
+        parts_root,
+        parts,
+        {
+            "data_fingerprint": fingerprint,
+            "tokenizer_sha256": tokenizer_manifest["tokenizer_sha256"],
+            "benchmarks_sha256": benchmark_digest,
+        },
+    )
     manifests, short = {}, []
     # The corpora are kept only once every one of them is whole.
     with ExitStack() as outputs:
@@ -1464,29 +1476,28 @@ def prepare_corpus(
             item["name"]: outputs.enter_context(output_directory(paths[item["name"]]))
             for item in streamed(recipe)
         }
-        with (
-            tempfile.TemporaryDirectory(dir=workdir) as scratch,
-            closing(seen_documents(scratch)) as database,
-        ):
+        with closing(seen_documents(parts_root)) as database:
             # Documents of earlier corpora count as seen before any part is read.
             database.executemany(
                 "INSERT OR IGNORE INTO documents VALUES (?)",
                 ((digest,) for digest in earlier_documents(recipe)),
             )
             database.commit()
-            finished = set()
 
-            def check(part):
-                finished.add((part["source"], part["index"]))
-                if missing := certain_shortfalls(recipe, parts, finished, Path(scratch)):
+            def check(part=None):
+                if part is not None:
+                    finished.add((part["source"], part["index"]))
+                if missing := certain_shortfalls(recipe, parts, finished, parts_root):
                     raise short_of_budget(missing)
 
+            check()
             # Small parts go first, so a source too small for its share is
             # found within minutes instead of after the large parts.
             arguments = sorted(
                 (
-                    (recipe_path, tokenizer_directory, benchmarks_path, part, Path(scratch))
+                    (recipe_path, tokenizer_directory, benchmarks_path, part, parts_root)
                     for part in parts
+                    if (part["source"], part["index"]) not in finished
                 ),
                 key=lambda argument: sum(
                     sum(targets.values()) for targets in argument[3]["targets"].values()
@@ -1504,7 +1515,7 @@ def prepare_corpus(
                         recipe,
                         item,
                         parts,
-                        Path(scratch),
+                        parts_root,
                         tokenizer,
                         tokenizer_directory,
                         tokenizer_manifest,
@@ -1517,7 +1528,35 @@ def prepare_corpus(
                     short += error.args[0]
         if short:
             raise short_of_budget(short)
+    shutil.rmtree(parts_root)
     return manifests
+
+
+def keep_finished_parts(parts_root, parts, stage):
+    """Ready the directory of parts, keeping those an interrupted run of the same stage finished.
+
+    A part writes its record of itself last, so a part without it is read
+    again. A stage with another recipe, tokenizer or benchmarks reads every
+    part again. Return the finished parts.
+    """
+    record = parts_root / "stage.json"
+    if parts_root.exists() and (
+        not record.exists() or json.loads(record.read_text()) != stage
+    ):
+        shutil.rmtree(parts_root)
+    parts_root.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps(stage) + "\n")
+    finished = set()
+    for part in parts:
+        directory = part_directory(parts_root, part)
+        marker = directory / "finished.json"
+        if marker.exists() and json.loads(marker.read_text()) == part:
+            finished.add((part["source"], part["index"]))
+        elif directory.exists():
+            shutil.rmtree(directory)
+    # The record of seen documents is rebuilt from the earlier corpora each run.
+    (parts_root / "seen.sqlite3").unlink(missing_ok=True)
+    return finished
 
 
 def short_of_budget(short):

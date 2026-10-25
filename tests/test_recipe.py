@@ -507,6 +507,80 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(read, ["ja-wiki", "en-math"])
         self.assertFalse((self.root / "corpus").exists())
 
+    def test_止めたコーパス作りは終わった部分を読み直さずに続きから作る(self):
+        """途中で止まったコーパス作りは終わった部分を残し、次は残りの部分だけを読んで、一度に作ったときと同じコーパスを作る。"""
+        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)
+        read = []
+
+        def interrupted(*arguments):
+            if len(read) == 2:
+                raise RuntimeError("interrupted")
+            read.append(arguments[3]["source"])
+            return prepare_part(*arguments)
+
+        with (
+            patch("pretrain.recipe.prepare_part", side_effect=interrupted),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(RuntimeError, "interrupted"),
+        ):
+            prepare_corpus(self.recipe_path, self.root / "tokenizer", self.root, self.benchmarks)
+        self.assertFalse((self.root / "corpus").exists())
+        resumed = []
+        with (
+            patch(
+                "pretrain.recipe.prepare_part",
+                side_effect=lambda *arguments: resumed.append(arguments[3]["source"])
+                or prepare_part(*arguments),
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            prepare_corpus(self.recipe_path, self.root / "tokenizer", self.root, self.benchmarks)
+        self.assertEqual(read, ["ja-wiki", "en-math"])
+        self.assertEqual(resumed, ["en-wiki", "en-web", "ja-hq"])
+        self.assertFalse((self.root / ".corpus-parts").exists())
+        with contextlib.redirect_stdout(io.StringIO()):
+            prepare_corpus(
+                self.recipe_path, self.root / "tokenizer", self.root / "whole", self.benchmarks
+            )
+        self.assertEqual(
+            Corpus(self.root / "corpus").fingerprint, Corpus(self.root / "whole/corpus").fingerprint
+        )
+
+    def test_レシピが変わったら止めたときの部分を使わずに読み直す(self):
+        """途中で止まったあとにレシピが変わったら、残っていた部分は使わず、すべての部分を読み直す。"""
+        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)
+        read = []
+
+        def interrupted(*arguments):
+            if read:
+                raise RuntimeError("interrupted")
+            read.append(arguments[3]["source"])
+            return prepare_part(*arguments)
+
+        with (
+            patch("pretrain.recipe.prepare_part", side_effect=interrupted),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(RuntimeError, "interrupted"),
+        ):
+            prepare_corpus(self.recipe_path, self.root / "tokenizer", self.root, self.benchmarks)
+        text = self.recipe_path.read_text()
+        self.assertIn("minimum_characters = 50", text)
+        self.recipe_path.write_text(text.replace("minimum_characters = 50", "minimum_characters = 60"))
+        prepare_tokenizer(self.recipe_path, self.root / "second-tokenizer", self.benchmarks)
+        reread = []
+        with (
+            patch(
+                "pretrain.recipe.prepare_part",
+                side_effect=lambda *arguments: reread.append(arguments[3]["source"])
+                or prepare_part(*arguments),
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            prepare_corpus(
+                self.recipe_path, self.root / "second-tokenizer", self.root, self.benchmarks
+            )
+        self.assertEqual(len(reread), 5)
+
     def test_ほかのデータ源と重なって足りなくなったデータ源をまとめて通知する(self):
         """部分ごとには足りていても、まとめるときにほかのデータ源と重なる文書を除いて足りなくなったデータ源を、すべて通知する。"""
         prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)
