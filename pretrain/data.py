@@ -277,15 +277,41 @@ def prepare_data(
             shutil.rmtree(staging)
 
 
-def batch_languages(batch_size, generator, language=None):
+def batch_languages(batch_size, generator, language=None, weights=None):
+    """Each row's language: the given one, or one drawn at random.
+
+    A language's chance follows its weight, or is even without weights.
+    """
     if language:
         return [language] * batch_size
-    return [
-        LANGUAGES[i]
-        for i in torch.randint(
-            len(LANGUAGES), (batch_size,), generator=generator
-        ).tolist()
-    ]
+    if weights is None:
+        drawn = torch.randint(len(LANGUAGES), (batch_size,), generator=generator)
+    else:
+        drawn = torch.multinomial(
+            torch.tensor([float(weights[name]) for name in LANGUAGES]),
+            batch_size,
+            replacement=True,
+            generator=generator,
+        )
+    return [LANGUAGES[i] for i in drawn.tolist()]
+
+
+def interleaved(row, counts):
+    """The language of a row of an endless sequence, and its place among that language's rows.
+
+    The languages take rows in proportion to their counts, spread evenly: the
+    first takes its share of every row, the next its share of the rest, and so
+    on. Two languages with equal counts take turns.
+    """
+    languages = list(counts)
+    remaining = sum(counts.values())
+    for language in languages[:-1]:
+        before = -(-row * counts[language] // remaining)
+        if -(-(row + 1) * counts[language] // remaining) > before:
+            return language, before
+        row -= before
+        remaining -= counts[language]
+    return languages[-1], row
 
 
 def open_corpus(path, splits=("train", "validation")):
@@ -348,7 +374,9 @@ class Corpus:
 
     def batch(self, split, batch_size, context, generator, device, language=None):
         windows = []
-        for selected in batch_languages(batch_size, generator, language):
+        # Languages come up as often as their tokens, which follow the mix.
+        sizes = {name: len(stream) for name, stream in self.streams[split].items()}
+        for selected in batch_languages(batch_size, generator, language, sizes):
             stream = self.streams[split][selected]
             start = torch.randint(
                 len(stream) - context, (1,), generator=generator
@@ -361,20 +389,24 @@ class Corpus:
     def sequential_batch(self, start, batch_size, context, seed, device):
         """Read rows start.. of an endless, epoch-by-epoch pass over the windows.
 
-        Rows alternate between languages, and each language visits every
-        context-sized training window once per epoch in a seeded order.
+        The languages take rows in proportion to their windows, so they finish
+        each epoch together, and each language visits every context-sized
+        training window once per epoch in a seeded order.
         """
+        streams = self.streams["train"]
+        counts = {
+            language: (len(streams[language]) - 1) // context for language in LANGUAGES
+        }
         windows = []
         for row in range(start, start + batch_size):
-            language = LANGUAGES[row % len(LANGUAGES)]
-            stream = self.streams["train"][language]
-            count = (len(stream) - 1) // context
-            epoch, position = divmod(row // len(LANGUAGES), count)
+            language, place = interleaved(row, counts)
+            stream = streams[language]
+            epoch, position = divmod(place, counts[language])
             cached = getattr(self, "_orders", {}).get(language)
             if cached is None or cached[0] != epoch:
                 order = np.random.default_rng(
                     [seed, epoch, LANGUAGES.index(language)]
-                ).permutation(count)
+                ).permutation(counts[language])
                 self._orders = {
                     **getattr(self, "_orders", {}),
                     language: (epoch, order),

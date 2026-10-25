@@ -20,7 +20,7 @@ if any(
 import numpy as np
 import torch
 
-from pretrain.data import Corpus, prepare_data, token_bytes
+from pretrain.data import Corpus, interleaved, prepare_data, token_bytes
 from pretrain.growth import grow_checkpoint
 from pretrain.model import (
     RESET,
@@ -779,28 +779,36 @@ class PretrainingTests(unittest.TestCase):
                 places=4,
             )
 
-    def test_sequential_reading_uses_each_window_once_per_epoch(self):
+    def test_sequential_reading_gives_languages_rows_by_their_windows_once_per_epoch(self):
         context = 16
         streams = self.corpus.streams["train"]
-        # Distinct tokens make every window recognizable.
+        # Distinct tokens make every window recognizable, and English starts at 1000.
         streams["ja"], streams["en"] = (
             np.arange(10 * context + 1),
-            np.arange(7 * context + 5),
+            np.arange(7 * context + 5) + 1000,
         )
         counts = {"ja": 10, "en": 7}
-        x, _ = self.corpus.sequential_batch(0, 20, context, 42, torch.device("cpu"))
-        for offset, language in enumerate(("ja", "en")):
-            seen = x[offset::2][: counts[language]]
-            windows = {
-                tuple(np.asarray(streams[language][i * context : (i + 1) * context]))
-                for i in range(counts[language])
-            }
-            self.assertEqual({tuple(row.tolist()) for row in seen}, windows)
-            self.assertEqual(
-                len({tuple(row.tolist()) for row in seen}), counts[language]
-            )
+        x, _ = self.corpus.sequential_batch(0, 34, context, 42, torch.device("cpu"))
+        # Both languages finish their epoch at the same row.
+        for epoch in (x[:17], x[17:]):
+            for language, offset in (("ja", 0), ("en", 1000)):
+                seen = [tuple(row.tolist()) for row in epoch if (row[0] >= 1000) == bool(offset)]
+                windows = {
+                    tuple(range(offset + i * context, offset + (i + 1) * context))
+                    for i in range(counts[language])
+                }
+                self.assertEqual(len(seen), counts[language])
+                self.assertEqual(set(seen), windows)
         again, _ = self.corpus.sequential_batch(3, 4, context, 42, torch.device("cpu"))
         torch.testing.assert_close(again, x[3:7], rtol=0, atol=0)
+        self.assertEqual(
+            [interleaved(row, {"ja": 5, "en": 5}) for row in range(4)],
+            [("ja", 0), ("en", 0), ("ja", 1), ("en", 1)],
+        )
+        self.assertEqual(
+            [interleaved(row, {"ja": 3, "en": 1})[0] for row in range(8)],
+            ["ja", "ja", "ja", "en"] * 2,
+        )
 
     def test_sequential_training_resumes_the_same_updates(self):
         self.run_training("sequential-continuous", self.wsd_config())

@@ -2,8 +2,9 @@
 # peak learning rate reads web text, code and mathematics; the phase that
 # lowers the rate reads the highest-quality text with questions, answers and
 # reasoning, as SmolLM3 and OLMo 3 end their pretraining. Each language takes
-# half of the tokens, as training alternates them; most code and mathematics
-# sits in the English half. Each phase's corpus holds corpus_tokens, of which
+# half of the tokens, the share its sources add up to, and training reads the
+# languages in that proportion; most code and mathematics sits in the English
+# half. Each phase's corpus holds corpus_tokens, of which
 # training reads training_tokens, so a smaller budget or a slower model needs
 # no new corpus; the stable phase's last checkpoint is where a longer run
 # continues.

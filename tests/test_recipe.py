@@ -314,6 +314,34 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(tuple(x.shape), (2, 128))
         self.assertTrue(torch.equal(x[:, 1:], y[:, :-1]))
 
+    def test_言語の割合を配合から決めどの言語にも同じ量の検証用文書を割り当てる(self):
+        """日英の割合は配合で決まり、どの言語も同じ量の検証用の文書を持つ。配合のない言語があるレシピや、合計が100%でないレシピは断る。"""
+        text = self.recipe_path.read_text()
+        mix = "mix = { ja-hq = 45, ja-wiki = 5, en-web = 40, en-math = 5, en-wiki = 5 }"
+        self.assertIn(mix, text)
+        self.recipe_path.write_text(
+            text.replace(
+                mix, "mix = { ja-hq = 60, ja-wiki = 10, en-web = 20, en-math = 5, en-wiki = 5 }"
+            )
+        )
+        corpus = self.prepare()
+        train, validation = Counter(), Counter()
+        for source in corpus.manifest["sources"].values():
+            train[source["language"]] += source["targets"]["train"]
+            validation[source["language"]] += source["targets"]["validation"]
+        self.assertEqual(train, {"ja": 1400, "en": 600})
+        # Each source's held-out tokens round down, so a language may hold a few fewer.
+        for language in ("ja", "en"):
+            self.assertLessEqual(200 - validation[language], 2)
+        self.assertTrue(validate_corpus(self.recipe_path, self.root)["ready"])
+        for wrong in (
+            "mix = { ja-hq = 60, ja-wiki = 10, en-web = 20, en-math = 5 }",
+            "mix = { ja-hq = 90, ja-wiki = 10 }",
+        ):
+            self.recipe_path.write_text(text.replace(mix, wrong))
+            with self.assertRaisesRegex(ValueError, "100 percent, with a share for each language"):
+                read_recipe(self.recipe_path)
+
     def test_作ったあとで学習の設定や読むトークン数を変えても同じコーパスを使う(self):
         """コーパスを作ったあとで学習率やモデル、評価、学習で読むトークン数を変えても、同じコーパスが確認を通る。作るトークン数を変えると別のコーパスとして断る。"""
         self.prepare()

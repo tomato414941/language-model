@@ -252,16 +252,13 @@ def read_recipe(path):
             raise ValueError(f"{item['name']} mixes sources missing from the catalog")
         if any(type(share) is not int or share <= 0 for share in mix.values()):
             raise ValueError("source shares must be positive integer percentages")
-        if any(
-            sum(
-                share
-                for source, share in mix.items()
-                if sources[source]["language"] == language
+        shares = Counter()
+        for source, share in mix.items():
+            shares[sources[source]["language"]] += share
+        if sum(shares.values()) != 100 or not all(shares[language] for language in LANGUAGES):
+            raise ValueError(
+                f"{item['name']} must allocate 100 percent, with a share for each language"
             )
-            != 50
-            for language in LANGUAGES
-        ):
-            raise ValueError("the recipe must allocate 50 percent to each language")
     selected = [item for item in corpora if "select" in item]
     if selected:
         settings = recipe.get("selection")
@@ -381,22 +378,42 @@ def validation_budget(recipe, item):
 def validation_fraction(recipe, item):
     """The share of documents held out, sized so both splits fill together.
 
-    Every source of a corpus needs validation tokens in the same proportion to
-    its training tokens, so a slightly larger fraction than that proportion
-    fills the validation split just before training, without reading far past
-    either budget.
+    Every language holds out the same tokens, so the sources of the language
+    with the smallest share need the most validation tokens for their training
+    tokens. A slightly larger fraction than their proportion fills their
+    validation split just before training, without reading far past either
+    budget.
     """
     for settings in (item, recipe["corpus"]):
         if "validation_fraction" in settings:
             return settings["validation_fraction"]
-    ratio = 2 * validation_budget(recipe, item) / corpus_tokens(item)
+    smallest = min(language_shares(recipe, item).values())
+    ratio = 100 / smallest * validation_budget(recipe, item) / corpus_tokens(item)
     return min(0.25, 1.25 * ratio / (1 + ratio))
 
 
-def source_targets(recipe, item, share):
+def language_shares(recipe, item):
+    """Each language's percentage of a corpus, the sum of its sources' shares."""
+    sources = sources_by_id(recipe)
+    shares = Counter()
+    for source_id, share in item["mix"].items():
+        shares[sources[source_id]["language"]] += share
+    return shares
+
+
+def source_targets(recipe, item, source_id):
+    """A source's training and held-out tokens in a corpus.
+
+    Every language holds out the same tokens, which its sources divide as
+    they divide its training tokens.
+    """
+    share = item["mix"][source_id]
+    language = sources_by_id(recipe)[source_id]["language"]
     return {
         "train": corpus_tokens(item) * share // 100,
-        "validation": validation_budget(recipe, item) * share // 50,
+        "validation": validation_budget(recipe, item)
+        * share
+        // language_shares(recipe, item)[language],
     }
 
 
@@ -1207,11 +1224,13 @@ def train_tokenizer(recipe, staging, stack, benchmarks_path):
     samples = {}
     # The vocabulary follows the first corpus that training reads from.
     first = next(item for item in streamed(recipe) if item["purpose"] != "evaluation")
+    shares = language_shares(recipe, first)
     for source_id, share in first["mix"].items():
         source = sources[source_id]
         stats = Counter()
         language = source["language"]
-        target = recipe["tokenizer"]["bytes_per_language"] * share // 50
+        # Each language's sample holds the same bytes, divided as the mix divides it.
+        target = recipe["tokenizer"]["bytes_per_language"] * share // shares[language]
         for text, _, _ in accepted_documents(
             source,
             recipe,
@@ -1280,9 +1299,9 @@ def source_parts(recipe):
     sources = sources_by_id(recipe)
     demands = {}
     for item in streamed(recipe):
-        for source_id, share in item["mix"].items():
+        for source_id in item["mix"]:
             demands.setdefault(source_id, {})[item["name"]] = source_targets(
-                recipe, item, share
+                recipe, item, source_id
             )
     parts = []
     for source_id, wanted in demands.items():
@@ -1529,8 +1548,8 @@ def certain_shortfalls(recipe, parts, finished, parts_root):
         f"{item['name']} {source_id} lacks at least "
         f"{target - reach[item['name'], source_id, split]:,} {split} tokens"
         for item in streamed(recipe)
-        for source_id, share in item["mix"].items()
-        for split, target in source_targets(recipe, item, share).items()
+        for source_id in item["mix"]
+        for split, target in source_targets(recipe, item, source_id).items()
         if reach[item["name"], source_id, split] < target
     ]
 
@@ -1620,7 +1639,7 @@ def write_corpus(
         for source_id, share in item["mix"].items():
             source = sources[source_id]
             language = source["language"]
-            targets = source_targets(recipe, item, share)
+            targets = source_targets(recipe, item, source_id)
             stats = Counter()
             shards = set()
             for part in parts:
@@ -1772,9 +1791,9 @@ def validate_corpus(recipe_path, workdir):
             raise ValueError("document provenance checksum does not match")
         if set(manifest["sources"]) != set(item["mix"]):
             raise ValueError("the corpus sources do not match the recipe")
-        for source_id, share in item["mix"].items():
+        for source_id in item["mix"]:
             saved = manifest["sources"][source_id]
-            targets = source_targets(recipe, item, share)
+            targets = source_targets(recipe, item, source_id)
             if (
                 any(
                     saved.get(field) != value

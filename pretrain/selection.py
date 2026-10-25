@@ -379,14 +379,14 @@ def choose_documents(recipe, item, ranked):
     sources = sources_by_id(recipe)
     chosen = set()
     statistics = {}
-    for source_id, share in item["mix"].items():
+    for source_id in item["mix"]:
         unscored, scores = ranked[sources[source_id]["language"]]
         order = [index for index, row in enumerate(unscored) if row["source"] == source_id]
         if item["select"]["method"] == "learnable":
             order.sort(key=lambda index: -scores[index])
         else:
             random.Random(f"{recipe['seed']}:{item['name']}:{source_id}").shuffle(order)
-        target = source_targets(recipe, item, share)["train"]
+        target = source_targets(recipe, item, source_id)["train"]
         tokens = documents = 0
         for index in order:
             if tokens >= target:
@@ -475,7 +475,7 @@ def write_selection(recipe, item, pool, ranked, summary, fingerprint, output):
             "sources": {
                 source_id: {
                     **pool.manifest["sources"][source_id],
-                    "targets": source_targets(recipe, item, share),
+                    "targets": source_targets(recipe, item, source_id),
                     "statistics": {
                         key: value
                         for key, value in pool.manifest["sources"][source_id][
@@ -485,7 +485,7 @@ def write_selection(recipe, item, pool, ranked, summary, fingerprint, output):
                     }
                     | statistics[source_id],
                 }
-                for source_id, share in item["mix"].items()
+                for source_id in item["mix"]
             },
             "documents": counts,
             "provenance": {
