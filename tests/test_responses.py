@@ -203,15 +203,13 @@ class ResponsesTests(unittest.TestCase):
             ]
         )
 
-        def scripted_logits(inputs):
-            logits = torch.full(
-                (1, inputs.shape[1], self.tokenizer.get_vocab_size()), -torch.inf
-            )
-            logits[0, -1, next(tokens)] = 1
+        def scripted_logits(window, start, caches):
+            logits = torch.full((self.tokenizer.get_vocab_size(),), -torch.inf)
+            logits[next(tokens)] = 1
             return logits
 
         return patch.object(
-            self.app.state.responses.backend.model, "forward", side_effect=scripted_logits
+            self.app.state.responses.backend.model, "cached_logits", side_effect=scripted_logits
         )
 
     def test_returns_reasoning_before_the_answer_when_asked_to_reason(self):
@@ -273,14 +271,12 @@ class ResponsesTests(unittest.TestCase):
             ]
         )
 
-        def scripted_logits(inputs):
-            logits = torch.full(
-                (1, inputs.shape[1], self.tokenizer.get_vocab_size()), -torch.inf
-            )
-            logits[0, -1, next(tokens)] = 1
+        def scripted_logits(window, start, caches):
+            logits = torch.full((self.tokenizer.get_vocab_size(),), -torch.inf)
+            logits[next(tokens)] = 1
             return logits
 
-        with patch.object(model, "forward", side_effect=scripted_logits):
+        with patch.object(model, "cached_logits", side_effect=scripted_logits):
             response = self.post(stream=True, max_output_tokens=16)
         self.assertEqual(response.status_code, 200)
         self.assertTrue(
@@ -386,17 +382,17 @@ class ResponsesTests(unittest.TestCase):
         """Serves health during generation and provides retry information when busy."""
         self.post()
         model = self.app.state.responses.backend.model
-        forward = model.forward
+        step = model.cached_logits
         started, release = threading.Event(), threading.Event()
 
-        def delayed(inputs):
+        def delayed(*arguments):
             started.set()
             if not release.wait(timeout=5):
                 raise TimeoutError("Generation was not released")
-            return forward(inputs)
+            return step(*arguments)
 
         with (
-            patch.object(model, "forward", side_effect=delayed),
+            patch.object(model, "cached_logits", side_effect=delayed),
             ThreadPoolExecutor(max_workers=1) as pool,
         ):
             pending = pool.submit(self.post)
@@ -566,17 +562,15 @@ class ResponsesTests(unittest.TestCase):
             [*self.tokenizer.encode("aaaa").ids, self.tokenizer.token_to_id("<|eos|>")]
         )
 
-        def scripted_logits(inputs):
-            logits = torch.full(
-                (1, inputs.shape[1], self.tokenizer.get_vocab_size()), -torch.inf
-            )
-            logits[0, -1, next(tokens)] = 1
+        def scripted_logits(window, start, caches):
+            logits = torch.full((self.tokenizer.get_vocab_size(),), -torch.inf)
+            logits[next(tokens)] = 1
             return logits
 
         with (
             patch.object(
                 app.state.responses.backend.model,
-                "forward",
+                "cached_logits",
                 side_effect=scripted_logits,
             ),
             sdk.responses.stream(
@@ -632,15 +626,15 @@ class ResponsesTests(unittest.TestCase):
         )
         model = app.state.responses.backend.model
         started, release = threading.Event(), threading.Event()
-        original = model.forward
+        original = model.cached_logits
 
-        def delayed(inputs):
+        def delayed(*arguments):
             started.set()
             if not release.wait(timeout=5):
                 raise TimeoutError("Generation was not released")
-            return original(inputs)
+            return original(*arguments)
 
-        with patch.object(model, "forward", side_effect=delayed):
+        with patch.object(model, "cached_logits", side_effect=delayed):
             stream = sdk.responses.create(
                 model="test-model",
                 input="hello",
@@ -680,7 +674,7 @@ class ResponsesTests(unittest.TestCase):
         self.post()
         model = self.app.state.responses.backend.model
         with patch.object(
-            model, "forward", side_effect=RuntimeError("Private backend details")
+            model, "cached_logits", side_effect=RuntimeError("Private backend details")
         ):
             response = self.post()
             self.assertEqual(response.status_code, 500)

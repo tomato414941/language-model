@@ -791,16 +791,27 @@ class LanguageModel(nn.Module):
         ends = {eos} if stops is None else set(stops)
         tokens = [bos, *tokenizer.encode(prompt, add_special_tokens=False).ids]
         generator = torch.Generator(device=device).manual_seed(seed)
+        context = self.config.context
+        caches, cached = None, 0
         was_training = self.training
         self.eval()
         try:
             for _ in range(max_new_tokens):
                 if stop_requested is not None and stop_requested():
                     break
-                window = torch.tensor([tokens[-self.config.context :]], device=device)
                 # Keep inference mode local to each step when a caller streams tokens.
                 with torch.inference_mode():
-                    logits = self(window)[0, -1].float()
+                    if caches is None or len(tokens) > context:
+                        # The window's keys, values and states are kept, so later
+                        # steps read only the newest token; past the context the
+                        # window slides and is read again.
+                        caches = [block.new_cache(context) for block in self.blocks]
+                        window = tokens[-context:]
+                        cached = 0
+                    else:
+                        window = tokens[cached:]
+                    logits = self.cached_logits(window, cached, caches).float()
+                    cached += len(window)
                     logits[bos] = -torch.inf
                     if temperature == 0:
                         token = logits.argmax().item()
@@ -824,6 +835,23 @@ class LanguageModel(nn.Module):
                 tokens.append(token)
         finally:
             self.train(was_training)
+
+    def cached_logits(self, tokens, start, caches):
+        """The next-token logits after `tokens`, which follow `start` cached positions.
+
+        The first call, at position 0, begins a document.
+        """
+        device = self.embedding.weight.device
+        steps = torch.arange(start + len(tokens), device=device)
+        queries = steps[start:]
+        mask = (steps <= queries[:, None])[None, None]
+        hidden = self.embedding(torch.tensor([tokens], device=device))
+        if self.position is not None:
+            hidden = hidden + self.position(queries[None])
+        starts = (queries == 0)[None] if start == 0 else None
+        for block, cache in zip(self.blocks, caches):
+            hidden, _ = block(hidden, queries[None], mask, cache, starts)
+        return F.linear(self.norm(hidden[0, -1]), self.embedding.weight)
 
     def continue_greedily(self, sequences, max_new_tokens, end, banned=(), finished=None):
         """Return each sequence's greedy continuation before `end`, decoding all at once."""

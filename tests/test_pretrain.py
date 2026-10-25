@@ -240,6 +240,32 @@ class PretrainingTests(unittest.TestCase):
                 model.continue_greedily(sequences, 20, eos, banned=[bos]), alone
             )
 
+    def test_一つの入力の生成は計算済みの部分を使い文脈を超えても計算し直したときと同じトークンを出す(self):
+        """一つの入力から生成するときは計算済みの部分を使い回し、文脈の長さを超えて窓がずれても、毎回計算し直したときと同じトークンを出す。"""
+        tokenizer = self.corpus.tokenizer
+        bos = tokenizer.token_to_id("<|bos|>")
+        prompt = "自然科学の文章"
+        for every in (None, 2):
+            torch.manual_seed(3)
+            config = ModelConfig(
+                width=24, heads=4, kv_heads=2, layers=4, context=32, architecture="llama",
+                qk_norm=True, attention_gate="headwise", document_start=bos, full_attention_every=every,
+            )
+            model = LanguageModel(258, config).eval()
+            with torch.no_grad():
+                for parameter in model.parameters():
+                    parameter.normal_(std=0.3)
+            sampled = list(model.sample_tokens(tokenizer, prompt, 60, temperature=0, top_k=0, stops=[]))
+            tokens = [bos, *tokenizer.encode(prompt, add_special_tokens=False).ids]
+            recomputed = []
+            with torch.no_grad():
+                for _ in range(60):
+                    logits = model(torch.tensor([tokens[-32:]]))[0, -1]
+                    logits[bos] = -torch.inf
+                    recomputed.append(logits.argmax().item())
+                    tokens.append(recomputed[-1])
+            self.assertEqual(sampled, recomputed)
+
     def test_終わったと判定された入力だけ生成を止める(self):
         """終わったと判定された入力の生成だけを止め、ほかの入力は同じトークンを生成し続ける。"""
         torch.manual_seed(3)
