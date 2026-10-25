@@ -500,14 +500,15 @@ def math_item(row):
 
 
 def tool_items(row):
-    # Each of the user's requests; the functions offered are documentation.
+    # Each of the user's requests; the functions offered are documentation. The
+    # leaderboard repeats an identifier, so the items are numbered by position.
     question = row["question"]
     # Requests come in turns of messages, or as one list of messages as SQL's do.
     turns = [question] if question and isinstance(question[0], dict) else question
     return [
-        {"id": f"{row['id']}:{turn}:{index}", "context": message["content"]}
-        for turn, messages in enumerate(turns)
-        for index, message in enumerate(messages)
+        {"context": message["content"]}
+        for messages in turns
+        for message in messages
         if message["role"] == "user"
     ]
 
@@ -608,10 +609,15 @@ def fetch_benchmarks(output):
                     raise ValueError(f"{name} source checksum does not match: {path}")
                 for index, row in enumerate(read_rows(task, path, data)):
                     converted = CONVERTERS[name](row)
-                    # A question asked in several messages gives an item for each.
-                    for item in converted if isinstance(converted, list) else [converted]:
+                    if not isinstance(converted, list):
                         # Sources without identifiers number questions by file and row.
-                        item.setdefault("id", f"{path}:{index}")
+                        converted.setdefault("id", f"{path}:{index}")
+                        items.append(converted)
+                        continue
+                    # A question asked in several messages gives an item for each,
+                    # numbered by its message when the source gives no identifier.
+                    for position, item in enumerate(converted):
+                        item.setdefault("id", f"{path}:{index}:{position}")
                         items.append(item)
             if len({item["id"] for item in items}) != len(items):
                 raise ValueError(f"{name} items need unique identifiers")
