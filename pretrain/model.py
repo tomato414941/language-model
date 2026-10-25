@@ -6,6 +6,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.attention.varlen import varlen_attn
+from torch.utils.checkpoint import checkpoint
 
 try:
     # Gated DeltaNet's GPU kernels, which the training extra installs.
@@ -440,6 +441,21 @@ class LlamaBlock(ModernBlock):
         return self.attention_output(attended.reshape(batch, length, width))
 
 
+def convolved(padded, owners, documents, weight):
+    """Mix each position with the CONVOLUTION - 1 before it in its document, then apply SiLU.
+
+    padded holds the CONVOLUTION - 1 earlier inputs before the positions, and
+    owners the document of each.
+    """
+    length = documents.shape[1]
+    mixed = 0.0
+    for back in range(CONVOLUTION):
+        begin = CONVOLUTION - 1 - back
+        same = (owners[:, begin : begin + length] == documents)[..., None]
+        mixed = mixed + padded[:, begin : begin + length] * same * weight[:, begin]
+    return F.silu(mixed)
+
+
 class DeltaBlock(ModernBlock):
     """Gated DeltaNet (Yang et al., ICLR 2025), laid out as in Qwen3-Next.
 
@@ -488,15 +504,15 @@ class DeltaBlock(ModernBlock):
             earlier = first.expand(batch, CONVOLUTION - 1)
         padded = torch.cat([history, inputs], 1)
         owners = torch.cat([earlier, documents], 1)
-        mixed = 0.0
-        for back in range(CONVOLUTION):
-            begin = CONVOLUTION - 1 - back
-            same = (owners[:, begin : begin + length] == documents)[..., None]
-            mixed = mixed + padded[:, begin : begin + length] * same * self.convolution[:, 0, begin]
+        weight = self.convolution[:, 0].to(inputs.dtype)
         if cache is not None:
             last = owners[:, -(CONVOLUTION - 1) :] == documents[:, -1:]
             cache.inputs = padded[:, -(CONVOLUTION - 1) :] * last[..., None]
-        return F.silu(mixed)
+        if torch.is_grad_enabled():
+            # Training recomputes the taps in the backward pass instead of
+            # keeping each one's product, several times the inputs in size.
+            return checkpoint(convolved, padded, owners, documents, weight, use_reentrant=False)
+        return convolved(padded, owners, documents, weight)
 
     def mix(self, normalized, positions, mask, cache, starts):
         batch, length, width = normalized.shape
