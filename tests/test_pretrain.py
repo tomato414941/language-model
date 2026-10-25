@@ -27,8 +27,10 @@ from pretrain.model import (
     Experts,
     LanguageModel,
     ModelConfig,
+    chunk_gated_delta_rule,
     chunked_delta_rule,
     document_bounds,
+    kernel_delta_rule,
     recurrent_delta_rule,
 )
 from pretrain.training import (
@@ -422,6 +424,42 @@ class PretrainingTests(unittest.TestCase):
         chunked = chunked_delta_rule(query, key, value, decay, beta, state)
         for expected, actual in zip(recurrent, chunked, strict=True):
             torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-4)
+
+    @unittest.skipUnless(
+        torch.cuda.is_available() and chunk_gated_delta_rule is not None,
+        "CUDA GPU and Gated DeltaNet kernels required",
+    )
+    def test_GPUでは差分規則を専用の計算で解きまとめて解いたときと同じ出力と状態と勾配を得る(self):
+        """GPUでは、ゲート付き差分規則を Gated DeltaNet の専用の計算で解き、文書の区切りと初めの状態を含めて、まとめて解いたときと同じ出力・最後の状態・勾配を得る。"""
+        torch.manual_seed(0)
+        batch, heads, length, width = 2, 4, 300, 64
+        query, key = (
+            torch.nn.functional.normalize(torch.randn(batch, length, heads, width, device="cuda"), dim=-1)
+            for _ in range(2)
+        )
+        value = torch.randn(batch, length, heads, width, device="cuda")
+        decay = -torch.rand(batch, length, heads, device="cuda") * 0.5
+        decay[:, 130] = RESET
+        beta = torch.rand(batch, length, heads, device="cuda")
+        state = torch.randn(batch, heads, width, width, device="cuda")
+        inputs = [query, key, value, decay, beta, state]
+        for tensor in inputs:
+            tensor.requires_grad_()
+        kernel = kernel_delta_rule(query, key, value, decay, beta, state, True)
+        outputs, final = chunked_delta_rule(
+            *(part.transpose(1, 2) for part in (query, key, value, decay, beta)), state
+        )
+        chunked = (outputs.transpose(1, 2), final)
+        for actual, expected in zip(kernel, chunked, strict=True):
+            torch.testing.assert_close(actual.float(), expected, rtol=2e-2, atol=2e-2)
+        gradients = [
+            torch.autograd.grad(
+                result[0].float().square().mean() + result[1].float().square().mean(), inputs
+            )
+            for result in (kernel, chunked)
+        ]
+        for actual, expected in zip(*gradients, strict=True):
+            torch.testing.assert_close(actual.float(), expected.float(), rtol=5e-2, atol=5e-3)
 
     def test_専門家の混合は各単語を点数の高い専門家に送り点数で混ぜる(self):
         """専門家の混合は、各単語を点数の高い専門家だけに送り、その出力を点数の比で混ぜ、偏りと点数の大きさを抑える損失を返す。"""

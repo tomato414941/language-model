@@ -7,6 +7,12 @@ from torch import nn
 from torch.nn import functional as F
 from torch.nn.attention.varlen import varlen_attn
 
+try:
+    # Gated DeltaNet's GPU kernels, which the training extra installs.
+    from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+except ImportError:
+    chunk_gated_delta_rule = None
+
 
 @dataclass(frozen=True)
 class ModelConfig:
@@ -256,6 +262,27 @@ def chunked_delta_rule(query, key, value, decay, beta, state=None):
     return outputs[:, :, :length], state
 
 
+@torch.compiler.disable
+def kernel_delta_rule(query, key, value, decay, beta, state=None, keep_state=False):
+    """The gated delta rule through Gated DeltaNet's GPU kernels.
+
+    It takes and gives what chunked_delta_rule does, with the positions before
+    the heads, and gives the final state only when asked to keep it.
+    """
+    query, key, value = (part.contiguous() for part in (query, key, value))
+    # The kernels take the write strength in the inputs' precision, and the
+    # decay and state in single precision, as Qwen3-Next passes them.
+    return chunk_gated_delta_rule(
+        query,
+        key,
+        value,
+        decay.float().contiguous(),
+        beta.to(query.dtype).contiguous(),
+        initial_state=state,
+        output_final_state=keep_state,
+    )
+
+
 class Experts(nn.Module):
     """Route each token to its highest-scoring experts and mix their outputs by score.
 
@@ -480,25 +507,31 @@ class DeltaBlock(ModernBlock):
         )
         mixed = self.convolve(self.query_key_value(normalized), documents, starts, cache)
         query, key, value = (
-            part.reshape(batch, length, self.heads, self.head_width).transpose(1, 2)
+            part.reshape(batch, length, self.heads, self.head_width)
             for part in mixed.chunk(3, dim=-1)
         )
         query, key = F.normalize(query, dim=-1), F.normalize(key, dim=-1)
-        beta = torch.sigmoid(self.write(normalized).float()).transpose(1, 2)
+        beta = torch.sigmoid(self.write(normalized).float())
         decay = -self.decay_rate.exp() * F.softplus(
             self.forget(normalized).float() + self.decay_step
         )
-        decay = decay.transpose(1, 2)
         if starts is not None:
             # A document's first position forgets the state before it.
-            decay = decay.masked_fill(starts[:, None, :], RESET)
-        rule = recurrent_delta_rule if length < CHUNK else chunked_delta_rule
-        outputs, state = rule(
-            query, key, value, decay, beta, None if cache is None else cache.state
-        )
+            decay = decay.masked_fill(starts[..., None], RESET)
+        state = None if cache is None else cache.state
+        if chunk_gated_delta_rule is not None and normalized.is_cuda and length >= CHUNK:
+            outputs, state = kernel_delta_rule(
+                query, key, value, decay, beta, state, cache is not None
+            )
+        else:
+            rule = recurrent_delta_rule if length < CHUNK else chunked_delta_rule
+            outputs, state = rule(
+                *(part.transpose(1, 2) for part in (query, key, value, decay, beta)), state
+            )
+            outputs = outputs.transpose(1, 2)
         if cache is not None:
             cache.state = state
-        outputs = self.output_norm(outputs.transpose(1, 2).to(normalized.dtype))
+        outputs = self.output_norm(outputs.to(normalized.dtype))
         gate = F.silu(self.output_gate(normalized)).view(batch, length, self.heads, -1)
         return self.linear_output((outputs * gate).reshape(batch, length, width))
 
