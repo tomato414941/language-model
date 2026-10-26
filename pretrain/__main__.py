@@ -255,6 +255,15 @@ def main(argv=None):
     benchmark.add_argument("--batch-tokens", type=int, default=4096)
     benchmark.add_argument("--threads", type=int, default=4)
     benchmark.add_argument(
+        "--passkey-lengths",
+        nargs="+",
+        type=int,
+        help="長い文章に隠した番号を答えられるかも、このトークン数の入力で測る",
+    )
+    benchmark.add_argument(
+        "--passkey-samples", type=int, default=50, help="言語と長さごとに隠す番号の数"
+    )
+    benchmark.add_argument(
         "--output", type=Path, required=True, help="問題ごとの記録を含む結果のJSONファイル"
     )
     hub_benchmark = commands.add_parser(
@@ -562,6 +571,20 @@ def main(argv=None):
                         args.tasks,
                         args.limit,
                     )
+                if args.passkey_lengths:
+                    from .passkey import passkey_accuracy
+
+                    result["passkey"] = {
+                        "samples": args.passkey_samples,
+                        "accuracy": passkey_accuracy(
+                            model,
+                            tokenizer,
+                            args.passkey_lengths,
+                            args.passkey_samples,
+                            device,
+                            precision,
+                        ),
+                    }
                 result["checkpoint"] = {
                     "checkpoint": str(args.checkpoint),
                     "sha256": file_digest(args.checkpoint),

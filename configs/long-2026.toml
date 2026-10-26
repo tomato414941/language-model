@@ -1,0 +1,58 @@
+# Lengthen the 2026 bilingual model's context to 32,768 tokens after
+# pretraining, as Qwen2.5 and SmolLM3 do. Following ProLong, about two thirds
+# of the tokens come from documents longer than pretraining's windows, books
+# and articles among them, and the rest from the short, high-quality sources
+# of the decay, so short-text skills stay. Documents the pretraining corpora
+# hold are left out, and instruction tuning then reads conversations in the
+# longer windows.
+training_config = "model-2026-long.toml"
+sources = "sources.toml"
+seed = 42
+initialize_from = "runs/pretrain-2026-decay/last.pt"
+
+[tokenizer]
+vocabulary_size = 32768
+reuse_from = "data/pretrain-2026/tokenizer/tokenizer.json"
+reuse_sha256 = "3e327d6813f067cabd746ced8d73938c23ab1198e18a0af713df9a8a16a590ea"
+
+[corpus]
+validation_tokens_per_language = 2_000_000
+minimum_characters = 300
+maximum_characters = 100000
+excluded_corpora = [
+    { path = "data/pretrain-2026/corpus-stable", documents_sha256 = "863c739f4b838baa07bded17fbea563ebd372bc80588ed8c72c56ba33f968af0" },
+    { path = "data/pretrain-2026/corpus-decay", documents_sha256 = "126a61bf07e36aa9485284e3cbdb4030ff6376787288162ae67bb38351bbf9bf" },
+]
+
+[evaluation]
+framework = "lm-eval"
+version = "0.4.13"
+base_tasks = [
+    "hellaswag", "arc_easy", "ja_leaderboard_jcommonsenseqa", "sciq", "piqa",
+    "lambada_openai", "blimp", "kuci", "ja_leaderboard_xwinograd", "ja_leaderboard_jnli",
+    "mmlu_continuation", "jmmlu", "arc_challenge", "gsm8k", "ja_leaderboard_mgsm",
+    "humaneval", "mbpp", "jhumaneval", "ja_leaderboard_jsquad",
+]
+instruction_tasks = ["ifeval"]
+# Recall of a number hidden in filler text, from pretraining's window to the
+# longer one.
+passkey_lengths = [4096, 8192, 16384, 32768]
+
+# Pretraining's instruction tuning, with one longer window per micro-batch.
+[sft]
+epochs = 2
+learning_rate = 0.00016
+min_learning_rate = 0.000016
+batch_size = 1
+accumulation_steps = 8
+optimizer = "muon"
+sampling = "sequential"
+validation_conversations_per_language = 1000
+max_reply_tokens = 4096
+
+# Long documents take 64% of the tokens and short ones 36%, the split ProLong
+# found best; the few books in the public domain take a small share.
+[[corpora]]
+name = "long"
+training_tokens = 524_288_000
+mix = { ja-climblab-long = 21, ja-wiki-long = 8, ja-aozora-long = 3, ja-climblab-top = 10, ja-general-llmjp = 4, ja-reasoning-llmjp = 4, en-web-long = 12, en-dclm-long = 6, en-wiki-long = 8, en-code-stack-edu-long = 6, en-edu-top = 10, en-code-swallow = 4, en-math-swallow-textbook = 2, en-reasoning-openmath = 2 }

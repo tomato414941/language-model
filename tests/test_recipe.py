@@ -230,6 +230,23 @@ class RecipeTests(unittest.TestCase):
             )
         self.assertEqual(json.loads(output.getvalue())["nominal_training_tokens"], 2000)
 
+    def test_パスキーの長さを各評価の手順に渡し文脈を超える長さを拒否する(self):
+        """評価にパスキーの長さを書くと、事前学習と指示学習の評価の手順に渡し、モデルの文脈を超える長さは拒否する。"""
+        text = self.recipe_path.read_text()
+        self.recipe_path.write_text(
+            text.replace('instruction_tasks = ["ifeval"]', 'instruction_tasks = ["ifeval"]\npasskey_lengths = [64, 128]')
+        )
+        plan = inspect_recipe(self.recipe_path, self.root)
+        benchmarks = [command for command in plan["commands"] if command[3] == "benchmark"]
+        self.assertEqual(len(benchmarks), 2)
+        for command in benchmarks:
+            self.assertEqual(command[command.index("--passkey-lengths") + 1 : command.index("--tasks")], ["64", "128"])
+        self.recipe_path.write_text(
+            text.replace('instruction_tasks = ["ifeval"]', 'instruction_tasks = ["ifeval"]\npasskey_lengths = [256]')
+        )
+        with self.assertRaisesRegex(ValueError, "pass key"):
+            read_recipe(self.recipe_path)
+
     def test_縮小した学習計画を既定として学習量と保存先を表示する(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

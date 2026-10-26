@@ -1,0 +1,39 @@
+# The 2026 model with its context lengthened from 8,192 to 32,768 tokens after
+# pretraining. The rotary base rises from 10,000 to 1,000,000, as Qwen2.5's
+# does for the same windows, so the slowest rotation still spans them; the
+# weights carry over unchanged. A step reads as many tokens as pretraining's,
+# and the rate warms up to where pretraining's decay ended and falls tenfold,
+# as instruction tuning's does.
+[model]
+architecture = "llama"
+width = 1024
+heads = 16
+kv_heads = 4
+layers = 24
+intermediate_size = 2752
+context = 32768
+rope_theta = 1000000.0
+qk_norm = true
+attention_gate = "headwise"
+# The tokenizer's BOS, which begins each document.
+document_start = 0
+
+[training]
+# 8 windows of 32,768 tokens per update: 262,144 tokens.
+steps = 2000
+batch_size = 1
+accumulation_steps = 8
+learning_rate = 0.00016
+min_learning_rate = 0.000016
+warmup_steps = 100
+weight_decay = 0.1
+gradient_clip = 1.0
+eval_every = 250
+# About every 7 minutes on an A100.
+save_every = 50
+eval_batches = 16
+log_every = 10
+seed = 42
+schedule = "cosine"
+sampling = "sequential"
+optimizer = "muon"

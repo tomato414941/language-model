@@ -402,3 +402,96 @@ license = "Apache-2.0, ODC-By-1.0, CC-BY-4.0 or CC-BY-SA-4.0 by component"
 terms_url = "https://gitlab.llm-jp.nii.ac.jp/datasets/llm-jp-corpus-midtraining-v1/-/blob/main/README.md"
 # A question with its answer is often shorter than a web page worth keeping.
 minimum_characters = 100
+
+# Documents longer than the 2026 model's pretraining windows of 8,192 tokens,
+# about 14,000 characters of Japanese and 32,000 of English, for the phase
+# that lengthens its context. The few past about four of its longer windows
+# would take too much of that phase on their own.
+[[sources]]
+id = "ja-climblab-long"
+language = "ja"
+repository = "KantaHayashiAI/ClimbLab-Ja"
+revision = "2ed8cdb4a280e5c8875494f30d871db3406922ea"
+prefix = "train-"
+license = "ODC-By-1.0; source texts CC-BY-4.0, CC-BY-SA-3.0 or ODC-By-1.0"
+terms_url = "https://huggingface.co/datasets/KantaHayashiAI/ClimbLab-Ja/blob/main/LICENSES.md"
+minimum = { quality = 4, advertisement = 3 }
+any_minimum = { informational_value = 4, educational_value = 4, cultural_value = 4, creative_value = 4 }
+minimum_characters = 14000
+maximum_characters = 230000
+
+[[sources]]
+id = "ja-wiki-long"
+language = "ja"
+repository = "HuggingFaceFW/finewiki"
+revision = "8bd13e72e6a002407649b3e898535f42ceb1aeb9"
+prefix = "data/jawiki/"
+license = "CC-BY-SA-4.0"
+terms_url = "https://dumps.wikimedia.org/legal.html"
+equal = { in_language = "ja" }
+minimum_characters = 14000
+maximum_characters = 230000
+
+[[sources]]
+id = "ja-aozora-long"
+language = "ja"
+repository = "globis-university/aozorabunko-clean"
+revision = "42a9c9c0f1d67e6a5554d9bea4201973dc9b049c"
+prefix = "aozorabunko-dedupe-clean"
+format = "jsonl.gz"
+license = "Public domain works; dataset CC-BY-4.0"
+terms_url = "https://huggingface.co/datasets/globis-university/aozorabunko-clean"
+# Modern orthography only, and only works and people without copyright.
+equal = { "meta.文字遣い種別" = "新字新仮名", "meta.作品著作権フラグ" = "なし", "meta.人物著作権フラグ" = "なし" }
+minimum_characters = 14000
+maximum_characters = 230000
+
+[[sources]]
+id = "en-web-long"
+language = "en"
+repository = "HuggingFaceFW/fineweb-edu"
+revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+prefix = "data/"
+license = "ODC-By-1.0"
+terms_url = "https://commoncrawl.org/terms-of-use"
+equal = { language = "en" }
+minimum = { language_score = 0.8, score = 3.0 }
+minimum_characters = 32000
+maximum_characters = 520000
+
+[[sources]]
+id = "en-dclm-long"
+language = "en"
+repository = "mlfoundations/dclm-baseline-1.0"
+revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+prefix = "global-shard_"
+format = "jsonl.zst"
+license = "CC-BY-4.0"
+terms_url = "https://commoncrawl.org/terms-of-use"
+minimum = { "language_id_whole_page_fasttext.en" = 0.8 }
+minimum_characters = 32000
+maximum_characters = 520000
+
+[[sources]]
+id = "en-wiki-long"
+language = "en"
+repository = "HuggingFaceFW/finewiki"
+revision = "8bd13e72e6a002407649b3e898535f42ceb1aeb9"
+prefix = "data/enwiki/"
+license = "CC-BY-SA-4.0"
+terms_url = "https://dumps.wikimedia.org/legal.html"
+equal = { in_language = "en" }
+minimum_characters = 32000
+maximum_characters = 520000
+
+[[sources]]
+id = "en-code-stack-edu-long"
+language = "en"
+repository = "common-pile/comma_v0.1_training_dataset"
+revision = "5afc546db324e7f39f297ba757c9a60547151e7c"
+prefix = "stackv2_edu/"
+format = "jsonl.gz"
+license = "Openly licensed code only, as the Common Pile v0.1 selected it"
+terms_url = "https://huggingface.co/datasets/common-pile/stackv2_edu_filtered"
+minimum_characters = 32000
+maximum_characters = 520000

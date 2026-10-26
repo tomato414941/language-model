@@ -239,6 +239,9 @@ class PretrainingTests(unittest.TestCase):
             self.assertEqual(
                 model.continue_greedily(sequences, 20, eos, banned=[bos]), alone
             )
+            self.assertEqual(
+                model.continue_greedily(sequences[:1], 20, eos, banned=[bos]), alone[:1]
+            )
 
     def test_一つの入力の生成は計算済みの部分を使い文脈を超えても計算し直したときと同じトークンを出す(self):
         """一つの入力から生成するときは計算済みの部分を使い回し、文脈の長さを超えて窓がずれても、毎回計算し直したときと同じトークンを出す。"""

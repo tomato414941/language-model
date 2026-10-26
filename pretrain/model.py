@@ -848,7 +848,9 @@ class LanguageModel(nn.Module):
         device = self.embedding.weight.device
         steps = torch.arange(start + len(tokens), device=device)
         queries = steps[start:]
-        mask = (steps <= queries[:, None])[None, None]
+        # A first call reads its tokens causally, without a dense mask, which
+        # keeps a long prompt's attention on the memory-efficient kernels.
+        mask = None if start == 0 else (steps <= queries[:, None])[None, None]
         hidden = self.embedding(torch.tensor([tokens], device=device))
         if self.position is not None:
             hidden = hidden + self.position(queries[None])
@@ -907,6 +909,7 @@ class LanguageModel(nn.Module):
         # Each row's first real position begins its document, so the padding
         # before it leaves nothing in the recurrent layers' states.
         starts = steps[None, :longest] == padding[:, None]
+        padded = bool(padding.any())
         continuations = [[] for _ in sequences]
         active = [True] * len(sequences)
         start = 0
@@ -916,17 +919,21 @@ class LanguageModel(nn.Module):
             for step in range(max_new_tokens):
                 stop = start + tokens.shape[1]
                 queries, keys = steps[start:stop], steps[:stop]
-                # Padding positions attend to themselves so that every row stays finite.
-                mask = ((keys <= queries[:, None]) & real[:, None, :stop]) | (
-                    keys == queries[:, None]
-                )
+                if step == 0 and not padded:
+                    # Prompts of one length are read causally, without a dense mask.
+                    mask = None
+                else:
+                    # Padding positions attend to themselves so that every row stays finite.
+                    mask = (
+                        ((keys <= queries[:, None]) & real[:, None, :stop]) | (keys == queries[:, None])
+                    )[:, None]
                 positions = (queries - padding[:, None]).clamp(min=0)
                 hidden = self.embedding(tokens)
                 if self.position is not None:
                     hidden = hidden + self.position(positions)
                 for block, cache in zip(self.blocks, caches):
                     hidden, _ = block(
-                        hidden, positions, mask[:, None], cache, starts if step == 0 else None
+                        hidden, positions, mask, cache, starts if step == 0 else None
                     )
                 logits = F.linear(self.norm(hidden[:, -1]), self.embedding.weight)
                 logits = logits.float()
