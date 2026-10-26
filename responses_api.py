@@ -68,6 +68,8 @@ class TextPart(InputSchema):
     text: str
     annotations: list = Field(default_factory=list, max_length=0)
     logprobs: list = Field(default_factory=list, max_length=0)
+    # The SDK sends back the parsed value of a streamed response's text, null without a structured format.
+    parsed: None = None
 
 
 class InputMessage(InputSchema):
@@ -89,6 +91,40 @@ class InputReasoning(InputSchema):
     status: Literal["in_progress", "completed", "incomplete"] | None = None
 
 
+class InputFunctionCall(InputSchema):
+    """A tool call from an earlier response, which joins the assistant turn it follows."""
+
+    type: Literal["function_call"]
+    call_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    arguments: str
+    id: str | None = None
+    status: Literal["in_progress", "completed", "incomplete"] | None = None
+
+
+class InputFunctionCallOutput(InputSchema):
+    """What an earlier tool call returned."""
+
+    type: Literal["function_call_output"]
+    call_id: str = Field(min_length=1)
+    output: str | list[TextPart]
+    id: str | None = None
+    status: Literal["in_progress", "completed", "incomplete"] | None = None
+
+
+class FunctionTool(InputSchema):
+    type: Literal["function"]
+    name: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    description: str | None = None
+    parameters: dict | None = None
+    strict: bool | None = None
+
+    def definition(self):
+        """The tool as the system turn lists it: its name, description and arguments' schema."""
+        fields = (("name", self.name), ("description", self.description), ("parameters", self.parameters))
+        return {key: value for key, value in fields if value is not None}
+
+
 class ReasoningOptions(InputSchema):
     effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
     summary: Literal["auto", "concise", "detailed"] | None = None
@@ -104,7 +140,7 @@ class TextOptions(InputSchema):
 
 class ResponseRequest(InputSchema):
     model: str = Field(min_length=1, max_length=128)
-    input: str | list[InputMessage | InputReasoning]
+    input: str | list[InputMessage | InputReasoning | InputFunctionCall | InputFunctionCallOutput]
     instructions: str | None = None
     max_output_tokens: int | None = Field(default=None, ge=1)
     temperature: float | None = Field(default=1.0, ge=0, le=2, allow_inf_nan=False)
@@ -122,7 +158,7 @@ class ResponseRequest(InputSchema):
         | None
     ) = Field(default=None, max_length=16)
     text: TextOptions | None = None
-    tools: list[dict] | None = None
+    tools: list[FunctionTool] | None = None
     tool_choice: Literal["auto", "none"] | None = "auto"
     parallel_tool_calls: bool | None = True
     previous_response_id: str | None = None
@@ -135,8 +171,12 @@ class ResponseRequest(InputSchema):
         """Whether the reply reasons before it answers, as low or higher effort asks."""
         return self.reasoning is not None and self.reasoning.effort in ("low", "medium", "high")
 
+    def callable_tools(self):
+        """The names of the tools the reply may call, none when tool_choice is none."""
+        return [tool.name for tool in self.tools or ()] if self.tool_choice != "none" else []
+
     def prompt(self):
-        for name in ("store", "previous_response_id", "background", "tools", "include"):
+        for name in ("store", "previous_response_id", "background", "include"):
             if getattr(self, name):
                 raise APIError(
                     "This server supports stateless text generation; "
@@ -145,7 +185,10 @@ class ResponseRequest(InputSchema):
                     name,
                     "unsupported_parameter",
                 )
-        messages = []
+        tools = self.tools or []
+        if len({tool.name for tool in tools}) < len(tools):
+            raise APIError("Give each tool a different name.", "tools")
+        messages, calls = [], set()
         if self.instructions:
             messages.append({"role": "system", "content": self.instructions})
         inputs = (
@@ -155,6 +198,35 @@ class ResponseRequest(InputSchema):
         )
         for index, message in enumerate(inputs):
             if isinstance(message, InputReasoning):
+                continue
+            if isinstance(message, InputFunctionCall):
+                try:
+                    arguments = json.loads(message.arguments)
+                except ValueError:
+                    arguments = None
+                if not isinstance(arguments, dict):
+                    raise APIError(
+                        "Give a function call's arguments as a JSON object.",
+                        "input." + str(index) + ".arguments",
+                    )
+                if not messages or messages[-1]["role"] != "assistant":
+                    messages.append({"role": "assistant", "content": ""})
+                messages[-1].setdefault("tool_calls", []).append({"name": message.name, "arguments": arguments})
+                calls.add(message.call_id)
+                continue
+            if isinstance(message, InputFunctionCallOutput):
+                if message.call_id not in calls:
+                    raise APIError(
+                        "No function call before this output has its call_id.",
+                        "input." + str(index) + ".call_id",
+                    )
+                if isinstance(message.output, str):
+                    output = message.output
+                elif any(part.type != "input_text" for part in message.output):
+                    raise APIError("Use input_text for function call outputs.", "input." + str(index) + ".output")
+                else:
+                    output = "".join(part.text for part in message.output)
+                messages.append({"role": "tool", "content": output})
                 continue
             if isinstance(message.content, str):
                 content = message.content
@@ -172,6 +244,11 @@ class ResponseRequest(InputSchema):
                     "content": content,
                 }
             )
+        if tools:
+            # The system turn that opens the conversation lists the tools, as in training.
+            if not messages or messages[0]["role"] != "system":
+                messages.insert(0, {"role": "system", "content": ""})
+            messages[0]["tools"] = [tool.definition() for tool in tools]
         return chat_prompt(messages, self.reasons())
 
 
@@ -203,6 +280,15 @@ class OutputReasoning(BaseModel):
     content: list[ReasoningText] = Field(default_factory=list)
 
 
+class OutputFunctionCall(BaseModel):
+    id: str
+    type: Literal["function_call"] = "function_call"
+    call_id: str
+    name: str
+    arguments: str = ""
+    status: Literal["in_progress", "completed", "incomplete"]
+
+
 class Usage(BaseModel):
     input_tokens: int
     output_tokens: int
@@ -227,7 +313,7 @@ class Response(BaseModel):
     model_revision: str
     instructions: str | None = None
     max_output_tokens: int
-    output: list[OutputReasoning | OutputMessage] = Field(default_factory=list)
+    output: list[OutputReasoning | OutputMessage | OutputFunctionCall] = Field(default_factory=list)
     usage: Usage | None = None
     store: Literal[False] = False
     background: Literal[False] = False
@@ -362,7 +448,15 @@ class ResponseService:
             )
             top_p = payload.top_p if payload.top_p is not None else 1.0
             try:
-                generation = self.backend.start(prompt, limit, temperature, top_p, payload.reasons())
+                generation = self.backend.start(
+                    prompt,
+                    limit,
+                    temperature,
+                    top_p,
+                    payload.reasons(),
+                    payload.callable_tools(),
+                    payload.parallel_tool_calls is False,
+                )
             except ValueError as error:
                 raise APIError(str(error), "input", "context_length_exceeded") from None
             response = Response(
@@ -375,6 +469,7 @@ class ResponseService:
                 temperature=temperature,
                 top_p=top_p,
                 metadata=payload.metadata or {},
+                tools=[tool.model_dump() for tool in payload.tools or ()],
                 tool_choice=payload.tool_choice or "auto",
                 parallel_tool_calls=payload.parallel_tool_calls is not False,
                 reasoning=(payload.reasoning or ReasoningOptions()).model_dump(),
@@ -388,28 +483,89 @@ class ResponseService:
 class ResponseSession:
     def __init__(self, generation, response, capacity):
         self.generation, self.response, self.capacity = generation, response, capacity
-        self.message = OutputMessage(
-            id="msg_" + secrets.token_hex(16), status="in_progress"
-        )
-        # A reply that reasons first returns its reasoning as an item before the message.
+        # A reply that reasons first returns its reasoning as an item before the others.
         self.thought = (
             OutputReasoning(id="rs_" + secrets.token_hex(16), status="in_progress")
             if generation.reasoning
             else None
         )
+        self.items = [] if self.thought is None else [self.thought]
+        self.current = self.thought
         self.closed = False
 
-    def close_thought(self, status):
-        self.thought.status = status
-        self.thought.content = [ReasoningText(text=self.generation.reasoning_text)]
+    def updates(self):
+        """Fill the output items as the reply is generated, yielding the stream's events for them.
 
-    def record(self, status):
-        """Put the generated parts in the response's output and count its tokens."""
-        self.message.status = status
-        self.message.content = [OutputText(text=self.generation.text)]
+        The reply's text goes to a message opened when the text starts. Each
+        tool call is an item of its own, and text after a call opens another
+        message. A reply with neither still returns an empty message.
+        """
         if self.thought is not None:
-            self.close_thought("completed" if self.generation.text or self.generation.finished else status)
-        self.response.output = [item for item in (self.thought, self.message) if item is not None]
+            yield "response.output_item.added", {"output_index": 0, "item": self.thought.model_dump()}
+        for phase, delta in self.generation:
+            if phase == "reasoning":
+                yield "response.reasoning_text.delta", {**self.address(self.thought), "delta": delta}
+            elif phase == "text":
+                if not isinstance(self.current, OutputMessage):
+                    yield from self.close_item("completed")
+                    yield from self.open_message()
+                self.current.content[0].text += delta
+                yield "response.output_text.delta", {**self.address(self.current), "delta": delta, "logprobs": []}
+            else:
+                yield from self.close_item("completed")
+                yield from self.add_call(delta)
+        status = "completed" if self.generation.finished else "incomplete"
+        yield from self.close_item(status)
+        if all(item is self.thought for item in self.items):
+            yield from self.open_message()
+            yield from self.close_item(status)
+
+    def address(self, item):
+        return {"item_id": item.id, "output_index": self.items.index(item), "content_index": 0}
+
+    def add(self, item):
+        self.items.append(item)
+        return {"output_index": len(self.items) - 1, "item": item.model_dump()}
+
+    def open_message(self):
+        self.current = OutputMessage(id="msg_" + secrets.token_hex(16), status="in_progress")
+        yield "response.output_item.added", self.add(self.current)
+        self.current.content = [OutputText()]
+        yield "response.content_part.added", {**self.address(self.current), "part": OutputText().model_dump()}
+
+    def close_item(self, status):
+        """Finish the item the reply is writing, if any."""
+        item, self.current = self.current, None
+        if item is None:
+            return
+        item.status = status
+        if item is self.thought:
+            item.content = [ReasoningText(text=self.generation.reasoning_text)]
+            yield "response.reasoning_text.done", {**self.address(item), "text": self.generation.reasoning_text}
+        else:
+            yield "response.output_text.done", {**self.address(item), "text": item.content[0].text, "logprobs": []}
+            yield "response.content_part.done", {**self.address(item), "part": item.content[0].model_dump()}
+        yield "response.output_item.done", {"output_index": self.items.index(item), "item": item.model_dump()}
+
+    def add_call(self, call):
+        item = OutputFunctionCall(
+            id="fc_" + secrets.token_hex(16),
+            call_id="call_" + secrets.token_hex(16),
+            name=call["name"],
+            status="in_progress",
+        )
+        added = self.add(item)
+        address = {"item_id": item.id, "output_index": added["output_index"]}
+        yield "response.output_item.added", added
+        arguments = json.dumps(call["arguments"], ensure_ascii=False)
+        yield "response.function_call_arguments.delta", {**address, "delta": arguments}
+        item.arguments, item.status = arguments, "completed"
+        yield "response.function_call_arguments.done", {**address, "arguments": arguments}
+        yield "response.output_item.done", {"output_index": address["output_index"], "item": item.model_dump()}
+
+    def record(self):
+        """Put the output items in the response and count its tokens."""
+        self.response.output = list(self.items)
         self.response.usage = Usage(
             input_tokens=self.generation.input_tokens,
             output_tokens=self.generation.output_tokens,
@@ -419,7 +575,7 @@ class ResponseSession:
 
     def finish(self):
         status = "completed" if self.generation.finished else "incomplete"
-        self.record(status)
+        self.record()
         self.response.status = status
         self.response.completed_at = (
             int(time.time()) if self.generation.finished else None
@@ -429,7 +585,12 @@ class ResponseSession:
         return self.response
 
     def fail(self):
-        self.record("incomplete")
+        for item in self.items:
+            if item.status == "in_progress":
+                item.status = "incomplete"
+        if self.thought is not None:
+            self.thought.content = [ReasoningText(text=self.generation.reasoning_text)]
+        self.record()
         self.response.status = "failed"
         self.response.error = {
             "code": "server_error",
@@ -460,86 +621,19 @@ class ResponseSession:
                 + "\n\n"
             )
 
-        index = 0 if self.thought is None else 1
-        address = {"item_id": self.message.id, "output_index": index, "content_index": 0}
-
-        def open_message():
-            yield event(
-                "response.output_item.added",
-                output_index=index,
-                item=self.message.model_dump(),
-            )
-            yield event(
-                "response.content_part.added", **address, part=OutputText().model_dump()
-            )
-
-        def thought_done():
-            thinking = {"item_id": self.thought.id, "output_index": 0, "content_index": 0}
-            yield event(
-                "response.reasoning_text.done", **thinking, text=self.generation.reasoning_text
-            )
-            yield event(
-                "response.output_item.done", output_index=0, item=self.thought.model_dump()
-            )
-
         try:
             for kind in ("response.created", "response.in_progress"):
                 yield event(kind, response=self.response.model_dump())
-            if self.thought is None:
-                for line in open_message():
-                    yield line
-            else:
-                yield event(
-                    "response.output_item.added",
-                    output_index=0,
-                    item=self.thought.model_dump(),
-                )
-            answering = self.thought is None
-            iterator = iter(self.generation)
+            updates = self.updates()
             sentinel = object()
             while True:
                 # Shield an active model step so cancellation cannot race with closing it.
-                item = await anyio.to_thread.run_sync(next, iterator, sentinel)
-                if item is sentinel:
+                update = await anyio.to_thread.run_sync(next, updates, sentinel)
+                if update is sentinel:
                     break
-                phase, delta = item
-                if phase == "reasoning":
-                    yield event(
-                        "response.reasoning_text.delta",
-                        item_id=self.thought.id,
-                        output_index=0,
-                        content_index=0,
-                        delta=delta,
-                    )
-                    continue
-                if not answering:
-                    self.close_thought("completed")
-                    for line in (*thought_done(), *open_message()):
-                        yield line
-                    answering = True
-                yield event(
-                    "response.output_text.delta", **address, delta=delta, logprobs=[]
-                )
+                kind, fields = update
+                yield event(kind, **fields)
             response = self.finish()
-            if not answering:
-                for line in (*thought_done(), *open_message()):
-                    yield line
-            yield event(
-                "response.output_text.done",
-                **address,
-                text=self.generation.text,
-                logprobs=[],
-            )
-            yield event(
-                "response.content_part.done",
-                **address,
-                part=self.message.content[0].model_dump(),
-            )
-            yield event(
-                "response.output_item.done",
-                output_index=index,
-                item=self.message.model_dump(),
-            )
             yield event("response." + response.status, response=response.model_dump())
         except Exception:  # noqa: BLE001 - Finish the SSE protocol on a backend failure.
             yield event("response.failed", response=self.fail().model_dump())
@@ -586,7 +680,7 @@ def install_routes(app: FastAPI, settings=None):
         response_model=Response,
         dependencies=authentication,
         summary="Create a text response",
-        description="Stateless text generation with JSON or Responses SSE events. Supports string inputs, text messages and instructions. Use store=false. Images, tools and stored conversations are not supported.",
+        description="Stateless text generation with JSON or Responses SSE events. Supports string inputs, text messages, instructions and function tools. Use store=false. Images, built-in tools and stored conversations are not supported.",
         openapi_extra={
             "requestBody": {
                 "content": {
@@ -624,7 +718,7 @@ def install_routes(app: FastAPI, settings=None):
                 background=BackgroundTask(session.close),
             )
         try:
-            for _ in session.generation:
+            for _ in session.updates():
                 pass
             return JSONResponse(
                 session.finish().model_dump(),

@@ -15,10 +15,18 @@ import uvicorn
 from fastapi.testclient import TestClient
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 
-from pretrain.conversation import THINK_END, TURN_END, chat_prompt
+from pretrain.conversation import CALL_END, CALL_START, THINK_END, TURN_END, chat_prompt
 from pretrain.model import LanguageModel, ModelConfig
 from responses_api import ModelSettings
 from server import create_app
+
+WEATHER = {
+    "type": "function",
+    "name": "weather",
+    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+}
+NOW = {"type": "function", "name": "now"}
+WEATHER_CALL = '{"name": "weather", "arguments": {"city": "東京"}}'
 
 
 class ResponsesTests(unittest.TestCase):
@@ -65,7 +73,7 @@ class ResponsesTests(unittest.TestCase):
             self.checkpoint,
         )
         self.settings = ModelSettings(
-            model_id="test-model", checkpoint=self.checkpoint, max_output_tokens=16
+            model_id="test-model", checkpoint=self.checkpoint, max_output_tokens=96
         )
         self.app = create_app(response_settings=self.settings)
         self.client = TestClient(self.app)
@@ -189,7 +197,7 @@ class ResponsesTests(unittest.TestCase):
         self.assertIsNone(response["incomplete_details"])
         self.assertEqual(response["usage"]["output_tokens"], 1)
 
-    def scripted(self, *pieces):
+    def scripted(self, *pieces, app=None):
         """Make the model emit these texts and reserved tokens, one token per step."""
         tokens = iter(
             [
@@ -209,7 +217,7 @@ class ResponsesTests(unittest.TestCase):
             return logits
 
         return patch.object(
-            self.app.state.responses.backend.model, "cached_logits", side_effect=scripted_logits
+            (app or self.app).state.responses.backend.model, "cached_logits", side_effect=scripted_logits
         )
 
     def test_returns_reasoning_before_the_answer_when_asked_to_reason(self):
@@ -259,6 +267,85 @@ class ResponsesTests(unittest.TestCase):
             final["usage"]["input_tokens"],
             1 + len(self.tokenizer.encode(chat_prompt(history, reasoning=True)).ids),
         )
+
+    def test_lists_tools_in_the_system_turn_and_returns_calls_as_items(self):
+        """渡した道具をシステムの発言に並べ、モデルの呼び出しを、名前と引数の JSON 文字列を持つ項目で返す。"""
+        self.post()
+        with self.scripted(CALL_START, WEATHER_CALL, CALL_END, TURN_END):
+            response = self.post(input="天気は？", tools=[WEATHER], max_output_tokens=64).json()
+        self.assertEqual(response["status"], "completed")
+        [call] = response["output"]
+        self.assertEqual((call["type"], call["name"], call["status"]), ("function_call", "weather", "completed"))
+        self.assertEqual(json.loads(call["arguments"]), {"city": "東京"})
+        self.assertTrue(call["call_id"].startswith("call_"))
+        self.assertEqual(response["tools"][0]["name"], "weather")
+        tools = [{"name": "weather", "parameters": WEATHER["parameters"]}]
+        prompt = chat_prompt([{"role": "system", "content": "", "tools": tools}, {"role": "user", "content": "天気は？"}])
+        self.assertEqual(response["usage"]["input_tokens"], 1 + len(self.tokenizer.encode(prompt).ids))
+
+    def test_returns_calls_of_tools_not_offered_and_unreadable_calls_as_text(self):
+        """渡していない道具の呼び出しと、JSON として読めない呼び出しは、本文として返す。"""
+        self.post()
+        for written in ('{"name": "search", "arguments": {}}', '{"name": "weather"'):
+            with self.subTest(written=written), self.scripted(CALL_START, written, CALL_END, TURN_END):
+                response = self.post(input="天気は？", tools=[WEATHER], max_output_tokens=64).json()
+                self.assertEqual([item["type"] for item in response["output"]], ["message"])
+                self.assertEqual(response["output"][0]["content"][0]["text"], written)
+
+    def test_ends_the_reply_at_its_first_call_when_parallel_calls_are_off(self):
+        """parallel_tool_calls が false のときは、最初の呼び出しで応答を終える。"""
+        self.post()
+        call = '{"name": "now", "arguments": {}}'
+        pieces = (CALL_START, call, CALL_END, CALL_START, call, CALL_END, TURN_END)
+        for parallel, calls in ((True, 2), (False, 1)):
+            with self.subTest(parallel=parallel), self.scripted(*pieces):
+                response = self.post(input="今は？", tools=[NOW], parallel_tool_calls=parallel, max_output_tokens=96).json()
+                self.assertEqual(response["status"], "completed")
+                self.assertEqual([item["type"] for item in response["output"]], ["function_call"] * calls)
+
+    def test_opens_no_call_without_tools_it_may_call(self):
+        """道具を渡さないときと tool_choice が none のときは、モデルが呼び出しを始めようとしても文章を書かせる。"""
+        self.post()
+        model = self.app.state.responses.backend.model
+        with torch.no_grad():
+            model.embedding.weight[self.tokenizer.token_to_id(CALL_START), 0] = 3
+        for fields, text in (({}, "aaaa"), ({"tools": [NOW], "tool_choice": "none"}, "aaaa"), ({"tools": [NOW]}, "")):
+            with self.subTest(fields=fields):
+                response = self.post(**fields).json()
+                self.assertEqual(response["output"][0]["content"][0]["text"], text)
+
+    def test_streams_calls_and_continues_from_their_outputs_through_the_official_sdk(self):
+        """公式 SDK で、文章のあとの呼び出しを流して受け取り、その結果を渡すと、呼び出しと結果を会話に入れて答える。"""
+        sdk, app = self.sdk()
+        sdk.responses.create(model="test-model", input="hello", max_output_tokens=1)
+        with (
+            self.scripted("見ます", CALL_START, WEATHER_CALL, CALL_END, TURN_END, app=app),
+            sdk.responses.stream(model="test-model", input="天気は？", tools=[WEATHER], max_output_tokens=96) as stream,
+        ):
+            kinds = [event.type for event in stream]
+            first = stream.get_final_response()
+        self.assertLess(kinds.index("response.output_text.done"), kinds.index("response.function_call_arguments.delta"))
+        message, call = first.output
+        self.assertEqual(message.content[0].text, "見ます")
+        self.assertEqual((call.type, call.name, json.loads(call.arguments)), ("function_call", "weather", {"city": "東京"}))
+        result = {"type": "function_call_output", "call_id": call.call_id, "output": "晴れ"}
+        with self.scripted("晴れ", TURN_END, app=app):
+            second = sdk.responses.create(
+                model="test-model",
+                input=[{"role": "user", "content": "天気は？"}, *first.output, result],
+                tools=[WEATHER],
+                max_output_tokens=8,
+            )
+        self.assertEqual(second.output_text, "晴れ")
+        prompt = chat_prompt(
+            [
+                {"role": "system", "content": "", "tools": [{"name": "weather", "parameters": WEATHER["parameters"]}]},
+                {"role": "user", "content": "天気は？"},
+                {"role": "assistant", "content": "見ます", "tool_calls": [{"name": "weather", "arguments": {"city": "東京"}}]},
+                {"role": "tool", "content": "晴れ"},
+            ]
+        )
+        self.assertEqual(second.usage.input_tokens, 1 + len(self.tokenizer.encode(prompt).ids))
 
     def test_streams_complete_japanese_characters_and_final_usage(self):
         """Streams complete Japanese characters and returns the final text and usage."""
@@ -310,12 +397,26 @@ class ResponsesTests(unittest.TestCase):
             {"temperature": "1"},
             {"top_p": 0},
             {"max_output_tokens": True},
-            {"max_output_tokens": 17},
+            {"max_output_tokens": 97},
             {"unknown": True},
             {"store": True},
             {"previous_response_id": "resp_old"},
             {"background": True},
-            {"tools": [{"type": "function", "name": "test"}]},
+            {"tools": [{"type": "web_search"}]},
+            {"tools": [NOW, NOW]},
+            {"tool_choice": "required"},
+            {
+                "input": [
+                    {"role": "user", "content": "x"},
+                    {"type": "function_call", "call_id": "call_1", "name": "now", "arguments": "[]"},
+                ]
+            },
+            {
+                "input": [
+                    {"role": "user", "content": "x"},
+                    {"type": "function_call_output", "call_id": "call_1", "output": "y"},
+                ]
+            },
             {"text": {"format": {"type": "json_object"}}},
             {
                 "input": [

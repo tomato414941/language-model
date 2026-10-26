@@ -4,7 +4,7 @@ import threading
 import torch
 from tokenizers.decoders import DecodeStream
 
-from .conversation import THINK_END, reply_ends, require_markers
+from .conversation import CALL_END, CALL_START, THINK_END, parse_call, reply_ends, require_markers
 from .training import load_model, select_device
 
 
@@ -22,18 +22,22 @@ class TextModel:
         self.tokens_seen = saved["tokens_seen"]
         self.context = self.model.config.context
 
-    def start(self, prompt, max_output_tokens, temperature, top_p, reasoning=False):
-        return TextGeneration(self, prompt, max_output_tokens, temperature, top_p, reasoning)
+    def start(self, prompt, max_output_tokens, temperature, top_p, reasoning=False, tools=(), single_call=False):
+        return TextGeneration(self, prompt, max_output_tokens, temperature, top_p, reasoning, tools, single_call)
 
 
 class TextGeneration:
     """A reply's text as it is sampled, after its reasoning when the prompt opened one.
 
     Iterating yields ("reasoning", text) deltas until the reasoning closes,
-    then ("text", text) deltas until the reply ends or reaches its limit.
+    then ("text", text) deltas and a ("call", call) for each call of one of
+    `tools`, until the reply ends or reaches its limit. A reply offered no
+    tools cannot open a call; a call that names no offered tool, does not
+    parse or is cut off stays in the reply's text. With `single_call` the
+    reply ends at its first call.
     """
 
-    def __init__(self, backend, prompt, max_output_tokens, temperature, top_p, reasoning=False):
+    def __init__(self, backend, prompt, max_output_tokens, temperature, top_p, reasoning=False, tools=(), single_call=False):
         self.tokenizer = backend.tokenizer
         self.input_tokens = 1 + len(
             self.tokenizer.encode(prompt, add_special_tokens=False).ids
@@ -49,7 +53,10 @@ class TextGeneration:
         self.reasoning = reasoning
         self.reasoning_tokens = 0
         self.parts = {"reasoning": "", "text": ""}
-        self.think_end = self.tokenizer.token_to_id(THINK_END)
+        self.tools, self.single_call = set(tools), single_call
+        self.think_end, self.call_start, self.call_end = (
+            self.tokenizer.token_to_id(marker) for marker in (THINK_END, CALL_START, CALL_END)
+        )
         self.cancelled = threading.Event()
         self.ends = reply_ends(self.tokenizer)
         self.tokens = backend.model.sample_tokens(
@@ -62,6 +69,7 @@ class TextGeneration:
             top_p=top_p,
             stop_requested=self.cancelled.is_set,
             stops=self.ends,
+            banned=() if self.tools else (self.call_start,),
         )
         self.deltas = self._decode()
 
@@ -75,8 +83,7 @@ class TextGeneration:
 
     def _decode(self):
         phase = "reasoning" if self.reasoning else "text"
-        decoder = DecodeStream(skip_special_tokens=True)
-        generated = []
+        decoder, generated, written = DecodeStream(skip_special_tokens=True), [], ""
         for token in self.tokens:
             self.output_tokens += 1
             if token in self.ends:
@@ -85,24 +92,53 @@ class TextGeneration:
             if phase == "reasoning":
                 self.reasoning_tokens += 1
                 if token == self.think_end:
-                    yield from self._flush(phase, generated)
-                    phase, decoder, generated = "text", DecodeStream(skip_special_tokens=True), []
+                    yield from self._flush(phase, generated, written)
+                    phase, decoder, generated, written = "text", DecodeStream(skip_special_tokens=True), [], ""
                     continue
+            elif phase == "text" and token == self.call_start:
+                yield from self._flush(phase, generated, written)
+                phase, generated = "call", []
+                continue
+            elif phase == "call":
+                if token != self.call_end:
+                    generated.append(token)
+                    continue
+                text = self.tokenizer.decode(generated, skip_special_tokens=True)
+                call = parse_call(text)
+                if call is None or call["name"] not in self.tools:
+                    yield from self._words(text)
+                else:
+                    yield "call", call
+                    if self.single_call:
+                        self.finished = True
+                        return
+                phase, decoder, generated, written = "text", DecodeStream(skip_special_tokens=True), [], ""
+                continue
             generated.append(token)
             delta = decoder.step(self.tokenizer, token)
             if delta:
+                written += delta
                 self.parts[phase] += delta
                 yield phase, delta
-        yield from self._flush(phase, generated)
+        if phase == "call":
+            yield from self._words(self.tokenizer.decode(generated, skip_special_tokens=True))
+        else:
+            yield from self._flush(phase, generated, written)
 
-    def _flush(self, phase, generated):
+    def _flush(self, phase, generated, written):
         """Yield what remains of a part, such as an unfinished byte sequence, as decode completes it."""
         complete = self.tokenizer.decode(generated, skip_special_tokens=True)
-        if not complete.startswith(self.parts[phase]):
+        if not complete.startswith(written):
             raise ValueError("Incremental decoding differs from the completed text")
-        if tail := complete[len(self.parts[phase]) :]:
-            self.parts[phase] = complete
+        if tail := complete[len(written) :]:
+            self.parts[phase] += tail
             yield phase, tail
+
+    def _words(self, text):
+        """Yield a call that is not returned as one as the reply's text."""
+        if text:
+            self.parts["text"] += text
+            yield "text", text
 
     def __iter__(self):
         return self.deltas

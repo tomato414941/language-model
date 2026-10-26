@@ -777,8 +777,9 @@ class LanguageModel(nn.Module):
         top_p=1.0,
         stop_requested=None,
         stops=None,
+        banned=(),
     ):
-        """Yield sampled tokens until one of `stops`, by default the end of the text."""
+        """Yield sampled tokens until one of `stops`, by default the end of the text, and never one of `banned`."""
         if type(max_new_tokens) is not int or max_new_tokens <= 0:
             raise ValueError("max_new_tokens must be a positive integer")
         if not math.isfinite(temperature) or temperature < 0:
@@ -791,6 +792,7 @@ class LanguageModel(nn.Module):
         bos = tokenizer.token_to_id("<|bos|>")
         eos = tokenizer.token_to_id("<|eos|>")
         ends = {eos} if stops is None else set(stops)
+        banned = [bos, *banned]
         tokens = [bos, *tokenizer.encode(prompt, add_special_tokens=False).ids]
         generator = torch.Generator(device=device).manual_seed(seed)
         context = self.config.context
@@ -814,7 +816,7 @@ class LanguageModel(nn.Module):
                         window = tokens[cached:]
                     logits = self.cached_logits(window, cached, caches).float()
                     cached += len(window)
-                    logits[bos] = -torch.inf
+                    logits[banned] = -torch.inf
                     if temperature == 0:
                         token = logits.argmax().item()
                     else:

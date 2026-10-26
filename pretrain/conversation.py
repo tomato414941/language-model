@@ -71,6 +71,17 @@ def chat_prompt(messages, reasoning=False):
     return text + opening("assistant", reasoning)
 
 
+def parse_call(text):
+    """The tool call a reply wrote between call markers, a name and its arguments, or None if it is not one."""
+    try:
+        call = json.loads(text)
+    except ValueError:
+        return None
+    if not (isinstance(call, dict) and isinstance(call.get("name"), str) and isinstance(call.get("arguments"), dict)):
+        return None
+    return {"name": call["name"], "arguments": call["arguments"]}
+
+
 def require_markers(tokenizer):
     """Refuse a tokenizer without the reserved tokens that mark the conversation."""
     if any(tokenizer.token_to_id(marker) is None for marker in MARKERS):
