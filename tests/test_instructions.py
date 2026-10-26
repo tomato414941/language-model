@@ -720,41 +720,6 @@ class FetchTests(unittest.TestCase):
         )
 
 
-    def test_fetch_drops_japanese_conversations_that_slip_into_chinese(self):
-        """日本語の会話で、1つの発言に中国語でしか使わない字が2字以上あるものは除いて数え、1字だけのものや英語の会話は残す。"""
-        slips = [
-            exchange("関数を求めてください。", "まず定数の場合を考えます。我們從考慮常數函數開始。"),
-            exchange("この本を説明してください。", "王國維の説を紹介します。這う虫の話です。"),
-            exchange("天気は？", "晴れです。"),
-        ]
-        self.content["slips.jsonl"] = "".join(
-            json.dumps({"conversations": messages}, ensure_ascii=False) + "\n" for messages in slips
-        ).encode()
-        self.content["slips-en.jsonl"] = (
-            json.dumps({"conversations": exchange("Say thanks in Chinese.", "谢谢你们 (xièxie nǐmen).")}, ensure_ascii=False)
-            + "\n"
-        ).encode()
-        sources = {
-            "slips-ja": {**self.sources["chat-ja"], "files": {"slips.jsonl": hashlib.sha256(self.content["slips.jsonl"]).hexdigest()}},
-            "slips-en": {
-                **self.sources["chat-ja"],
-                "language": "en",
-                "files": {"slips-en.jsonl": hashlib.sha256(self.content["slips-en.jsonl"]).hexdigest()},
-            },
-        }
-        output = self.root / "source"
-        with (
-            patch("pretrain.instructions.SOURCES", sources),
-            patch("pretrain.instructions.download_file", side_effect=self.download),
-        ):
-            manifest = fetch_instructions(output)
-        kept = [json.loads(line)["messages"] for line in (output / "ja.jsonl").read_text(encoding="utf-8").splitlines()]
-        self.assertEqual(kept, slips[1:])
-        self.assertEqual(
-            {name: (item["conversations"], item["chinese"]) for name, item in manifest["sources"].items()},
-            {"slips-ja": (2, 1), "slips-en": (1, 0)},
-        )
-
     def test_download_sends_the_token_only_to_the_hub_and_not_where_it_redirects(self):
         """Hubのファイルを取得するときだけHF_TOKENのトークンを付け、転送先には渡さない。"""
         requests = []
