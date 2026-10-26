@@ -1,0 +1,14 @@
+[Unit]
+Description=Serve the language model through the Responses API on this machine
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/lm-api
+# The model's name and checkpoint, and the API key, kept off the repository.
+EnvironmentFile=%h/.config/language-model/api.env
+ExecStart=%h/lm-api/.venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+UMask=0077
+
+[Install]
+WantedBy=default.target
