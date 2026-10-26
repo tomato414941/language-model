@@ -122,26 +122,6 @@ SOURCES = {
         "select": {"source": ["ai2-adapt-dev/tulu_v3.9_wildchat_100k"]},
         "limit": 35_000,
     },
-    "tulu-coconot-en": {
-        **TULU,
-        "language": "en",
-        "license": "ODC-BY",
-        "origin": "Requests a model should decline or qualify, with GPT-4 replies (CoCoNot)",
-        "select": {"source": ["ai2-adapt-dev/coconot_converted"]},
-    },
-    "tulu-jailbreak-en": {
-        **TULU,
-        "language": "en",
-        "license": "Apache-2.0 (WildGuardMix) and ODC-BY (WildJailbreak)",
-        "origin": "Harmful and disguised requests and benign look-alikes, with replies by OpenAI's models",
-        "select": {
-            "source": [
-                "ai2-adapt-dev/tulu_v3.9_synthetic_finalresp_wildguardmixtrain_decontaminated_50k",
-                "ai2-adapt-dev/tulu_v3.9_wildjailbreak_decontaminated_50k",
-            ]
-        },
-        "limit": 20_000,
-    },
     "tulu-math-en": {
         **TULU,
         "language": "en",
