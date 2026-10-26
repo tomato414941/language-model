@@ -48,9 +48,10 @@ def passkey_prompt(tokenizer, language, length, depth, key):
         return tokenizer.encode(text, add_special_tokens=False).ids
 
     room = length - ANSWER_TOKENS
-    units = (room - 1 - len(encode(introduction + needle + question))) // len(encode(filler))
-    # Words can merge across the joins, so the filler may encode a little
-    # differently from its pieces counted alone.
+    # Words merge across the joins of repeated filler, so each copy's share of
+    # a long repetition sets how many fit; the loop removes any extra.
+    share = len(encode(filler * 64)) / 64
+    units = int((room - 1 - len(encode(introduction + needle + question))) / share)
     while units > 0:
         before = round(units * depth)
         text = introduction + filler * before + needle + filler * (units - before) + question
