@@ -788,14 +788,6 @@ class SourceLayoutTests(unittest.TestCase):
             source_messages("functioncall", without_tools)[0], {"role": "system", "content": "外部の機能は使えません。"}
         )
 
-    def test_gsm8k_solutions_drop_calculator_notes_and_end_with_the_answer(self):
-        """GSM8Kの解答から計算メモを除き、最後に答えを一文で書く。"""
-        record = {"question": "Tom has 3 apples and buys 2. How many?", "answer": "3+2=<<3+2=5>>5 apples.\n#### 5"}
-        self.assertEqual(
-            source_messages("gsm8k", record),
-            exchange("Tom has 3 apples and buys 2. How many?", "3+2=5 apples.\n\nThe answer is 5."),
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

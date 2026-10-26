@@ -164,8 +164,10 @@ SOURCES = {
         "origin": "Science questions answered by DeepSeek-R1-0528 (MIT) after reasoning",
         # Most reasoning runs to thousands of tokens; a small model learns
         # from the shorter part, which fits its window with room to spare.
+        # About 3 in 10 of these questions open like a benchmark question and
+        # are dropped as one later.
         "max_characters": 10_000,
-        "limit": 8_000,
+        "limit": 11_000,
         "files": {
             "data/stem-00000-of-00660.parquet": "aaa2c95ed59d0d3776560b8f4b261d2b1cff8d11ce7ee4e4b22d9ea6f200377e",
         },
@@ -179,17 +181,6 @@ SOURCES = {
         "files": {
             "data/tool-00000-of-00013.parquet": "661402cf61925e05b5b718031de3162fa854a220ace43e0135b3054b38cafcd5",
             "data/tool-00001-of-00013.parquet": "0b775bc78176e24c5a8b330b92637325a6db18a74873187cd649bdc89fd754d6",
-        },
-    },
-    "gsm8k-en": {
-        "language": "en",
-        "repository": "openai/gsm8k",
-        "revision": "740312add88f781978c0658806c59bc2815b9866",
-        "license": "MIT",
-        "origin": "Human-written grade-school math problems with step-by-step solutions",
-        "layout": "gsm8k",
-        "files": {
-            "main/train-00000-of-00001.parquet": "ea82612ea9582142387730c793eb67d3b12849002bc0b7fa6f8efafa7351419d",
         },
     },
     "datapilot-tools-ja": {
@@ -390,21 +381,6 @@ def functioncall_messages(record):
     return messages
 
 
-CALCULATOR_NOTE = re.compile(r"<<[^<>]*>>")
-
-
-def gsm8k_messages(record):
-    """A problem and its worked solution without the calculator notes, ending with the answer."""
-    question, answer = record.get("question"), record.get("answer")
-    if not (isinstance(question, str) and isinstance(answer, str)) or "####" not in answer:
-        return None
-    work, result = answer.rsplit("####", 1)
-    return [
-        {"role": "user", "content": question},
-        {"role": "assistant", "content": f"{CALCULATOR_NOTE.sub('', work).strip()}\n\nThe answer is {result.strip()}."},
-    ]
-
-
 def aya_messages(record):
     prompt, completion = record.get("inputs"), record.get("targets")
     if not (isinstance(prompt, str) and isinstance(completion, str)):
@@ -417,7 +393,6 @@ LAYOUTS = {
     "dolly": dolly_messages,
     "nemotron": nemotron_messages,
     "functioncall": functioncall_messages,
-    "gsm8k": gsm8k_messages,
 }
 
 
