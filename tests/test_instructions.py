@@ -29,6 +29,7 @@ from pretrain.instructions import (
     InstructionCorpus,
     chat_prompt,
     conversation_text,
+    download_file,
     encode_conversations,
     fetch_instructions,
     normalize_messages,
@@ -719,6 +720,62 @@ class FetchTests(unittest.TestCase):
         )
 
 
+    def test_fetch_drops_japanese_conversations_that_slip_into_chinese(self):
+        """日本語の会話で、1つの発言に中国語でしか使わない字が2字以上あるものは除いて数え、1字だけのものや英語の会話は残す。"""
+        slips = [
+            exchange("関数を求めてください。", "まず定数の場合を考えます。我們從考慮常數函數開始。"),
+            exchange("この本を説明してください。", "王國維の説を紹介します。這う虫の話です。"),
+            exchange("天気は？", "晴れです。"),
+        ]
+        self.content["slips.jsonl"] = "".join(
+            json.dumps({"conversations": messages}, ensure_ascii=False) + "\n" for messages in slips
+        ).encode()
+        self.content["slips-en.jsonl"] = (
+            json.dumps({"conversations": exchange("Say thanks in Chinese.", "谢谢你们 (xièxie nǐmen).")}, ensure_ascii=False)
+            + "\n"
+        ).encode()
+        sources = {
+            "slips-ja": {**self.sources["chat-ja"], "files": {"slips.jsonl": hashlib.sha256(self.content["slips.jsonl"]).hexdigest()}},
+            "slips-en": {
+                **self.sources["chat-ja"],
+                "language": "en",
+                "files": {"slips-en.jsonl": hashlib.sha256(self.content["slips-en.jsonl"]).hexdigest()},
+            },
+        }
+        output = self.root / "source"
+        with (
+            patch("pretrain.instructions.SOURCES", sources),
+            patch("pretrain.instructions.download_file", side_effect=self.download),
+        ):
+            manifest = fetch_instructions(output)
+        kept = [json.loads(line)["messages"] for line in (output / "ja.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(kept, slips[1:])
+        self.assertEqual(
+            {name: (item["conversations"], item["chinese"]) for name, item in manifest["sources"].items()},
+            {"slips-ja": (2, 1), "slips-en": (1, 0)},
+        )
+
+    def test_download_sends_the_token_only_to_the_hub_and_not_where_it_redirects(self):
+        """Hubのファイルを取得するときだけHF_TOKENのトークンを付け、転送先には渡さない。"""
+        requests = []
+
+        @contextlib.contextmanager
+        def opened(request, timeout):
+            requests.append(request)
+            yield io.BytesIO(b"data")
+
+        destination = self.root / "file"
+        hub = "https://huggingface.co/datasets/test/gated/resolve/main/a.parquet"
+        with patch("pretrain.instructions.urllib.request.urlopen", side_effect=opened):
+            with patch.dict("os.environ", {"HF_TOKEN": "secret"}):
+                self.assertEqual(download_file(hub, destination), hashlib.sha256(b"data").hexdigest())
+                download_file("https://example.com/a.parquet", destination)
+            with patch.dict("os.environ", {}, clear=True):
+                download_file(hub, destination)
+        self.assertEqual(requests[0].unredirected_hdrs, {"Authorization": "Bearer secret"})
+        self.assertNotIn("Authorization", requests[0].headers)
+        self.assertEqual([request.unredirected_hdrs for request in requests[1:]], [{}, {}])
+
 class SourceLayoutTests(unittest.TestCase):
     def test_nemotron_records_give_reasoning_tools_and_parsed_calls(self):
         """Nemotronの記録から、考える過程と道具の定義と、引数を読み取った呼び出しを取り出す。"""
@@ -755,6 +812,21 @@ class SourceLayoutTests(unittest.TestCase):
         )
         unfinished = {"role": "assistant", "content": "<think>\nNo end", "tool_calls": []}
         self.assertIsNone(source_messages("nemotron", {**record, "messages": [record["messages"][0], unfinished]}))
+
+
+    def test_nemotron_records_leave_out_an_empty_system_turn(self):
+        """Nemotron v2の記録が始める空のシステムの発言は除き、考える過程と答えを取り出す。"""
+        record = {
+            "messages": [
+                {"role": "system", "content": ""},
+                {"role": "user", "content": "1+1は？"},
+                {"role": "assistant", "content": "<think>\nOne plus one.\n</think>\n\n2です。"},
+            ]
+        }
+        self.assertEqual(
+            normalize_messages(source_messages("nemotron", record)),
+            [{"role": "user", "content": "1+1は？"}, {"role": "assistant", "content": "2です。", "reasoning": "One plus one."}],
+        )
 
     def test_functioncall_records_give_tools_and_join_words_with_their_call(self):
         """DataPilotの記録から道具の定義を取り出し、呼び出しの直前の発言は呼び出しと1つの回答にまとめる。"""

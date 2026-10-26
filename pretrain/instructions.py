@@ -196,7 +196,34 @@ SOURCES = {
     },
     "aya-en": {**AYA, "language": "en", "select": {"language_code": ["eng"]}},
     "aya-ja": {**AYA, "language": "ja", "select": {"language_code": ["jpn"]}},
+    # Its terms ask the account that downloads it to accept them first, so
+    # fetching needs that account's token in HF_TOKEN.
+    "nemotron-v2-ja": {
+        "language": "ja",
+        "repository": "nvidia/Nemotron-Post-Training-Dataset-v2",
+        "revision": "5c89e01dd720ae0f4058445ed49c5fb68a03c76e",
+        "license": "CC-BY-4.0",
+        "origin": (
+            "Questions answered by DeepSeek-R1-0528 (MIT) after reasoning in English, with the questions "
+            "and answers translated into Japanese by Qwen2.5-14B-Instruct (Apache-2.0)"
+        ),
+        "layout": "nemotron",
+        # As for the English science questions; a sixth of the translations
+        # slip into Chinese and are dropped.
+        "max_characters": 10_000,
+        "limit": 11_000,
+        "files": {
+            "data/multilingual_ja-00000-of-00037.parquet": "a56a72a49b12a934765b178dd468882be8d735ce7cb70bba01fc5f4e3ceb9145",
+            "data/multilingual_ja-00001-of-00037.parquet": "1e5ff257e6d7d779abcee05da091dc0a3d46fb37344976a3b63051f58b01365f",
+        },
+    },
 }
+# Characters of Chinese, simplified or traditional, that modern Japanese
+# writes otherwise or not at all, and the traditional 這 before a measure
+# word. Two of them in one turn of a Japanese conversation mean it slipped
+# into Chinese, as machine translations and some generated replies do; one
+# alone is more often an old spelling in a name.
+CHINESE = re.compile(r"[们这吗说对从么时发现实动过还进应为个该样关于們嗎說對從麼數來會發實經與體關應]|這[個些是樣]")
 # Text containing a benchmark question is dropped. A question is found by the
 # middle of its normalized text, about as long as the 13-gram overlap that
 # decontamination commonly checks, or by all of it when it is shorter; a
@@ -307,11 +334,16 @@ def tool_definition(tool):
 
 
 def nemotron_messages(record):
-    """Nemotron's turns: reasoning in a leading think block, calls with JSON-encoded arguments, tools in the metadata."""
+    """Nemotron's turns: reasoning in a leading think block, calls with JSON-encoded arguments, tools in the metadata.
+
+    The empty system turn that version 2's conversations open with is left out.
+    """
     try:
         tools = json.loads(record.get("metadata") or "{}").get("tools")
         messages = [{"role": "system", "content": "", "tools": [tool_definition(tool) for tool in tools]}] if tools else []
         for message in record["messages"]:
+            if message["role"] == "system" and not message["content"].strip():
+                continue
             turn = {"role": message["role"], "content": message["content"]}
             if turn["role"] == "assistant":
                 thought = THINK_BLOCK.match(turn["content"])
@@ -402,15 +434,30 @@ def source_messages(layout, record):
 
 
 def download_file(url, destination):
+    """Save a file and return its SHA-256 digest.
+
+    A file on the Hub goes with the token in HF_TOKEN, if any, as gated
+    datasets require; the token is not passed on to where the Hub redirects.
+    """
+    request = urllib.request.Request(url)
+    if os.environ.get("HF_TOKEN") and url.startswith("https://huggingface.co/"):
+        request.add_unredirected_header("Authorization", f"Bearer {os.environ['HF_TOKEN']}")
     digest = hashlib.sha256()
     with (
-        urllib.request.urlopen(url, timeout=120) as response,
+        urllib.request.urlopen(request, timeout=120) as response,
         Path(destination).open("wb") as target,
     ):
         for chunk in iter(lambda: response.read(1024 * 1024), b""):
             digest.update(chunk)
             target.write(chunk)
     return digest.hexdigest()
+
+
+def slips_into_chinese(messages):
+    """Whether a user's or assistant's words hold two characters that only Chinese writes."""
+    return any(
+        len(CHINESE.findall(message["content"])) >= 2 for message in messages if message["role"] in ("user", "assistant")
+    )
 
 
 def read_records(path, name):
@@ -452,7 +499,7 @@ def fetch_instructions(output):
         }
         try:
             for name, source in SOURCES.items():
-                kept = malformed = unselected = too_long = 0
+                kept = malformed = unselected = chinese = too_long = 0
                 # The sample keeps the conversations with the smallest digests
                 # of their place in the pinned files, as negated keys in a heap.
                 sample = []
@@ -475,6 +522,9 @@ def fetch_instructions(output):
                         if messages is None:
                             malformed += 1
                             continue
+                        if source["language"] == "ja" and slips_into_chinese(messages):
+                            chinese += 1
+                            continue
                         if len(conversation_text(messages)[0]) > source.get("max_characters", float("inf")):
                             too_long += 1
                             continue
@@ -496,6 +546,7 @@ def fetch_instructions(output):
                     "conversations": kept,
                     "malformed": malformed,
                     "unselected": unselected,
+                    "chinese": chinese,
                     "too_long": too_long,
                 }
                 counts[source["language"]] += kept
