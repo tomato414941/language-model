@@ -702,9 +702,9 @@ class RecipeTests(unittest.TestCase):
     def test_指示データの量から同じモデルの追加学習設定を作成する(self):
         # The conversation format marks turns with reserved tokens.
         self.recipe_path.write_text(
-            self.recipe_path.read_text().replace(
-                "vocabulary_size = 258", "vocabulary_size = 266\nreserved_tokens = 8"
-            )
+            self.recipe_path.read_text()
+            .replace("vocabulary_size = 258", "vocabulary_size = 266\nreserved_tokens = 8")
+            .replace("[sft]\n", '[sft]\noptimizer = "muon"\nsampling = "sequential"\n')
         )
         self.prepare()
         source = self.root / "instruction-source"
@@ -741,6 +741,7 @@ class RecipeTests(unittest.TestCase):
         model, config = read_config(self.root / "sft.toml")
         self.assertEqual(model, read_config(self.root / "training.toml")[0])
         self.assertEqual(config.learning_rate, 0.00002)
+        self.assertEqual((config.optimizer, config.sampling), ("muon", "sequential"))
         corpus = InstructionCorpus(self.root / "instructions")
         target = (
             2

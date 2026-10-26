@@ -39,6 +39,21 @@ base_tasks = [
 ]
 instruction_tasks = ["ifeval"]
 
+# Instruction tuning keeps pretraining's optimizer, starts from the rate the
+# decay ended at and reads every conversation once per epoch, a step as many
+# tokens as pretraining's. Replies that reason first run to a few thousand
+# tokens.
+[sft]
+epochs = 2
+learning_rate = 0.00016
+min_learning_rate = 0.000016
+batch_size = 4
+accumulation_steps = 8
+optimizer = "muon"
+sampling = "sequential"
+validation_conversations_per_language = 1000
+max_reply_tokens = 4096
+
 # Code about 12% and mathematics about 10%, between SmolLM3's first and
 # second stages.
 [[corpora]]
