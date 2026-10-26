@@ -1,18 +1,18 @@
 """Serialize the conversation format used for training and generation.
 
 Reserved tokens of the tokenizer mark where each turn starts and ends, the
-assistant's reasoning and its tool calls, as ChatML-style formats do. Text
-that spells a reserved token loses that spelling, so no speaker can forge
-the structure. Every assistant turn opens a reasoning block, closed at once
-when it answers directly, so the prompt chooses whether a reply reasons
-first.
+assistant's reasoning, its tool calls and the tools a system turn offers, as
+ChatML-style formats do. Text that spells a reserved token loses that
+spelling, so no speaker can forge the structure. Every assistant turn opens
+a reasoning block, closed at once when it answers directly, so the prompt
+chooses whether a reply reasons first.
 """
 
 import json
 import re
 
-TURN_START, TURN_END, THINK_START, THINK_END, CALL_START, CALL_END = (
-    f"<|reserved_{index}|>" for index in range(6)
+TURN_START, TURN_END, THINK_START, THINK_END, CALL_START, CALL_END, TOOLS_START, TOOLS_END = MARKERS = tuple(
+    f"<|reserved_{index}|>" for index in range(8)
 )
 ROLES = ("system", "user", "assistant", "tool")
 RESERVED = re.compile(r"<\|reserved_\d+\|>")
@@ -34,14 +34,23 @@ def opening(role, reasoning=False):
 def conversation_text(messages):
     """Join turns and locate each assistant reply, through its turn's end, in the transcript.
 
-    An assistant message may carry its reasoning and the tool calls it ends
-    with, each a name and its arguments; a tool turn returns a call's result.
+    A system message may list the tools the assistant can call, each a name,
+    a description and its arguments' JSON schema, one per line after its
+    text. An assistant message may carry its reasoning and the tool calls it
+    ends with, each a name and its arguments; a tool turn returns a call's
+    result.
     """
     parts, replies, length = [], [], 0
     for message in messages:
         reasoning = message.get("reasoning")
         head = opening(message["role"], bool(reasoning))
         body = plain(message["content"])
+        if message.get("tools"):
+            body += (
+                TOOLS_START
+                + "\n".join(plain(json.dumps(tool, ensure_ascii=False)) for tool in message["tools"])
+                + TOOLS_END
+            )
         if message["role"] == "assistant":
             if reasoning:
                 body = plain(reasoning) + THINK_END + body
@@ -64,8 +73,8 @@ def chat_prompt(messages, reasoning=False):
 
 def require_markers(tokenizer):
     """Refuse a tokenizer without the reserved tokens that mark the conversation."""
-    if any(tokenizer.token_to_id(marker) is None for marker in (TURN_START, TURN_END, THINK_START, THINK_END, CALL_START, CALL_END)):
-        raise ValueError("the conversation format needs a tokenizer with at least six reserved tokens")
+    if any(tokenizer.token_to_id(marker) is None for marker in MARKERS):
+        raise ValueError(f"the conversation format needs a tokenizer with at least {len(MARKERS)} reserved tokens")
 
 
 def reply_ends(tokenizer):

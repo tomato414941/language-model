@@ -22,7 +22,7 @@ import torch
 from pyarrow import parquet
 from tokenizers import Tokenizer
 
-from pretrain.conversation import CALL_END, CALL_START, THINK_END, TURN_END, TURN_START
+from pretrain.conversation import CALL_END, CALL_START, THINK_END, TOOLS_END, TOOLS_START, TURN_END, TURN_START
 from pretrain.data import LANGUAGES, file_digest, prepare_data
 from pretrain.instructions import (
     BenchmarkFilter,
@@ -33,6 +33,7 @@ from pretrain.instructions import (
     fetch_instructions,
     normalize_messages,
     prepare_instructions,
+    source_messages,
 )
 from pretrain.model import ModelConfig
 from pretrain.training import TrainConfig, evaluate, load_model, train
@@ -85,7 +86,7 @@ class InstructionTests(unittest.TestCase):
             self.pretraining,
             vocabulary_size=300,
             validation_fraction=0.25,
-            reserved_tokens=6,
+            reserved_tokens=8,
         )
         self.tokenizer_path = self.pretraining / "tokenizer.json"
         self.tokenizer = Tokenizer.from_file(str(self.tokenizer_path))
@@ -200,6 +201,29 @@ class InstructionTests(unittest.TestCase):
         self.assertIsNotNone(normalize_messages([question, call]))
         self.assertIsNone(normalize_messages([question, answer, result, answer]))
         self.assertIsNone(normalize_messages([question, {**call, "tool_calls": [{"name": "weather"}]}]))
+
+    def test_system_turn_lists_tools_between_markers_outside_the_replies(self):
+        """システムの発言に道具の定義を印で囲んで1行ずつ並べ、回答としては学習しない。"""
+        tools = [
+            {"name": "weather", "description": "天気を調べる", "parameters": {"type": "object"}},
+            {"name": "clock"},
+        ]
+        messages = normalize_messages(
+            [
+                {"role": "system", "content": "", "tools": tools},
+                {"role": "user", "content": "天気は？"},
+                {"role": "assistant", "content": "", "tool_calls": [{"name": "weather", "arguments": {}}]},
+            ]
+        )
+        self.assertEqual(messages[0], {"role": "system", "content": "", "tools": tools})
+        text, _ = conversation_text(messages)
+        listed = "\n".join(json.dumps(tool, ensure_ascii=False) for tool in tools)
+        self.assertTrue(text.startswith(TURN_START + "system\n" + TOOLS_START + listed + TOOLS_END + TURN_END))
+        tokens, mask = encode_conversations(self.tokenizer, [messages])[0]
+        self.assertNotIn("天気を調べる", self.tokenizer.decode(tokens[mask == 1].tolist(), skip_special_tokens=False))
+        self.assertIsNone(
+            normalize_messages([{"role": "system", "content": "", "tools": [{"description": "名前がない"}]}, *exchange("a", "b")])
+        )
 
     def test_text_spelling_a_reserved_token_cannot_mark_the_structure(self):
         """発言の中に予約トークンと同じ文字列があっても、会話の区切りとしては読まない。"""
@@ -645,6 +669,132 @@ class FetchTests(unittest.TestCase):
         ):
             fetch_instructions(self.root / "source")
         self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_fetch_selects_values_drops_long_conversations_and_samples_the_same_subset(self):
+        """選んだ値の記録だけを使い、長すぎる会話を落とし、上限の数だけ毎回同じ会話を残し、共有するファイルは一度だけ取得する。"""
+        rows = [
+            {"kind": "a" if index % 2 else "b", "messages": exchange(f"Q{index}", "A" * (100 if index == 1 else 1))}
+            for index in range(10)
+        ]
+        table = io.BytesIO()
+        parquet.write_table(pyarrow.Table.from_pylist(rows), table)
+        self.content["data/kinds.parquet"] = table.getvalue()
+        shared = {
+            "language": "en",
+            "repository": "test/kinds",
+            "revision": "0" * 40,
+            "license": "MIT",
+            "origin": "test",
+            "layout": "messages",
+            "files": {"data/kinds.parquet": hashlib.sha256(table.getvalue()).hexdigest()},
+        }
+        sources = {
+            "chat-ja": self.sources["chat-ja"],
+            "a-en": {**shared, "select": {"kind": ["a"]}, "max_characters": 150, "limit": 3},
+            "b-en": {**shared, "select": {"kind": ["b"]}},
+        }
+        written = []
+        for name in ("first", "second"):
+            with (
+                patch("pretrain.instructions.SOURCES", sources),
+                patch("pretrain.instructions.download_file", side_effect=self.download) as download,
+            ):
+                manifest = fetch_instructions(self.root / name)
+            self.assertEqual(download.call_count, 2)
+            written.append((self.root / name / "en.jsonl").read_text(encoding="utf-8"))
+        self.assertEqual(written[0], written[1])
+        questions = [json.loads(line)["messages"][0]["content"] for line in written[0].splitlines()]
+        self.assertEqual(len(questions), 8)
+        self.assertLess(set(questions[:3]), {"Q3", "Q5", "Q7", "Q9"})
+        self.assertEqual(questions[3:], ["Q0", "Q2", "Q4", "Q6", "Q8"])
+        self.assertEqual(
+            {
+                name: {key: manifest["sources"][name][key] for key in ("conversations", "unselected", "too_long")}
+                for name in ("a-en", "b-en")
+            },
+            {
+                "a-en": {"conversations": 3, "unselected": 5, "too_long": 1},
+                "b-en": {"conversations": 5, "unselected": 5, "too_long": 0},
+            },
+        )
+
+
+class SourceLayoutTests(unittest.TestCase):
+    def test_nemotron_records_give_reasoning_tools_and_parsed_calls(self):
+        """Nemotronの記録から、考える過程と道具の定義と、引数を読み取った呼び出しを取り出す。"""
+        weather = {"name": "weather", "description": "Look up the weather", "parameters": {"type": "object"}}
+        record = {
+            "metadata": json.dumps({"tools": [{"type": "function", "function": weather}]}),
+            "messages": [
+                {"role": "user", "content": "Weather in Tokyo?", "tool_calls": []},
+                {
+                    "role": "assistant",
+                    "content": "<think>\nUse the tool.\n</think>\n\n",
+                    "tool_calls": [
+                        {"id": "c1", "type": "function", "function": {"name": "weather", "arguments": '{"city": "Tokyo"}'}}
+                    ],
+                },
+                {"role": "tool", "content": "sunny", "tool_calls": []},
+                {"role": "assistant", "content": "<think>\nIt is sunny.\n</think>\n\nSunny.", "tool_calls": []},
+            ],
+        }
+        self.assertEqual(
+            normalize_messages(source_messages("nemotron", record)),
+            [
+                {"role": "system", "content": "", "tools": [weather]},
+                {"role": "user", "content": "Weather in Tokyo?"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning": "Use the tool.",
+                    "tool_calls": [{"name": "weather", "arguments": {"city": "Tokyo"}}],
+                },
+                {"role": "tool", "content": "sunny"},
+                {"role": "assistant", "content": "Sunny.", "reasoning": "It is sunny."},
+            ],
+        )
+        unfinished = {"role": "assistant", "content": "<think>\nNo end", "tool_calls": []}
+        self.assertIsNone(source_messages("nemotron", {**record, "messages": [record["messages"][0], unfinished]}))
+
+    def test_functioncall_records_give_tools_and_join_words_with_their_call(self):
+        """DataPilotの記録から道具の定義を取り出し、呼び出しの直前の発言は呼び出しと1つの回答にまとめる。"""
+        system = (
+            "以下の機能を使えます -\n\n"
+            + json.dumps({"name": "tip", "parameters": {"type": "object"}}, indent=4)
+            + "\n\n使うときは次の形式で応答してください：\n<functioncall> {...} </functioncall>"
+        )
+        record = {
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": "チップは？"},
+                {"role": "assistant", "content": "計算します。"},
+                {"role": "assistant", "content": '<functioncall> {"name": "tip", "arguments": \'{"bill": 50}\'} </functioncall>'},
+                {"role": "tool", "content": '{"tip": 5}'},
+                {"role": "assistant", "content": "5ドルです。"},
+            ]
+        }
+        self.assertEqual(
+            normalize_messages(source_messages("functioncall", record)),
+            [
+                {"role": "system", "content": "以下の機能を使えます", "tools": [{"name": "tip", "parameters": {"type": "object"}}]},
+                {"role": "user", "content": "チップは？"},
+                {"role": "assistant", "content": "計算します。", "tool_calls": [{"name": "tip", "arguments": {"bill": 50}}]},
+                {"role": "tool", "content": '{"tip": 5}'},
+                {"role": "assistant", "content": "5ドルです。"},
+            ],
+        )
+        without_tools = {"messages": [{"role": "system", "content": "外部の機能は使えません。"}, *exchange("やあ", "こんにちは。")]}
+        self.assertEqual(
+            source_messages("functioncall", without_tools)[0], {"role": "system", "content": "外部の機能は使えません。"}
+        )
+
+    def test_gsm8k_solutions_drop_calculator_notes_and_end_with_the_answer(self):
+        """GSM8Kの解答から計算メモを除き、最後に答えを一文で書く。"""
+        record = {"question": "Tom has 3 apples and buys 2. How many?", "answer": "3+2=<<3+2=5>>5 apples.\n#### 5"}
+        self.assertEqual(
+            source_messages("gsm8k", record),
+            exchange("Tom has 3 apples and buys 2. How many?", "3+2=5 apples.\n\nThe answer is 5."),
+        )
 
 
 if __name__ == "__main__":

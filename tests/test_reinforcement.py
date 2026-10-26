@@ -26,8 +26,8 @@ from pretrain.reinforcement import (
 )
 from pretrain.training import atomic_save, load_model
 
-# The special tokens, six reserved tokens that mark conversations, and bytes.
-VOCABULARY = 264
+# The special tokens, eight reserved tokens that mark conversations, and bytes.
+VOCABULARY = 266
 
 
 def byte_tokenizer():
@@ -37,7 +37,7 @@ def byte_tokenizer():
     trainer = trainers.BpeTrainer(
         vocab_size=VOCABULARY,
         show_progress=False,
-        special_tokens=["<|bos|>", "<|eos|>", *(f"<|reserved_{index}|>" for index in range(6))],
+        special_tokens=["<|bos|>", "<|eos|>", *(f"<|reserved_{index}|>" for index in range(8))],
         initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
     )
     tokenizer.train_from_iterator(["abc"], trainer=trainer)

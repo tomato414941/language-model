@@ -862,7 +862,7 @@ class BenchmarkTests(unittest.TestCase):
     def test_instruction_following_asks_in_the_conversation_format(self):
         """Asks IFEval in the conversation format and keeps published choice prompts."""
         # The conversation format's reserved tokens mark the turns.
-        tokenizer = byte_tokenizer(reserved_tokens=6)
+        tokenizer = byte_tokenizer(reserved_tokens=8)
         model = LanguageModel(
             tokenizer.get_vocab_size(), ModelConfig(width=8, heads=2, layers=1, context=64)
         )

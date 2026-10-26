@@ -703,7 +703,7 @@ class RecipeTests(unittest.TestCase):
         # The conversation format marks turns with reserved tokens.
         self.recipe_path.write_text(
             self.recipe_path.read_text().replace(
-                "vocabulary_size = 258", "vocabulary_size = 264\nreserved_tokens = 6"
+                "vocabulary_size = 258", "vocabulary_size = 266\nreserved_tokens = 8"
             )
         )
         self.prepare()

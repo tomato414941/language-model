@@ -36,10 +36,10 @@ class ResponsesTests(unittest.TestCase):
         self.tokenizer.train_from_iterator(
             ["日本語 English"],
             trainers.BpeTrainer(
-                vocab_size=264,
+                vocab_size=266,
                 initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
                 # The special tokens, then the reserved tokens that mark conversations.
-                special_tokens=["<|bos|>", "<|eos|>", *(f"<|reserved_{index}|>" for index in range(6))],
+                special_tokens=["<|bos|>", "<|eos|>", *(f"<|reserved_{index}|>" for index in range(8))],
                 show_progress=False,
             ),
         )
