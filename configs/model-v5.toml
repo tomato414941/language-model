@@ -1,4 +1,4 @@
-# The 2026 model: rotary attention with normalized queries and keys, a gate
+# The v5 model: rotary attention with normalized queries and keys, a gate
 # per head and attention within documents, trained with Muon on a
 # warmup-stable-decay schedule. Windows of 8,192 tokens keep whole the
 # documents between 4k and 8k, about a seventh of the stable corpus, for about

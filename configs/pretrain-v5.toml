@@ -1,4 +1,4 @@
-# The 2026 bilingual model, trained from random weights. A stable phase at the
+# The v5 bilingual model, trained from random weights. A stable phase at the
 # peak learning rate reads web text, code and mathematics; the phase that
 # lowers the rate reads the highest-quality text with questions, answers and
 # reasoning, as SmolLM3 and OLMo 3 end their pretraining. Each language takes
@@ -8,7 +8,7 @@
 # training reads training_tokens, so a smaller budget or a slower model needs
 # no new corpus; the stable phase's last checkpoint is where a longer run
 # continues.
-training_config = "model-2026.toml"
+training_config = "model-v5.toml"
 sources = "sources.toml"
 seed = 42
 

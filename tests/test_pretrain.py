@@ -573,7 +573,7 @@ class PretrainingTests(unittest.TestCase):
             batches=2,
             batch_size=4,
         )
-        after = self.run_training("modern-2026", self.config(steps=24))["validation"]
+        after = self.run_training("modern", self.config(steps=24))["validation"]
         for language in ("ja", "en"):
             self.assertLess(after[language]["loss"], before[language]["loss"] * 0.8)
 

@@ -403,7 +403,7 @@ terms_url = "https://gitlab.llm-jp.nii.ac.jp/datasets/llm-jp-corpus-midtraining-
 # A question with its answer is often shorter than a web page worth keeping.
 minimum_characters = 100
 
-# Documents longer than the 2026 model's pretraining windows of 8,192 tokens,
+# Documents longer than the v5 model's pretraining windows of 8,192 tokens,
 # about 14,000 characters of Japanese and 32,000 of English, for the phase
 # that lengthens its context. The few past about four of its longer windows
 # would take too much of that phase on their own.

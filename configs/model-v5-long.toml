@@ -1,4 +1,4 @@
-# The 2026 model with its context lengthened from 8,192 to 32,768 tokens after
+# The v5 model with its context lengthened from 8,192 to 32,768 tokens after
 # pretraining. The rotary base rises from 10,000 to 1,000,000, as Qwen2.5's
 # does for the same windows, so the slowest rotation still spans them; the
 # weights carry over unchanged. A step reads as many tokens as pretraining's,

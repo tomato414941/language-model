@@ -1,18 +1,18 @@
-# Lengthen the 2026 bilingual model's context to 32,768 tokens after
+# Lengthen the v5 bilingual model's context to 32,768 tokens after
 # pretraining, as Qwen2.5 and SmolLM3 do. Following ProLong, about two thirds
 # of the tokens come from documents longer than pretraining's windows, books
 # and articles among them, and the rest from the short, high-quality sources
 # of the decay, so short-text skills stay. Documents the pretraining corpora
 # hold are left out, and instruction tuning then reads conversations in the
 # longer windows.
-training_config = "model-2026-long.toml"
+training_config = "model-v5-long.toml"
 sources = "sources.toml"
 seed = 42
-initialize_from = "runs/pretrain-2026-decay/last.pt"
+initialize_from = "runs/pretrain-v5-decay/last.pt"
 
 [tokenizer]
 vocabulary_size = 32768
-reuse_from = "data/pretrain-2026/tokenizer/tokenizer.json"
+reuse_from = "data/pretrain-v5/tokenizer/tokenizer.json"
 reuse_sha256 = "3e327d6813f067cabd746ced8d73938c23ab1198e18a0af713df9a8a16a590ea"
 
 [corpus]
@@ -20,8 +20,8 @@ validation_tokens_per_language = 2_000_000
 minimum_characters = 300
 maximum_characters = 100000
 excluded_corpora = [
-    { path = "data/pretrain-2026/corpus-stable", documents_sha256 = "863c739f4b838baa07bded17fbea563ebd372bc80588ed8c72c56ba33f968af0" },
-    { path = "data/pretrain-2026/corpus-decay", documents_sha256 = "126a61bf07e36aa9485284e3cbdb4030ff6376787288162ae67bb38351bbf9bf" },
+    { path = "data/pretrain-v5/corpus-stable", documents_sha256 = "863c739f4b838baa07bded17fbea563ebd372bc80588ed8c72c56ba33f968af0" },
+    { path = "data/pretrain-v5/corpus-decay", documents_sha256 = "126a61bf07e36aa9485284e3cbdb4030ff6376787288162ae67bb38351bbf9bf" },
 ]
 
 [evaluation]
