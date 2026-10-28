@@ -33,7 +33,7 @@ base_tasks = [
     "mmlu_continuation", "jmmlu", "arc_challenge", "gsm8k", "ja_leaderboard_mgsm",
     "humaneval", "mbpp", "jhumaneval", "ja_leaderboard_jsquad",
 ]
-instruction_tasks = ["ifeval"]
+instruction_tasks = ["ifeval", "m_ifeval_ja"]
 # Recall of a number hidden in filler text, from pretraining's window to the
 # longer one.
 passkey_lengths = [4096, 8192, 16384, 32768]

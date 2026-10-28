@@ -87,7 +87,7 @@ REFERENCE_ANSWERS = {
     "ja_leaderboard_jsquad": lambda doc: "\n" + doc["answers"]["text"][0],
 }
 # These tasks ask in the conversation format that the API serves.
-CONVERSATION_TASKS = ("ifeval",)
+CONVERSATION_TASKS = ("ifeval", "m_ifeval_ja")
 RESULT_SECTIONS = (
     "results",
     "group_subtasks",

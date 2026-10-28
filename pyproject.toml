@@ -17,6 +17,9 @@ hub = ["huggingface-hub>=0.35,<2"]
 deploy = ["modal>=1.6.1,<2"]
 eval = [
     "lm-eval[hf,ifeval]==0.4.13",
+    # M-IFEval-Ja's checkers, at the versions M-IFEval pins.
+    "janome==0.5.0",
+    "ja-sentence-segmenter==0.0.2",
 ]
 
 [tool.uv]

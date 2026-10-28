@@ -114,6 +114,22 @@ IFEVAL_ROWS = [
 ]
 ROWS["ifeval"] = IFEVAL_ROWS
 ID_FIELDS["ifeval"] = "key"
+# Two instructions with different arguments, which the dataset's loader gives
+# both questions, filling the missing ones with None.
+M_IFEVAL_JA_ROWS = [
+    {
+        "key": 1,
+        "prompt": "雨について、ひらがなだけを用いて答えてください。",
+        "instruction_id_list": ["ja:letters:hiragana_only"],
+        "kwargs": [{}],
+    },
+    {
+        "key": 2,
+        "prompt": "「雨」という言葉を使って、天気を説明してください。",
+        "instruction_id_list": ["ja:keywords:existence"],
+        "kwargs": [{"keywords": ["雨"]}],
+    },
+]
 ROWS["jnli"] = [
     {
         "sentence_pair_id": "0",
@@ -430,6 +446,8 @@ def benchmark_dataset(path, name=None, **kwargs):
         )
     if path == "google/IFEval":
         return DatasetDict(train=Dataset.from_list(IFEVAL_ROWS))
+    if path == "json" and "M-IFEval-Ja" in str(kwargs["data_files"]):
+        return DatasetDict(test=Dataset.from_list(M_IFEVAL_JA_ROWS))
     if path == "nyu-mll/blimp":
         # Each phenomenon gets sentences of its own lengths.
         rows = [
@@ -921,6 +939,38 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(result["results"]["ifeval"]["prompt_level_strict_acc,none"], 1)
         self.assertIn("acc,none", result["results"]["arc_easy"])
         self.assertEqual(result["conversation_format_tasks"], ["ifeval"])
+
+    def test_japanese_instruction_following_is_checked_by_m_ifeval_rules(self):
+        """Asks M-IFEval-Ja in the conversation format and checks each instruction by its rule."""
+        tokenizer = byte_tokenizer(reserved_tokens=8)
+        model = LanguageModel(
+            tokenizer.get_vocab_size(), ModelConfig(width=8, heads=2, layers=1, context=64)
+        )
+        asked = []
+
+        def reply(sequences, max_new_tokens, *args, **kwargs):
+            asked.extend(
+                tokenizer.decode(sequence[1:], skip_special_tokens=False)
+                for sequence in sequences
+            )
+            # Hiragana only, without the kanji the second question asks for.
+            return [tokenizer.encode("あめがふる").ids for _ in sequences]
+
+        with (
+            patch(
+                "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
+            ),
+            patch.object(model, "continue_greedily", side_effect=reply),
+        ):
+            result = evaluate_benchmarks(
+                model, tokenizer, torch.device("cpu"), tasks=["m_ifeval_ja"]
+            )
+        self.assertEqual(
+            sorted(asked),
+            sorted(chat_prompt([{"role": "user", "content": row["prompt"]}]) for row in M_IFEVAL_JA_ROWS),
+        )
+        self.assertEqual(result["items"]["m_ifeval_ja"]["correct"]["prompt_level_strict_acc"], [1, 0])
+        self.assertEqual(result["conversation_format_tasks"], ["m_ifeval_ja"])
 
     def test_limited_standard_evaluation_is_reported_as_a_smoke_check(self):
         """Records the limited scope and item count for a smoke check."""

@@ -1058,6 +1058,24 @@ wheels = [
 ]
 
 [[package]]
+name = "ja-sentence-segmenter"
+version = "0.0.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/73/8d/917bdefdaae77934c8b84293e6a40ee1609d28c49535d02c0efd55fe0748/ja_sentence_segmenter-0.0.2.tar.gz", hash = "sha256:caa373b504ff3f906688ac9cb9a761935a84e03c20d2a9741cfcb4f778859e35", size = 7701, upload-time = "2020-02-22T16:09:27.52Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0f/58/6268f9249100f2f269c04c379d0b1b6c2cd2e5c09ddba0bfa7d0173c0059/ja_sentence_segmenter-0.0.2-py3-none-any.whl", hash = "sha256:237d99e79f9fe0e858310c088d9fb7d74e765954769ae6473197a0bd5ace4edb", size = 8620, upload-time = "2020-02-22T16:09:25.906Z" },
+]
+
+[[package]]
+name = "janome"
+version = "0.5.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/08/4e/dc2b1a89a4ffafbf9bf49c8e11f69e28ba8b3ef81d11afe6e9f96caee6cc/Janome-0.5.0.tar.gz", hash = "sha256:ce4a3ed7a4635c2f80139639327d5b1e0381858ad74a3c4a61e8cc83f820400e", size = 18829020, upload-time = "2023-07-01T10:53:09.161Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/73/7d/70f4069f4bbf0fca023e82a1fbbade6f5216365d4fe259fee1950723eca5/Janome-0.5.0-py2.py3-none-any.whl", hash = "sha256:d098670394a77881ce2f6b7d696c0ea5ff74c0c8cf74a8a882159ec82c0e6dc7", size = 19654103, upload-time = "2023-07-01T10:52:58.572Z" },
+]
+
+[[package]]
 name = "jinja2"
 version = "3.1.6"
 source = { registry = "https://pypi.org/simple" }
@@ -1224,6 +1242,8 @@ deploy = [
     { name = "modal" },
 ]
 eval = [
+    { name = "ja-sentence-segmenter" },
+    { name = "janome" },
     { name = "lm-eval", extra = ["hf", "ifeval"] },
 ]
 hub = [
@@ -1256,6 +1276,8 @@ requires-dist = [
     { name = "fla-core", marker = "extra == 'train'", specifier = "==0.5.2" },
     { name = "huggingface-hub", marker = "extra == 'corpus'", specifier = ">=0.35,<2" },
     { name = "huggingface-hub", marker = "extra == 'hub'", specifier = ">=0.35,<2" },
+    { name = "ja-sentence-segmenter", marker = "extra == 'eval'", specifier = "==0.0.2" },
+    { name = "janome", marker = "extra == 'eval'", specifier = "==0.5.0" },
     { name = "lm-eval", extras = ["hf", "ifeval"], marker = "extra == 'eval'", specifier = "==0.4.13" },
     { name = "modal", marker = "extra == 'deploy'", specifier = ">=1.6.1,<2" },
     { name = "numpy", marker = "extra == 'train'", specifier = ">=2.2,<3" },
