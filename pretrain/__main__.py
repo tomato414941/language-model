@@ -283,6 +283,29 @@ def main(argv=None):
     hub_benchmark.add_argument(
         "--output", type=Path, required=True, help="問題ごとの記録を含む結果のJSONファイル"
     )
+    judging = commands.add_parser(
+        "judge", help="ELYZA-tasks-100と日本語MT-Benchの返答を、採点役のモデルに採点させる"
+    )
+    judged = judging.add_mutually_exclusive_group(required=True)
+    judged.add_argument("--checkpoint", type=Path, help="評価する自前のモデルの重み")
+    judged.add_argument("--model", help="評価するHubのモデル名（--revisionと使う）")
+    judging.add_argument("--revision", help="評価するHubのモデルのコミット")
+    judging.add_argument(
+        "--tasks", nargs="+", help="評価する課題（既定はelyza_tasks_100とja_mt_bench）"
+    )
+    judging.add_argument("--limit", type=int, help="動作確認で各課題に使う先頭からの問題数")
+    judging.add_argument(
+        "--sources", type=Path, default=Path("data/judging"), help="課題のファイルを置くディレクトリ"
+    )
+    judging.add_argument("--judge-model", default="openai/gpt-4o-2024-08-06")
+    judging.add_argument("--judge-url", default="https://openrouter.ai/api/v1")
+    judging.add_argument("--batch-tokens", type=int, default=4096)
+    judging.add_argument("--batch-size", type=int, default=8, help="Hubのモデルで一度に生成する数")
+    judging.add_argument("--threads", type=int, default=4)
+    judging.add_argument("--device", choices=("cpu", "cuda", "auto"), default="auto")
+    judging.add_argument(
+        "--output", type=Path, required=True, help="返答と採点を問題ごとに含む結果のJSONファイル"
+    )
     growth = commands.add_parser(
         "grow", help="学習したモデルの層を増やし、同じ予測から学習を始められる重みを作る"
     )
@@ -399,6 +422,67 @@ def main(argv=None):
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
             print(json.dumps(result["by_language"], indent=2))
+        elif args.command == "judge":
+            from .judging import fetch_sources, judge_replies
+
+            if args.threads <= 0:
+                raise ValueError("threads must be positive")
+            if (args.model is None) != (args.revision is None):
+                raise ValueError("--model and --revision go together")
+            torch.set_num_threads(args.threads)
+            device = select_device(args.device)
+            precision = select_precision(device)
+            if args.model is None:
+                from .evaluation import NativeLM
+
+                model, tokenizer, payload = load_model(args.checkpoint, device)
+                backend = NativeLM(model, tokenizer, device, precision, args.batch_tokens)
+                evaluated = {
+                    "checkpoint": str(args.checkpoint),
+                    "sha256": file_digest(args.checkpoint),
+                    "step": payload["step"],
+                    "tokens_seen": payload["tokens_seen"],
+                    "parameters": sum(p.numel() for p in model.parameters()),
+                    "precision": precision,
+                }
+            else:
+                from lm_eval.models.huggingface import HFLM
+
+                backend = HFLM(
+                    pretrained=args.model,
+                    revision=args.revision,
+                    device=str(device),
+                    dtype=precision,
+                    batch_size=args.batch_size,
+                )
+                evaluated = {
+                    "repository": args.model,
+                    "revision": args.revision,
+                    "parameters": sum(p.numel() for p in backend.model.parameters()),
+                    "precision": precision,
+                }
+            fetch_sources(args.sources)
+            with contextlib.redirect_stdout(sys.stderr):
+                result = judge_replies(
+                    backend,
+                    args.sources,
+                    args.tasks or None,
+                    args.limit,
+                    args.judge_model,
+                    args.judge_url,
+                )
+            result["evaluated"] = evaluated
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(
+                json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+            print(
+                json.dumps(
+                    {name: {k: v for k, v in task.items() if k != "items"} for name, task in result["tasks"].items()},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
         elif args.command == "grow":
             from .growth import grow_checkpoint
 
