@@ -30,6 +30,9 @@ def grow_checkpoint(checkpoint, output, factor=2):
     if config.full_attention_every is not None:
         # A layer's kind follows its position, which copies would shift.
         raise ValueError("growth keeps layers' kinds only when every layer attends")
+    if config.value_embeddings:
+        # Which layers hold value embeddings also follows their positions.
+        raise ValueError("growth keeps no value embeddings")
     weights = {}
     for name, value in saved["model"].items():
         if not name.startswith("blocks."):

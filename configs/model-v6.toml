@@ -3,8 +3,9 @@
 # the width and the key-value width, so only the gates, one per head,
 # shrink: 0.2M fewer of about 300M parameters.
 # FlashAttention runs faster at that head width, and Marin's and nanochat's
-# comparisons found it trained to a lower loss. The training section is the
-# v5 model's until the v6 recipe sets its budget.
+# comparisons found it trained to a lower loss. Value embeddings in every
+# other layer, gated, follow nanochat, whose comparisons found that form best.
+# The training section is the v5 model's until the v6 recipe sets its budget.
 [model]
 architecture = "llama"
 width = 1024
@@ -16,6 +17,7 @@ context = 8192
 rope_theta = 10000.0
 qk_norm = true
 attention_gate = "headwise"
+value_embeddings = true
 # The tokenizer's BOS, which begins each document.
 document_start = 0
 

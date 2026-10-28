@@ -219,6 +219,18 @@ class PretrainingTests(unittest.TestCase):
                 active_experts=2,
                 prediction_depth=1,
             ),
+            ModelConfig(
+                width=24,
+                heads=4,
+                kv_heads=2,
+                layers=3,
+                context=64,
+                architecture="llama",
+                intermediate_size=64,
+                qk_norm=True,
+                document_start=bos,
+                value_embeddings=True,
+            ),
         ):
             torch.manual_seed(3)
             model = LanguageModel(258, config).eval()
@@ -1017,6 +1029,7 @@ class PretrainingTests(unittest.TestCase):
                 active_experts=2,
                 prediction_depth=1,
             ),
+            dataclasses.replace(self.llama_config(), value_embeddings=True),
         ):
             model = LanguageModel(258, model_config)
             muon, adamw = make_optimizer(model, config, torch.device("cpu")).optimizers
@@ -1030,6 +1043,24 @@ class PretrainingTests(unittest.TestCase):
                 self.assertEqual(
                     owners[id(parameter)], ["muon" if matrix else "adamw"], name
                 )
+
+    def test_value_embeddings_feed_every_other_layer_ending_with_the_last(self):
+        """value embedding は最後の層から1層おきに置かれ、その層の値にトークンごとの表を足す。"""
+        for layers, holders in ((4, {1, 3}), (5, {0, 2, 4})):
+            config = dataclasses.replace(self.llama_config(), layers=layers, value_embeddings=True)
+            model = LanguageModel(258, config).eval()
+            self.assertEqual({int(index) for index in model.value_embeddings}, holders)
+            self.assertEqual(
+                {index for index, block in enumerate(model.blocks) if block.value_gate is not None}, holders
+            )
+            tokens = torch.tensor([[1, 2, 3, 4]])
+            before = model(tokens)
+            with torch.no_grad():
+                model.value_embeddings[str(max(holders))].weight[3].add_(1.0)
+            after = model(tokens)
+            # Only the positions from the changed token onward see its value.
+            torch.testing.assert_close(before[:, :2], after[:, :2], rtol=0, atol=1e-6)
+            self.assertFalse(torch.allclose(before[:, 2:], after[:, 2:]))
 
     def test_muon_training_learns_and_resumes_the_same_updates(self):
         """Muon で両言語の検証損失を下げ、途中保存から再開しても連続学習と同じ重みを得る。"""

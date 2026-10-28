@@ -51,6 +51,11 @@ class ModelConfig:
     # the embedding of the token in between, as DeepSeek-V3 trains; the
     # predictions add to the training objective only.
     prediction_depth: int = 0
+    # A table of each token's values for every other layer, the last among
+    # them, added to the attention's values through a gate per key-value head,
+    # as nanochat does after ResFormer (Zhou et al., ACL 2025). The tables are
+    # looked up rather than computed, so they add parameters, not computation.
+    value_embeddings: bool = False
 
     def __post_init__(self):
         if any(
@@ -104,6 +109,12 @@ class ModelConfig:
             raise ValueError("active_experts and expert_size require experts")
         if type(self.prediction_depth) is not int or not 0 <= self.prediction_depth <= 4:
             raise ValueError("prediction_depth must be an integer from 0 to 4")
+        if type(self.value_embeddings) is not bool:
+            raise ValueError("value_embeddings must be true or false")
+        if self.value_embeddings and self.full_attention_every is not None:
+            raise ValueError("value_embeddings require attention in every layer")
+        if self.value_embeddings and self.width < VALUE_GATE_CHANNELS:
+            raise ValueError(f"value_embeddings need a width of at least {VALUE_GATE_CHANNELS}")
         if self.architecture == "gpt" and (
             self.kv_heads is not None
             or self.intermediate_size is not None
@@ -113,11 +124,17 @@ class ModelConfig:
             or self.full_attention_every is not None
             or self.experts is not None
             or self.prediction_depth
+            or self.value_embeddings
         ):
             raise ValueError(
                 "kv_heads, intermediate_size, qk_norm, attention_gate, document_start, "
-                "full_attention_every, experts and prediction_depth require llama architecture"
+                "full_attention_every, experts, prediction_depth and value_embeddings "
+                "require llama architecture"
             )
+
+    def has_value_embedding(self, layer):
+        """Whether the layer adds a value embedding: every other layer, the last among them."""
+        return self.value_embeddings and layer % 2 == (self.layers - 1) % 2
 
 
 class Rotary(nn.Module):
@@ -185,6 +202,9 @@ CONVOLUTION = 4
 # The log decay at a document's first position, which leaves 1e-13 of the
 # state before it: a finite value keeps the chunk's sums of decays exact.
 RESET = -30.0
+# The channels of a block's normalized input that set its value embedding's
+# gate, as nanochat uses.
+VALUE_GATE_CHANNELS = 12
 
 
 def recurrent_delta_rule(query, key, value, decay, beta, state=None):
@@ -367,9 +387,9 @@ class ModernBlock(nn.Module):
             size = config.expert_size or max(1, intermediate // config.active_experts)
             self.experts = Experts(config.width, config.experts, config.active_experts, size)
 
-    def forward(self, hidden, positions=None, mask=None, cache=None, starts=None):
+    def forward(self, hidden, positions=None, mask=None, cache=None, starts=None, values=None):
         hidden = hidden + self.mix(
-            self.norm_attention(hidden), positions, mask, cache, starts
+            self.norm_attention(hidden), positions, mask, cache, starts, values
         )
         normalized = self.norm_mlp(hidden)
         if hasattr(self, "experts"):
@@ -381,7 +401,7 @@ class ModernBlock(nn.Module):
 class LlamaBlock(ModernBlock):
     """Rotary attention over every earlier position, with grouped keys and values."""
 
-    def __init__(self, config):
+    def __init__(self, config, value_embedding=False):
         super().__init__(config)
         self.heads = config.heads
         self.kv_heads = config.kv_heads or config.heads
@@ -399,18 +419,25 @@ class LlamaBlock(ModernBlock):
         if config.attention_gate is not None:
             gates = config.heads if config.attention_gate == "headwise" else config.width
             self.attention_gate = nn.Linear(config.width, gates, bias=False)
+        self.value_gate = (
+            nn.Linear(VALUE_GATE_CHANNELS, self.kv_heads, bias=False) if value_embedding else None
+        )
         self.build_feed_forward(config)
 
     def new_cache(self, size):
         return KeyValueCache(size)
 
-    def mix(self, normalized, positions, mask, cache, starts):
+    def mix(self, normalized, positions, mask, cache, starts, values=None):
         batch, length, width = normalized.shape
         query = self.query(normalized).view(batch, length, self.heads, self.head_width)
         key, value = [
             tensor.view(batch, length, self.kv_heads, self.head_width)
             for tensor in self.key_value(normalized).chunk(2, dim=-1)
         ]
+        if self.value_gate is not None:
+            # Between 0 and 3 times each head's embedded values, as in nanochat.
+            gate = 3 * torch.sigmoid(self.value_gate(normalized[..., :VALUE_GATE_CHANNELS]))
+            value = value + gate[..., None] * values.view(batch, length, self.kv_heads, self.head_width)
         if self.query_norm is not None:
             query, key = self.query_norm(query), self.key_norm(key)
         query, key = self.rotary(query.transpose(1, 2), key.transpose(1, 2), positions)
@@ -516,7 +543,7 @@ class DeltaBlock(ModernBlock):
             return checkpoint(convolved, padded, owners, documents, weight, use_reentrant=False)
         return convolved(padded, owners, documents, weight)
 
-    def mix(self, normalized, positions, mask, cache, starts):
+    def mix(self, normalized, positions, mask, cache, starts, values=None):
         batch, length, width = normalized.shape
         documents = (
             starts.long().cumsum(1)
@@ -589,7 +616,7 @@ class Block(nn.Module):
     def new_cache(self, size):
         return KeyValueCache(size)
 
-    def forward(self, hidden, positions=None, mask=None, cache=None, starts=None):
+    def forward(self, hidden, positions=None, mask=None, cache=None, starts=None, values=None):
         batch, length, width = hidden.shape
         q, k, v = self.qkv(self.norm_attention(hidden)).chunk(3, dim=-1)
         q, k, v = [
@@ -654,11 +681,19 @@ class LanguageModel(nn.Module):
         every = self.config.full_attention_every
         self.blocks = nn.Sequential(
             *(
-                (Block if not modern else LlamaBlock if every is None or (index + 1) % every == 0 else DeltaBlock)(
-                    self.config
-                )
+                LlamaBlock(self.config, self.config.has_value_embedding(index))
+                if modern and (every is None or (index + 1) % every == 0)
+                else (DeltaBlock if modern else Block)(self.config)
                 for index in range(self.config.layers)
             )
+        )
+        kv_width = (self.config.kv_heads or self.config.heads) * (self.config.width // self.config.heads)
+        self.value_embeddings = nn.ModuleDict(
+            {
+                str(index): nn.Embedding(vocabulary_size, kv_width)
+                for index in range(self.config.layers)
+                if self.config.has_value_embedding(index)
+            }
         )
         self.norm = (
             nn.RMSNorm(self.config.width, eps=1e-5)
@@ -681,11 +716,19 @@ class LanguageModel(nn.Module):
                 )
             ):
                 nn.init.normal_(parameter, std=0.02 / math.sqrt(2 * self.config.layers))
+            # Gates start a little above their midpoint, 1.5 times the embedded values.
+            if name.endswith("value_gate.weight"):
+                nn.init.uniform_(parameter, 0.0, 0.02)
 
     @staticmethod
     def _initialize(module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
             nn.init.normal_(module.weight, std=0.02)
+
+    def embedded_values(self, index, tokens):
+        """The layer's value embedding of the tokens, or None where it has none."""
+        table = self.value_embeddings[str(index)] if str(index) in self.value_embeddings else None
+        return None if table is None else table(tokens)
 
     def document_mask(self, starts):
         """Which earlier positions each position sees within its own document.
@@ -715,8 +758,8 @@ class LanguageModel(nn.Module):
         )
         mask = self.document_mask(starts)
         objective = 0.0
-        for block in self.blocks:
-            hidden, extra = block(hidden, mask=mask, starts=starts)
+        for index, block in enumerate(self.blocks):
+            hidden, extra = block(hidden, mask=mask, starts=starts, values=self.embedded_values(index, tokens))
             objective = objective + extra
         # Input and output embeddings share the same learned weights.
         logits = F.linear(self.norm(hidden), self.embedding.weight)
@@ -851,12 +894,13 @@ class LanguageModel(nn.Module):
         # A first call reads its tokens causally, without a dense mask, which
         # keeps a long prompt's attention on the memory-efficient kernels.
         mask = None if start == 0 else (steps <= queries[:, None])[None, None]
-        hidden = self.embedding(torch.tensor([tokens], device=device))
+        tokens = torch.tensor([tokens], device=device)
+        hidden = self.embedding(tokens)
         if self.position is not None:
             hidden = hidden + self.position(queries[None])
         starts = (queries == 0)[None] if start == 0 else None
-        for block, cache in zip(self.blocks, caches):
-            hidden, _ = block(hidden, queries[None], mask, cache, starts)
+        for index, (block, cache) in enumerate(zip(self.blocks, caches)):
+            hidden, _ = block(hidden, queries[None], mask, cache, starts, self.embedded_values(index, tokens))
         return F.linear(self.norm(hidden[0, -1]), self.embedding.weight)
 
     def continue_greedily(self, sequences, max_new_tokens, end, banned=(), finished=None):
@@ -931,9 +975,14 @@ class LanguageModel(nn.Module):
                 hidden = self.embedding(tokens)
                 if self.position is not None:
                     hidden = hidden + self.position(positions)
-                for block, cache in zip(self.blocks, caches):
+                for index, (block, cache) in enumerate(zip(self.blocks, caches)):
                     hidden, _ = block(
-                        hidden, positions, mask, cache, starts if step == 0 else None
+                        hidden,
+                        positions,
+                        mask,
+                        cache,
+                        starts if step == 0 else None,
+                        self.embedded_values(index, tokens),
                     )
                 logits = F.linear(self.norm(hidden[:, -1]), self.embedding.weight)
                 logits = logits.float()
