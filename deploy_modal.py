@@ -55,8 +55,7 @@ image = (
         memory=2048,
         timeout=600,
     )
-    .add_local_python_source("server", "responses_api", "model", "pretrain")
-    .add_local_file(ROOT / "checkpoints/names.json", "/root/checkpoints/names.json")
+    .add_local_python_source("server", "responses_api", "pretrain")
 )
 
 app = modal.App("language-model-api")
