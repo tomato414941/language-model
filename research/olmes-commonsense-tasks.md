@@ -1,5 +1,3 @@
-# WinoGrande、OpenBookQA、BoolQ、SIQA の評価
+# WinoGrande、OpenBookQA、BoolQ、SIQA
 
-足していない。
-
-ClimbMix（climbmix.md）は PIQA、ARC-Easy、HellaSwag で混ぜ方を選んでいるので、それ以外の常識の問題でも比べられるように、OLMES の標準タスクの残りを足そうとした。ClimbMix を見送ったので取り下げた。
+OLMES の標準の常識のタスクのうちの4つ。CLIMB（climbmix.md）が混ぜ方を選ぶのに使った PIQA、ARC-Easy、HellaSwag には入っていないので、ベンチマークの成績で選んだデータの効果を、選ぶのに使っていない問題で確かめられる。
