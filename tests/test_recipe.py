@@ -202,8 +202,11 @@ class RecipeTests(unittest.TestCase):
             15_000_000_000,
         )
         self.assertEqual(
-            plan["commands"][-1][-11:],
+            plan["commands"][-1][-13:],
             [
+                "--llm-jp-eval",
+                "kuci",
+                "--tasks",
                 "hellaswag",
                 "arc_easy",
                 "ja_leaderboard_jcommonsenseqa",
@@ -211,7 +214,6 @@ class RecipeTests(unittest.TestCase):
                 "piqa",
                 "lambada_openai",
                 "blimp",
-                "kuci",
                 "ja_leaderboard_xwinograd",
                 "ja_leaderboard_jnli",
                 "ifeval",
@@ -229,6 +231,14 @@ class RecipeTests(unittest.TestCase):
                 ]
             )
         self.assertEqual(json.loads(output.getvalue())["nominal_training_tokens"], 2000)
+
+    def test_日本語の課題をllm_jp_evalで評価する手順を事前学習と指示学習の評価に加える(self):
+        """llm-jp-evalのデータセットを、事前学習の評価に渡し、指示学習の評価には指示の課題も加えて渡す。"""
+        plan = inspect_recipe(ROOT / "configs/pretrain-v5.toml", "data/pretrain-v5")
+        benchmarks = [command for command in plan["commands"] if command[3] == "benchmark"]
+        asked = [command[command.index("--llm-jp-eval") + 1 : command.index("--tasks")] for command in benchmarks]
+        self.assertEqual(asked[0], ["kuci", "jmmlu", "jhumaneval"])
+        self.assertEqual(asked[-1], ["kuci", "jmmlu", "jhumaneval", "mif_eval_ja"])
 
     def test_縮小した学習計画を既定として学習量と保存先を表示する(self):
         output = io.StringIO()

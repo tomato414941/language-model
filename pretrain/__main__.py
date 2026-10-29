@@ -255,6 +255,12 @@ def main(argv=None):
     benchmark.add_argument("--batch-tokens", type=int, default=4096)
     benchmark.add_argument("--threads", type=int, default=4)
     benchmark.add_argument(
+        "--llm-jp-eval",
+        nargs="+",
+        default=[],
+        help="llm-jp-evalで全問を評価する日本語のデータセット名",
+    )
+    benchmark.add_argument(
         "--output", type=Path, required=True, help="問題ごとの記録を含む結果のJSONファイル"
     )
     hub_benchmark = commands.add_parser(
@@ -625,6 +631,8 @@ def main(argv=None):
             if args.command == "benchmark":
                 if args.threads <= 0:
                     raise ValueError("threads must be positive")
+                if args.llm_jp_eval and args.limit is not None:
+                    raise ValueError("llm-jp-eval asks every question")
                 torch.set_num_threads(args.threads)
             device = select_device(args.device)
             model, tokenizer, payload = load_model(args.checkpoint, device)
@@ -646,6 +654,18 @@ def main(argv=None):
                         args.tasks,
                         args.limit,
                     )
+                    if args.llm_jp_eval:
+                        from .llm_jp_eval import evaluate_llm_jp
+
+                        result["llm_jp_eval"] = evaluate_llm_jp(
+                            model,
+                            tokenizer,
+                            device,
+                            precision,
+                            args.batch_tokens,
+                            args.llm_jp_eval,
+                            args.output.parent / f"{args.output.stem}-llm-jp-eval",
+                        )
                 result["checkpoint"] = {
                     "checkpoint": str(args.checkpoint),
                     "sha256": file_digest(args.checkpoint),

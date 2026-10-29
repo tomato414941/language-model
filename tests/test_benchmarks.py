@@ -101,7 +101,7 @@ ROWS = {
 }
 ID_FIELDS = {"hellaswag": "ind", "arc_easy": "id", "jcommonsenseqa": "q_id"}
 # Tasks answered by choosing, which a model with a short context can take.
-CHOICE_TASKS = ["hellaswag", "arc_easy", "blimp", "kuci", "ja_leaderboard_jnli"]
+CHOICE_TASKS = ["hellaswag", "arc_easy", "blimp", "ja_leaderboard_jnli"]
 IFEVAL_ROWS = [
     {
         "key": 1,
@@ -112,22 +112,6 @@ IFEVAL_ROWS = [
 ]
 ROWS["ifeval"] = IFEVAL_ROWS
 ID_FIELDS["ifeval"] = "key"
-# Two instructions with different arguments, which the dataset's loader gives
-# both questions, filling the missing ones with None.
-M_IFEVAL_JA_ROWS = [
-    {
-        "key": 1,
-        "prompt": "雨について、ひらがなだけを用いて答えてください。",
-        "instruction_id_list": ["ja:letters:hiragana_only"],
-        "kwargs": [{}],
-    },
-    {
-        "key": 2,
-        "prompt": "「雨」という言葉を使って、天気を説明してください。",
-        "instruction_id_list": ["ja:keywords:existence"],
-        "kwargs": [{"keywords": ["雨"]}],
-    },
-]
 ROWS["jnli"] = [
     {
         "sentence_pair_id": "0",
@@ -432,10 +416,6 @@ def benchmark_dataset(path, name=None, **kwargs):
         return DatasetDict(train=rows, validation=rows, test=rows, prompt=rows)
     if path == "openai/openai_humaneval":
         return DatasetDict(test=Dataset.from_list(ROWS["humaneval"]))
-    if path == "parquet" and "jhumaneval" in kwargs["data_files"]["test"]:
-        return DatasetDict(test=Dataset.from_list(ROWS["jhumaneval"]))
-    if path == "csv" and "JMMLU" in kwargs["data_files"]["test"]:
-        return DatasetDict(test=Dataset.from_list(ROWS["jmmlu"]))
     if path == "json" and "jsquad" in str(kwargs["data_files"]):
         assert kwargs["field"] == "data"
         return DatasetDict(
@@ -444,8 +424,6 @@ def benchmark_dataset(path, name=None, **kwargs):
         )
     if path == "google/IFEval":
         return DatasetDict(train=Dataset.from_list(IFEVAL_ROWS))
-    if path == "json" and "M-IFEval-Ja" in str(kwargs["data_files"]):
-        return DatasetDict(test=Dataset.from_list(M_IFEVAL_JA_ROWS))
     if path == "nyu-mll/blimp":
         # Each phenomenon gets sentences of its own lengths.
         rows = [
@@ -463,8 +441,6 @@ def benchmark_dataset(path, name=None, **kwargs):
     }
     if path in tested:
         return DatasetDict(test=Dataset.from_list(ROWS[tested[path]]))
-    if path == "json" and "KUCI" in str(kwargs["data_files"]):
-        return DatasetDict(test=Dataset.from_list(ROWS["kuci"]))
     if path == "json":
         task = "jnli" if "jnli" in kwargs["data_files"]["train"] else "jcommonsenseqa"
     else:
@@ -847,20 +823,17 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(configs["sciq"]["test_split"], "test")
         self.assertEqual(configs["piqa"]["validation_split"], "validation")
         self.assertEqual(result["n-shot"]["ja_leaderboard_jnli"], 3)
-        self.assertEqual(configs["kuci"]["test_split"], "test")
         for name, shots in (
             ("gsm8k", 5),
             ("ja_leaderboard_mgsm", 5),
             ("mbpp", 3),
             ("ja_leaderboard_jsquad", 2),
             ("humaneval", 0),
-            ("jhumaneval", 0),
-            ("jmmlu", 0),
             ("arc_challenge", 0),
         ):
             self.assertEqual(result["n-shot"][name], shots)
         self.assertEqual(configs["ja_leaderboard_jsquad"]["validation_split"], "validation")
-        for name in ("gsm8k", "ja_leaderboard_mgsm", "mbpp", "humaneval", "jmmlu"):
+        for name in ("gsm8k", "ja_leaderboard_mgsm", "mbpp", "humaneval"):
             self.assertEqual(configs[name]["test_split"], "test")
         # MMLU's questions come from the test split of each of its 57 subjects.
         subjects = [name for name in configs if name.startswith("mmlu_")]
@@ -920,38 +893,6 @@ class BenchmarkTests(unittest.TestCase):
         self.assertIn("acc,none", result["results"]["arc_easy"])
         self.assertEqual(result["conversation_format_tasks"], ["ifeval"])
 
-    def test_japanese_instruction_following_is_checked_by_m_ifeval_rules(self):
-        """Asks M-IFEval-Ja in the conversation format and checks each instruction by its rule."""
-        tokenizer = byte_tokenizer(reserved_tokens=8)
-        model = LanguageModel(
-            tokenizer.get_vocab_size(), ModelConfig(width=8, heads=2, layers=1, context=64)
-        )
-        asked = []
-
-        def reply(sequences, max_new_tokens, *args, **kwargs):
-            asked.extend(
-                tokenizer.decode(sequence[1:], skip_special_tokens=False)
-                for sequence in sequences
-            )
-            # Hiragana only, without the kanji the second question asks for.
-            return [tokenizer.encode("あめがふる").ids for _ in sequences]
-
-        with (
-            patch(
-                "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
-            ),
-            patch.object(model, "continue_greedily", side_effect=reply),
-        ):
-            result = evaluate_benchmarks(
-                model, tokenizer, torch.device("cpu"), tasks=["m_ifeval_ja"]
-            )
-        self.assertEqual(
-            sorted(asked),
-            sorted(chat_prompt([{"role": "user", "content": row["prompt"]}]) for row in M_IFEVAL_JA_ROWS),
-        )
-        self.assertEqual(result["items"]["m_ifeval_ja"]["correct"]["prompt_level_strict_acc"], [1, 0])
-        self.assertEqual(result["conversation_format_tasks"], ["m_ifeval_ja"])
-
     def test_limited_standard_evaluation_is_reported_as_a_smoke_check(self):
         """Records the limited scope and item count for a smoke check."""
         with patch(
@@ -1006,6 +947,33 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(tasks, set(CHOICE_TASKS))
         for metrics in result["results"].values():
             self.assertTrue(0 <= metrics["acc,none"] <= 1)
+
+    def test_benchmark_command_records_llm_jp_eval_scores_when_datasets_are_given(self):
+        """データセットを指定すると、llm-jp-evalで全問を評価した結果もベンチマークの結果に記録する。"""
+        self.train_checkpoint()
+        output = self.root / "results.json"
+        scored = {"scores": {"kuci": 0.25}, "framework": {"name": "llm-jp-eval", "version": "v2.1.5"}}
+        with (
+            patch("lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset),
+            patch("pretrain.llm_jp_eval.evaluate_llm_jp", return_value=scored) as asked,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            main(
+                [
+                    "benchmark", "--checkpoint", str(self.root / "run/last.pt"), "--device", "cpu",
+                    "--threads", "1", "--output", str(output), "--llm-jp-eval", "kuci", "--tasks", "arc_easy",
+                ]
+            )
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()) as refused:
+                main(
+                    [
+                        "benchmark", "--checkpoint", str(self.root / "run/last.pt"), "--device", "cpu",
+                        "--output", str(output), "--llm-jp-eval", "kuci", "--tasks", "arc_easy", "--limit", "1",
+                    ]
+                )
+        self.assertIn("every question", refused.getvalue())
+        self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["llm_jp_eval"], scored)
+        self.assertEqual(asked.call_args.args[5:], (["kuci"], self.root / "results-llm-jp-eval"))
 
     def test_inspection_saves_standard_benchmark_results_in_the_summary(self):
         """Exports the final checkpoint with its standard benchmark results."""
@@ -1090,24 +1058,17 @@ class BenchmarkTests(unittest.TestCase):
             self.assertEqual(sum(items["correct"][metric]) / 2, metrics[f"{metric},none"])
         self.assertFalse(result["higher_is_better"]["arc_easy"]["gold_bits_per_byte"])
 
-    def test_KUCIは形態素の区切りの空白を除いた文で正解の続きを測る(self):
-        """Scores KUCI's right continuation as Japanese text, without spaces between morphemes."""
-        result, bits = self.evaluate_skewed(["kuci"])
-        self.assertAlmostEqual(
-            result["items"]["kuci"]["gold_bits_per_byte"][0], bits("予備の電池を買う"), places=4
-        )
-
     def test_課題ごとに決めた正答率を言語別にまとめる(self):
         """Reads each standard task's chosen accuracy and groups the tasks by language."""
-        result, _ = self.evaluate_skewed(["arc_easy", "sciq", "kuci", "ja_leaderboard_xwinograd"])
+        result, _ = self.evaluate_skewed(["arc_easy", "sciq", "ja_leaderboard_jnli", "ja_leaderboard_xwinograd"])
         summary = result["by_language"]
         self.assertEqual(set(summary), {"en", "ja"})
         self.assertEqual(set(summary["en"]), {"arc_easy", "sciq"})
-        self.assertEqual(set(summary["ja"]), {"kuci", "ja_leaderboard_xwinograd"})
+        self.assertEqual(set(summary["ja"]), {"ja_leaderboard_jnli", "ja_leaderboard_xwinograd"})
         for language, name, metric in (
             ("en", "arc_easy", "acc_norm"),
             ("en", "sciq", "acc"),
-            ("ja", "kuci", "acc_norm"),
+            ("ja", "ja_leaderboard_jnli", "acc"),
             ("ja", "ja_leaderboard_xwinograd", "acc"),
         ):
             read = summary[language][name]
@@ -1162,11 +1123,11 @@ class BenchmarkTests(unittest.TestCase):
             "lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset
         ):
             result = evaluate_hub_benchmarks(
-                str(directory), None, torch.device("cpu"), tasks=["arc_easy", "kuci"]
+                str(directory), None, torch.device("cpu"), tasks=["arc_easy", "ja_leaderboard_xwinograd"]
             )
         summary = result["by_language"]
         self.assertEqual(summary["en"]["arc_easy"]["metric"], "acc_norm")
-        self.assertEqual(set(summary["ja"]), {"kuci"})
+        self.assertEqual(set(summary["ja"]), {"ja_leaderboard_xwinograd"})
         self.assertEqual(len(result["items"]["arc_easy"]["gold_bits_per_byte"]), 2)
         self.assertEqual(
             result["model"]["parameters"], sum(p.numel() for p in model.parameters())
@@ -1194,13 +1155,15 @@ class BenchmarkTests(unittest.TestCase):
                     tasks=tasks,
                     limit=limit,
                 )
-                for tasks, limit in ((["arc_easy", "sciq"], None), (["arc_easy", "sciq", "kuci"], 1))
+                for tasks, limit in ((["arc_easy", "sciq"], None), (["arc_easy", "sciq", "ja_leaderboard_xwinograd"], 1))
             )
         comparison = compare_benchmarks(whole, part)
         self.assertEqual(
             comparison["en"]["arc_easy"], {"not_compared": "the evaluations asked different questions"}
         )
-        self.assertEqual(comparison["ja"]["kuci"], {"not_compared": "only one of the evaluations asked it"})
+        self.assertEqual(
+            comparison["ja"]["ja_leaderboard_xwinograd"], {"not_compared": "only one of the evaluations asked it"}
+        )
         self.assertEqual(comparison["en"]["sciq"]["questions"], 1)
 
     def test_文章の最後の語を当てる課題では最後の語を正解として測る(self):
@@ -1305,7 +1268,6 @@ class BenchmarkTests(unittest.TestCase):
         probabilities = skewed_probabilities()
         answers = {
             ROWS["humaneval"][0]["prompt"]: ROWS["humaneval"][0]["canonical_solution"],
-            ROWS["jhumaneval"][0]["prompt"]: ROWS["jhumaneval"][0]["canonical_solution"],
             "[BEGIN]\n": ROWS["mbpp"][0]["code"] + "\n[DONE] and more",
         }
         with (
@@ -1316,16 +1278,13 @@ class BenchmarkTests(unittest.TestCase):
                 AnsweringModel(probabilities, answers),
                 byte_tokenizer(),
                 torch.device("cpu"),
-                tasks=["humaneval", "jhumaneval", "mbpp"],
+                tasks=["humaneval", "mbpp"],
             )
         items = result["items"]
         self.assertEqual(items["humaneval"]["correct"]["pass@1,create_test"], [1.0, 0.0])
-        self.assertEqual(items["jhumaneval"]["correct"]["pass@1,create_test"], [1.0, 0.0])
         self.assertEqual(items["mbpp"]["correct"]["pass_at_1"], [1.0])
-        self.assertEqual(result["by_language"]["ja"]["jhumaneval"]["accuracy"], 0.5)
         for name, rows, field in (
             ("humaneval", ROWS["humaneval"], "canonical_solution"),
-            ("jhumaneval", ROWS["jhumaneval"], "canonical_solution"),
             ("mbpp", ROWS["mbpp"], "code"),
         ):
             for value, row in zip(items[name]["gold_bits_per_byte"], rows, strict=True):
@@ -1371,14 +1330,6 @@ class BenchmarkTests(unittest.TestCase):
         mmlu = compare_benchmarks(base, other)["en"]["mmlu_continuation"]
         self.assertEqual(mmlu["questions"], 57 * len(ROWS["mmlu"]))
         self.assertAlmostEqual(mmlu["difference"], mmlu["other"] - mmlu["base"])
-
-    def test_JMMLUは選択肢の文を答えとして測る(self):
-        """Scores the text of JMMLU's correct choice as the answer, without examples."""
-        result, bits = self.evaluate_skewed(["jmmlu"])
-        self.assertEqual(result["n-shot"]["jmmlu"], 0)
-        values = result["items"]["jmmlu"]["gold_bits_per_byte"]
-        for value, answer in zip(values, ("東京", "静岡県"), strict=True):
-            self.assertAlmostEqual(value, bits(answer), places=4)
 
     def test_生成は止める文字列に達したところで打ち切り長すぎる問いは末尾を残す(self):
         """Stops decoding at a stop sequence, and keeps the end of a prompt too long to answer."""

@@ -492,6 +492,7 @@ def inspect_recipe(path, workdir):
     runs = run_paths(path, recipe)
     config = str(Path(path).parent / recipe["training_config"])
     tasks = recipe["evaluation"]["base_tasks"]
+    japanese = recipe["evaluation"].get("llm_jp_eval_tasks", [])
     commands = [
         [
             "python",
@@ -542,7 +543,7 @@ def inspect_recipe(path, workdir):
         ]
         return command
 
-    def benchmark_command(checkpoint, selected):
+    def benchmark_command(checkpoint, selected, japanese):
         return [
             "python",
             "-m",
@@ -554,6 +555,7 @@ def inspect_recipe(path, workdir):
             "cuda",
             "--output",
             str(Path(checkpoint).parent / "benchmarks.json"),
+            *(["--llm-jp-eval", *japanese] if japanese else []),
             "--tasks",
             *selected,
         ]
@@ -575,7 +577,7 @@ def inspect_recipe(path, workdir):
                 command += ["--max-steps", str(end)]
             commands.append(command)
             previous = runs[item["name"]]
-        commands.append(benchmark_command(previous / "last.pt", tasks))
+        commands.append(benchmark_command(previous / "last.pt", tasks, japanese))
     else:
         evaluations = [
             corpora[item["name"]]
@@ -604,7 +606,7 @@ def inspect_recipe(path, workdir):
                         "--other-data",
                     ]
                 )
-            commands.append(benchmark_command(checkpoint, tasks))
+            commands.append(benchmark_command(checkpoint, tasks, japanese))
     if phases and "sft" in recipe:
         pretrained = previous / "last.pt"
         stem = Path(path).stem
@@ -675,6 +677,7 @@ def inspect_recipe(path, workdir):
             benchmark_command(
                 instruction_output / "last.pt",
                 [*tasks, *recipe["evaluation"]["instruction_tasks"]],
+                [*japanese, *recipe["evaluation"].get("llm_jp_eval_instruction_tasks", [])],
             ),
         ]
     sources = sources_by_id(recipe)

@@ -33,11 +33,13 @@ framework = "lm-eval"
 version = "0.4.13"
 base_tasks = [
     "hellaswag", "arc_easy", "ja_leaderboard_jcommonsenseqa", "sciq", "piqa",
-    "lambada_openai", "blimp", "kuci", "ja_leaderboard_xwinograd", "ja_leaderboard_jnli",
-    "mmlu_continuation", "jmmlu", "arc_challenge", "gsm8k", "ja_leaderboard_mgsm",
-    "humaneval", "mbpp", "jhumaneval", "ja_leaderboard_jsquad",
+    "lambada_openai", "blimp", "ja_leaderboard_xwinograd", "ja_leaderboard_jnli",
+    "mmlu_continuation", "arc_challenge", "gsm8k", "ja_leaderboard_mgsm",
+    "humaneval", "mbpp", "ja_leaderboard_jsquad",
 ]
-instruction_tasks = ["ifeval", "m_ifeval_ja"]
+instruction_tasks = ["ifeval"]
+llm_jp_eval_tasks = ["kuci", "jmmlu", "jhumaneval"]
+llm_jp_eval_instruction_tasks = ["mif_eval_ja"]
 
 # Instruction tuning keeps pretraining's optimizer, starts from the rate the
 # decay ended at and reads every conversation once per epoch, a step as many

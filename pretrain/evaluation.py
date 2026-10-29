@@ -13,7 +13,6 @@ import math
 import os
 import statistics
 from importlib.metadata import version
-from pathlib import Path
 from types import SimpleNamespace
 
 import torch
@@ -43,13 +42,13 @@ from .training import autocast
 # The standard tasks, each with the language it asks in and the accuracy read
 # from it, written "metric,filter" when the task filters its answers. OLMES
 # (arXiv:2406.08446) scores HellaSwag, ARC-Easy, PIQA and MMLU's cloze form by
-# each choice's loglikelihood per character, the harness's acc_norm; KUCI and
-# JMMLU's cloze form are scored the same way, and so is ARC-Challenge, which
-# OLMES scores by PMI that the harness's task lacks. The rest use plain
-# accuracy, as OLMo scored SciQ, or the harness's own metric. The easier
-# tasks from SciQ to KUCI separate small models; the others stay near chance
-# until a model grows enough to learn them. Add tasks or revise these choices
-# freely, but not to favor particular models.
+# each choice's loglikelihood per character, the harness's acc_norm; so is
+# ARC-Challenge, which OLMES scores by PMI that the harness's task lacks. The
+# rest use plain accuracy, as OLMo scored SciQ, or the harness's own metric.
+# The easier tasks from SciQ to XWinograd separate small models; the others
+# stay near chance until a model grows enough to learn them. Add published
+# tasks or revise these choices freely, but not to favor particular models.
+# Japanese tasks the harness lacks are asked through llm-jp-eval.
 STANDARD_TASKS = {
     "hellaswag": ("en", "acc_norm"),
     "arc_easy": ("en", "acc_norm"),
@@ -58,24 +57,19 @@ STANDARD_TASKS = {
     "piqa": ("en", "acc_norm"),
     "lambada_openai": ("en", "acc"),
     "blimp": ("en", "acc"),
-    "kuci": ("ja", "acc_norm"),
     "ja_leaderboard_xwinograd": ("ja", "acc"),
     "ja_leaderboard_jnli": ("ja", "acc"),
     # Knowledge, reasoning, mathematics, programming and reading, which a
     # general model needs in both languages.
     "mmlu_continuation": ("en", "acc_norm"),
-    "jmmlu": ("ja", "acc_norm"),
     "arc_challenge": ("en", "acc_norm"),
     "gsm8k": ("en", "exact_match,strict-match"),
     "ja_leaderboard_mgsm": ("ja", "acc"),
     "humaneval": ("en", "pass@1,create_test"),
     "mbpp": ("en", "pass_at_1"),
-    "jhumaneval": ("ja", "pass@1,create_test"),
     "ja_leaderboard_jsquad": ("ja", "exact_match,whitespaces"),
 }
 DEFAULT_TASKS = tuple(STANDARD_TASKS)
-# Definitions of published tasks that the harness lacks, in its own format.
-TASK_DEFINITIONS = Path(__file__).with_name("harness_tasks")
 # The continuation that answers each generation task's question correctly,
 # from its reference answer. MGSM publishes no reference solutions for its
 # test questions.
@@ -83,11 +77,10 @@ REFERENCE_ANSWERS = {
     "gsm8k": lambda doc: " " + doc["answer"],
     "humaneval": lambda doc: doc["canonical_solution"],
     "mbpp": lambda doc: doc["code"],
-    "jhumaneval": lambda doc: doc["canonical_solution"],
     "ja_leaderboard_jsquad": lambda doc: "\n" + doc["answers"]["text"][0],
 }
 # These tasks ask in the conversation format that the API serves.
-CONVERSATION_TASKS = ("ifeval", "m_ifeval_ja")
+CONVERSATION_TASKS = ("ifeval",)
 RESULT_SECTIONS = (
     "results",
     "group_subtasks",
@@ -525,7 +518,7 @@ def run_benchmarks(backend, tasks=None, limit=None):
     """Ask a harness backend the standard tasks and record each question's results."""
     if limit is not None and (type(limit) is not int or limit <= 0):
         raise ValueError("limit must be a positive integer")
-    manager = TaskManager(include_path=str(TASK_DEFINITIONS))
+    manager = TaskManager()
     selected = list(DEFAULT_TASKS if tasks is None else tasks)
     if not selected:
         raise ValueError("select at least one evaluation task")
