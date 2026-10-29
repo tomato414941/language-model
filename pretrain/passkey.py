@@ -29,7 +29,9 @@ TEMPLATES = {
         "それを見つけて覚えてください。あとで質問します。\n",
         "草は緑です。空は青いです。太陽は黄色いです。さあ、行きましょう。行って、帰ってきます。",
         "パスキーは{key}です。覚えておいてください。{key}がパスキーです。",
-        "\nパスキーは何ですか？パスキーは",
+        # A question that ended as it began, "パスキーは何ですか？パスキーは",
+        # led models to repeat it rather than answer.
+        "\n隠されたパスキーを答えてください。パスキーは",
     ),
 }
 # Enough for a space, the five digits and what follows them.
