@@ -17,9 +17,12 @@
 # tokens read. Its rules carry the v5 model's settings to that batch, four
 # times v5's: the learning rate grows with the square root of the batch, to
 # twice v5's, and weight decay as much again and by the tokens v5 read over
-# these, so the weights forget at the same pace through the run. Warmup and
-# decay keep their shares of the run. The matrices take NorMuon with cautious
-# weight decay that falls to zero over the run, nanochat's optimizer.
+# these, so the weights forget at the same pace through the run. Warmup keeps
+# its share of the run. The rate decays over the last fifth of the run to a
+# hundredth of its peak: IMU-1 found a fifth better than a tenth or three
+# tenths, and Straight to Zero found decaying to zero better than stopping at
+# a tenth. The matrices take NorMuon with cautious weight decay that falls to
+# zero over the run, nanochat's optimizer.
 [model]
 architecture = "llama"
 width = 1024
@@ -44,7 +47,7 @@ steps = 8000
 batch_size = 4
 accumulation_steps = 32
 learning_rate = 0.0032
-min_learning_rate = 0.00032
+min_learning_rate = 0.000032
 warmup_steps = 180
 # 0.1 x 2 x 11.74B / 8.39B.
 weight_decay = 0.28
@@ -55,7 +58,7 @@ eval_batches = 16
 log_every = 5
 seed = 42
 schedule = "wsd"
-decay_steps = 1215
+decay_steps = 1600
 decay_shape = "1-sqrt"
 sampling = "sequential"
 optimizer = "normuon"
