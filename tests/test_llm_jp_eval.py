@@ -9,7 +9,7 @@ import yaml
 
 from pretrain.conversation import chat_prompt
 from pretrain.evaluation import NativeLM
-from pretrain.llm_jp_eval import generate_replies, write_config
+from pretrain.llm_jp_eval import dumped_prompts, generate_replies, write_config
 from pretrain.model import LanguageModel, ModelConfig
 from tests.test_benchmarks import byte_tokenizer
 
@@ -67,10 +67,10 @@ class LlmJpEvalTest(unittest.TestCase):
         (home / "eval_configs/all_datasets.yaml").write_text(
             yaml.safe_dump(
                 {
-                    "datasets": ["kuci", "jmmlu", "jhumaneval", "jnli"],
+                    "datasets": ["kuci", "jmmlu", "jnli"],
                     "categories": {
                         "CR": {"description": "", "default_metric": "exact_match", "metrics": {}, "datasets": ["kuci"]},
-                        "CG": {"description": "", "default_metric": "code_exec", "metrics": {}, "datasets": ["jhumaneval"]},
+                        "HE-JA": {"description": "", "default_metric": "exact_match", "metrics": {}, "datasets": ["jmmlu"]},
                         "NLI": {"description": "", "default_metric": "exact_match", "metrics": {}, "datasets": ["jnli"]},
                     },
                 }
@@ -79,13 +79,22 @@ class LlmJpEvalTest(unittest.TestCase):
         (home / "configs/config_template.yaml").write_text(yaml.safe_dump({"max_num_samples": 10, "num_few_shots": 4}))
         work = self.root / "work"
         work.mkdir()
-        config = yaml.safe_load(write_config(home, work, ["kuci", "jhumaneval"], self.root / "replies").read_text())
+        config = yaml.safe_load(write_config(home, work, ["kuci", "jmmlu"], self.root / "replies").read_text())
         self.assertEqual((config["max_num_samples"], config["num_few_shots"]), (-1, 4))
         self.assertEqual(config["inference_result_dir"], str(self.root / "replies"))
         selection = yaml.safe_load(Path(config["eval_dataset_config_path"]).read_text())
-        self.assertEqual(selection["datasets"], ["kuci", "jhumaneval"])
-        self.assertEqual(set(selection["categories"]), {"CR", "CG"})
-        self.assertEqual(selection["dataset_info_overrides"], {"jhumaneval": {"metrics": ["code_exec", "pylint_check"]}})
+        self.assertEqual(selection["datasets"], ["kuci", "jmmlu"])
+        self.assertEqual(set(selection["categories"]), {"CR", "HE-JA"})
+        self.assertEqual(selection["dataset_info_overrides"], {})
+
+    def test_llm_jp_evalが問いを書き出さなかったデータセットは答えを書く前に断る(self):
+        """Refuses the datasets llm-jp-eval left out of the dump, before any reply is written."""
+        dumped = self.root / "work/files/datasets/2.1.5/evaluation/test/prompts_abc"
+        dumped.mkdir(parents=True)
+        (dumped / "kuci.eval-prompt.json").write_text("{}")
+        self.assertEqual(dumped_prompts(self.root / "work", ["kuci"]), dumped)
+        with self.assertRaisesRegex(ValueError, "jhumaneval"):
+            dumped_prompts(self.root / "work", ["kuci", "jhumaneval"])
 
 
 if __name__ == "__main__":

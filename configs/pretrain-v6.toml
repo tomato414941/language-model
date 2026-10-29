@@ -35,7 +35,9 @@ base_tasks = [
     "humaneval", "mbpp", "ja_leaderboard_jsquad",
 ]
 instruction_tasks = ["ifeval"]
-llm_jp_eval_tasks = ["kuci", "jmmlu", "jhumaneval"]
+# llm-jp-eval leaves out JHumanEval, whose processing it does not allow for
+# commercial use.
+llm_jp_eval_tasks = ["kuci", "jmmlu"]
 llm_jp_eval_instruction_tasks = ["mif_eval_ja"]
 
 # Instruction tuning keeps pretraining's optimizer, starts from the rate the

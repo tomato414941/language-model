@@ -237,8 +237,8 @@ class RecipeTests(unittest.TestCase):
         plan = inspect_recipe(ROOT / "configs/pretrain-v5.toml", "data/pretrain-v5")
         benchmarks = [command for command in plan["commands"] if command[3] == "benchmark"]
         asked = [command[command.index("--llm-jp-eval") + 1 : command.index("--tasks")] for command in benchmarks]
-        self.assertEqual(asked[0], ["kuci", "jmmlu", "jhumaneval"])
-        self.assertEqual(asked[-1], ["kuci", "jmmlu", "jhumaneval", "mif_eval_ja"])
+        self.assertEqual(asked[0], ["kuci", "jmmlu"])
+        self.assertEqual(asked[-1], ["kuci", "jmmlu", "mif_eval_ja"])
 
     def test_縮小した学習計画を既定として学習量と保存先を表示する(self):
         output = io.StringIO()

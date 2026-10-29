@@ -9,8 +9,9 @@ pinned, its default settings stand, and every question is asked.
 
 Tasks asked in the conversation format put the prompt in a user turn, as
 llm-jp-eval-inference's chat template option does; the others continue the
-prompt as plain text. Code generation runs its tests in this process, the
-option llm-jp-eval documents for machines without a container runtime.
+prompt as plain text. The template leaves out the datasets llm-jp-eval does
+not process for commercial use, JHumanEval among them, so asking for one is
+refused before any reply is written.
 """
 
 import copy
@@ -29,8 +30,6 @@ REPOSITORY = "https://github.com/llm-jp/llm-jp-eval.git"
 RELEASE = "v2.1.5"
 # These tasks ask in the conversation format that the API serves.
 CONVERSATION_DATASETS = ("mif_eval_ja",)
-# llm-jp-eval runs generated programs in its Dify sandbox unless told not to.
-OVERRIDES = {"jhumaneval": {"metrics": ["code_exec", "pylint_check"]}}
 
 
 class Request:
@@ -67,11 +66,7 @@ def write_config(home, work, datasets, results=None):
     selection = work / "datasets.yaml"
     selection.write_text(
         yaml.safe_dump(
-            {
-                "datasets": list(datasets),
-                "categories": categories,
-                "dataset_info_overrides": {name: OVERRIDES[name] for name in datasets if name in OVERRIDES},
-            },
+            {"datasets": list(datasets), "categories": categories, "dataset_info_overrides": {}},
             allow_unicode=True,
         )
     )
@@ -88,6 +83,18 @@ def write_config(home, work, datasets, results=None):
     path = work / ("evaluation.yaml" if results is not None else "prompts.yaml")
     path.write_text(yaml.safe_dump(config, allow_unicode=True))
     return path
+
+
+def dumped_prompts(work, datasets):
+    """The directory of the dumped prompts, refusing the datasets llm-jp-eval left out."""
+    [prompts] = (work / "files/datasets").glob("*/evaluation/test/prompts_*")
+    missing = [name for name in datasets if not (prompts / f"{name}.eval-prompt.json").exists()]
+    if missing:
+        raise ValueError(
+            f"llm-jp-eval wrote no prompts for {', '.join(missing)}; its settings leave out "
+            "the datasets it does not process for commercial use"
+        )
+    return prompts
 
 
 def generate_replies(backend, prompts, results, datasets):
@@ -161,7 +168,7 @@ def evaluate_llm_jp(model, tokenizer, device, precision, batch_tokens, datasets,
     for name in datasets:
         tool(home, "scripts/preprocess_dataset.py", "--dataset-name", name, "--output-dir", str(work / "files"))
     tool(home, "scripts/evaluate_llm.py", "dump", "--config", str(write_config(home, work, datasets)))
-    [prompts] = (work / "files/datasets").glob("*/evaluation/test/prompts_*")
+    prompts = dumped_prompts(work, datasets)
     results = work / "replies"
     backend = NativeLM(model, tokenizer, device, precision, batch_tokens)
     generate_replies(backend, prompts, results, datasets)
