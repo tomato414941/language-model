@@ -8,7 +8,14 @@
 # Thirty-two layers rather than 24 grow the model by depth, which nanochat
 # found better than width at the same compute: about 400M parameters outside
 # the value embeddings, the compute-optimal size at the v5 model's compute.
-# The training section is the v5 model's until the v6 recipe sets its budget.
+# Training reads about 8.4B tokens, the compute-optimal count for that size,
+# in updates of about 1M tokens: nanochat's batch for models trained on 3.4B
+# to 9.6B tokens, from the Power Lines law that the best batch grows with the
+# tokens read. Its rules carry the v5 model's settings to that batch, four
+# times v5's: the learning rate grows with the square root of the batch, to
+# twice v5's, and weight decay as much again and by the tokens v5 read over
+# these, so the weights forget at the same pace through the run. Warmup and
+# decay keep their shares of the run.
 [model]
 architecture = "llama"
 width = 1024
@@ -25,23 +32,24 @@ value_embeddings = true
 document_start = 0
 
 [training]
-# 32 windows of 8,192 tokens per update: 262,144 tokens.
-steps = 44800
+# 128 windows of 8,192 tokens per update: 1,048,576 tokens; 8,000 updates
+# read 8.39B tokens.
+steps = 8000
 batch_size = 4
-accumulation_steps = 8
-learning_rate = 0.0016
-min_learning_rate = 0.00016
-warmup_steps = 1000
-weight_decay = 0.1
+accumulation_steps = 32
+learning_rate = 0.0032
+min_learning_rate = 0.00032
+warmup_steps = 180
+# 0.1 x 2 x 11.74B / 8.39B.
+weight_decay = 0.28
 gradient_clip = 1.0
-eval_every = 1000
-# About every 8 minutes on an A100, so an interruption loses little.
-save_every = 100
+eval_every = 200
+save_every = 25
 eval_batches = 16
-log_every = 20
+log_every = 5
 seed = 42
 schedule = "wsd"
-decay_steps = 6800
+decay_steps = 1215
 decay_shape = "1-sqrt"
 sampling = "sequential"
 optimizer = "muon"
