@@ -34,6 +34,7 @@ from pretrain.model import (
     recurrent_delta_rule,
 )
 from pretrain.training import (
+    NorMuon,
     TrainConfig,
     evaluate,
     evaluate_windows,
@@ -43,6 +44,7 @@ from pretrain.training import (
     make_optimizer,
     select_device,
     train,
+    weight_decay,
 )
 
 
@@ -1087,6 +1089,72 @@ class PretrainingTests(unittest.TestCase):
         )
         for name, parameter in first["model"].items():
             torch.testing.assert_close(parameter, second["model"][name], rtol=0, atol=0)
+
+    def test_normuon_training_learns_and_resumes_the_same_updates(self):
+        """NorMuon で両言語の検証損失を下げ、途中保存から再開しても連続学習と同じ重みを得る。"""
+        self.model_config = self.llama_config()
+        config = TrainConfig(
+            **{
+                **self.config(steps=24).__dict__,
+                "optimizer": "normuon",
+                "weight_decay_schedule": "cosine",
+            }
+        )
+        torch.manual_seed(42)
+        before = evaluate(
+            LanguageModel(258, self.model_config),
+            self.corpus,
+            torch.device("cpu"),
+            batches=2,
+            batch_size=4,
+        )
+        after = self.run_training("normuon-continuous", config)["validation"]
+        for language in ("ja", "en"):
+            self.assertLess(after[language]["loss"], before[language]["loss"] * 0.8)
+        self.run_training("normuon-resumed", config, max_steps=10)
+        self.run_training(
+            "normuon-resumed", config, resume=self.root / "normuon-resumed/last.pt"
+        )
+        first, second = (
+            load_checkpoint(self.root / name / "last.pt")
+            for name in ("normuon-continuous", "normuon-resumed")
+        )
+        for name, parameter in first["model"].items():
+            torch.testing.assert_close(parameter, second["model"][name], rtol=0, atol=0)
+
+    def test_normuon_evens_neuron_updates_and_decays_only_weights_moving_toward_zero(self):
+        """NorMuon は各出力ニューロンの更新の大きさをそろえ、更新がゼロへ向かう重みだけを減衰させる。"""
+        torch.manual_seed(0)
+        start = torch.randn(8, 4)
+        # One neuron's gradient dwarfs the others'.
+        grad = torch.randn(8, 4) * torch.tensor([[100.0]] + [[1.0]] * 7)
+        steps = []
+        for decay in (0.0, 0.5):
+            weight = torch.nn.Parameter(start.clone())
+            weight.grad = grad.clone()
+            NorMuon(
+                [weight], lr=0.1, weight_decay=decay, beta2=0.0, adjust_lr_fn="match_rms_adamw"
+            ).step()
+            steps.append(start - weight.detach())
+        update, decayed = steps
+        torch.testing.assert_close(update.norm(dim=1), update.norm(dim=1).mean().expand(8))
+        toward_zero = update * start >= 0
+        self.assertTrue(toward_zero.any() and not toward_zero.all())
+        torch.testing.assert_close(decayed, update + 0.1 * 0.5 * start * toward_zero)
+
+    def test_cosine_weight_decay_falls_from_the_setting_to_zero(self):
+        """cosine の weight decay は設定値から始まり、半ばで半分、終わりでほぼゼロになる。"""
+        config = TrainConfig(
+            steps=100,
+            warmup_steps=10,
+            optimizer="normuon",
+            weight_decay=0.28,
+            weight_decay_schedule="cosine",
+        )
+        self.assertAlmostEqual(weight_decay(config, 0), 0.28)
+        self.assertAlmostEqual(weight_decay(config, 50), 0.14)
+        self.assertLess(weight_decay(config, 99), 0.001)
+        self.assertEqual(weight_decay(TrainConfig(weight_decay=0.1), 99), 0.1)
 
     def test_continuation_keeps_the_optimizer_that_saved_its_state(self):
         """継続では保存時の最適化手法を引き継ぎ、手法を変えるには重みだけを引き継ぐよう求める。"""

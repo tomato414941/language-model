@@ -15,7 +15,8 @@
 # times v5's: the learning rate grows with the square root of the batch, to
 # twice v5's, and weight decay as much again and by the tokens v5 read over
 # these, so the weights forget at the same pace through the run. Warmup and
-# decay keep their shares of the run.
+# decay keep their shares of the run. The matrices take NorMuon with cautious
+# weight decay that falls to zero over the run, nanochat's optimizer.
 [model]
 architecture = "llama"
 width = 1024
@@ -52,4 +53,5 @@ schedule = "wsd"
 decay_steps = 1215
 decay_shape = "1-sqrt"
 sampling = "sequential"
-optimizer = "muon"
+optimizer = "normuon"
+weight_decay_schedule = "cosine"

@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from tokenizers import Tokenizer
+from torch.optim._muon import _adjust_lr, _zeropower_via_newtonschulz
 
 from .data import BOS, LANGUAGES, file_digest, open_corpus, to_device, token_bytes
 from .model import LanguageModel, ModelConfig
@@ -42,8 +43,13 @@ class TrainConfig:
     # once per epoch in a seeded order.
     sampling: str = "random"
     # "adamw" updates every weight with AdamW; "muon" updates the matrices in
-    # the blocks with Muon and the embedding and norms with AdamW.
+    # the blocks with Muon and the embedding and norms with AdamW; "normuon"
+    # gives the matrices NorMuon, as nanochat does.
     optimizer: str = "adamw"
+    # "constant" keeps weight_decay; "cosine" takes the decay of the matrices
+    # NorMuon updates from weight_decay down to zero over the run, as nanochat
+    # does, so the weights settle unpulled by the end.
+    weight_decay_schedule: str = "constant"
 
     def __post_init__(self):
         for field in (
@@ -93,8 +99,12 @@ class TrainConfig:
             raise ValueError("decay_shape must be linear or 1-sqrt")
         if self.schedule != "wsd" and self.decay_shape != "linear":
             raise ValueError("decay_shape applies to a wsd schedule")
-        if self.optimizer not in ("adamw", "muon"):
-            raise ValueError("optimizer must be adamw or muon")
+        if self.optimizer not in ("adamw", "muon", "normuon"):
+            raise ValueError("optimizer must be adamw, muon or normuon")
+        if self.weight_decay_schedule not in ("constant", "cosine"):
+            raise ValueError("weight_decay_schedule must be constant or cosine")
+        if self.weight_decay_schedule == "cosine" and self.optimizer != "normuon":
+            raise ValueError("a cosine weight decay schedule applies to normuon")
 
 
 def read_config(path):
@@ -173,12 +183,75 @@ class Optimizers:
             optimizer.load_state_dict(saved)
 
 
+class NorMuon(torch.optim.Muon):
+    """Muon whose orthogonalized updates are evened out across neurons, with cautious decay.
+
+    NorMuon (arxiv.org/abs/2510.05491) keeps a running mean of each output
+    neuron's squared update, of each row of a tall or square matrix and each
+    column of a wide one, and divides by its root so that no neuron's update
+    outgrows the others', then rescales the update to its orthogonalized
+    norm. Cautious weight decay (arxiv.org/abs/2510.12402) pulls only the
+    weights the update already moves toward zero. Both follow nanochat's
+    implementation; the update keeps Muon's size, so match_rms_adamw scales it
+    as it scales Muon's.
+    """
+
+    def __init__(self, params, beta2=0.9, **options):
+        super().__init__(params, **options)
+        for group in self.param_groups:
+            group.setdefault("beta2", beta2)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        for group in self.param_groups:
+            for parameter in group["params"]:
+                if parameter.grad is None:
+                    continue
+                grad = parameter.grad
+                state = self.state[parameter]
+                if "momentum_buffer" not in state:
+                    state["momentum_buffer"] = torch.zeros_like(grad)
+                    rows, columns = grad.shape
+                    state["second_moment"] = grad.new_zeros(
+                        (rows, 1) if rows >= columns else (1, columns), dtype=torch.float32
+                    )
+                buffer = state["momentum_buffer"]
+                buffer.lerp_(grad, 1 - group["momentum"])
+                update = grad.lerp(buffer, group["momentum"]) if group["nesterov"] else buffer
+                update = _zeropower_via_newtonschulz(
+                    update, group["ns_coefficients"], group["ns_steps"], group["eps"]
+                ).float()
+                axis = -1 if update.size(0) >= update.size(1) else -2
+                mean = update.square().mean(dim=axis, keepdim=True)
+                state["second_moment"].lerp_(mean, 1 - group["beta2"])
+                evened = update * state["second_moment"].clamp_min(1e-10).rsqrt()
+                update = evened * (update.norm() / evened.norm().clamp_min(1e-10))
+                update = update.to(parameter.dtype)
+                decay = group["lr"] * group["weight_decay"]
+                parameter.sub_(decay * parameter * (update * parameter >= 0))
+                parameter.add_(
+                    update, alpha=-_adjust_lr(group["lr"], group["adjust_lr_fn"], parameter.shape)
+                )
+        return loss
+
+
+def weight_decay(config, step):
+    """The decay of the matrices NorMuon updates at a step."""
+    if config.weight_decay_schedule == "cosine":
+        return config.weight_decay * 0.5 * (1 + math.cos(math.pi * step / config.steps))
+    return config.weight_decay
+
+
 def make_optimizer(model, config, device):
     """Build the configured optimizer; weight decay applies to matrices only.
 
-    Muon takes the matrices inside the blocks and AdamW the embedding and the
-    norms. Muon scales each matrix's update to the size AdamW's would have, so
-    both follow the same learning rate.
+    Muon, or NorMuon, takes the matrices inside the blocks and AdamW the
+    embedding and the norms. Muon scales each matrix's update to the size
+    AdamW's would have, so both follow the same learning rate.
     """
 
     def adamw(parameters):
@@ -204,7 +277,7 @@ def make_optimizer(model, config, device):
     matrices = [p for name, p in named if p.ndim == 2 and name.startswith("blocks.")]
     chosen = {id(p) for p in matrices}
     return Optimizers(
-        torch.optim.Muon(
+        (NorMuon if config.optimizer == "normuon" else torch.optim.Muon)(
             matrices,
             lr=config.learning_rate,
             weight_decay=config.weight_decay,
@@ -608,6 +681,9 @@ def train(
             rate = learning_rate(config, step)
             for group in optimizer.param_groups:
                 group["lr"] = rate
+            if config.optimizer == "normuon":
+                for group in optimizer.optimizers[0].param_groups:
+                    group["weight_decay"] = weight_decay(config, step)
             total_loss = 0.0
             for micro in range(config.accumulation_steps):
                 if config.sampling == "sequential":
