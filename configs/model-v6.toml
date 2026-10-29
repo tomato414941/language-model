@@ -5,13 +5,16 @@
 # FlashAttention runs faster at that head width, and Marin's and nanochat's
 # comparisons found it trained to a lower loss. Value embeddings in every
 # other layer, gated, follow nanochat, whose comparisons found that form best.
+# Thirty-two layers rather than 24 grow the model by depth, which nanochat
+# found better than width at the same compute: about 400M parameters outside
+# the value embeddings, the compute-optimal size at the v5 model's compute.
 # The training section is the v5 model's until the v6 recipe sets its budget.
 [model]
 architecture = "llama"
 width = 1024
 heads = 8
 kv_heads = 2
-layers = 24
+layers = 32
 intermediate_size = 2752
 context = 8192
 rope_theta = 10000.0
