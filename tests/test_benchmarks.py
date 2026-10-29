@@ -5,7 +5,6 @@ import importlib.util
 import io
 import json
 import math
-import re
 import statistics
 import tempfile
 import unittest
@@ -45,7 +44,6 @@ from pretrain.evaluation import (
     result_keys,
 )
 from pretrain.model import LanguageModel, ModelConfig
-from pretrain.passkey import ANSWER_TOKENS, TEMPLATES, passkey_accuracy, passkey_prompt
 from pretrain.training import TrainConfig, train
 from scripts import inspect_pretrain
 
@@ -518,24 +516,6 @@ class AnsweringModel(FixedModel):
             prompt = tokenizer.decode(sequence, skip_special_tokens=True)
             ending = next((key for key in self.answers if prompt.endswith(key)), None)
             written.append(tokenizer.encode(self.answers.get(ending, "")).ids)
-        return written
-
-
-class PasskeyReader(FixedModel):
-    """Answer each pass key question with the number its prompt hides, in the given languages only."""
-
-    def __init__(self, languages, context):
-        super().__init__(torch.full((258,), 1 / 258), context=context)
-        self.languages = languages
-
-    def continue_greedily(self, sequences, max_new_tokens, end, banned=(), finished=None):
-        tokenizer = byte_tokenizer()
-        written = []
-        for sequence in sequences:
-            prompt = tokenizer.decode(sequence, skip_special_tokens=True)
-            language = "ja" if "パスキー" in prompt else "en"
-            key = re.search(r"\d+", prompt).group() if language in self.languages else "0"
-            written.append(tokenizer.encode(" " + key + ".").ids)
         return written
 
 
@@ -1026,52 +1006,6 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(tasks, set(CHOICE_TASKS))
         for metrics in result["results"].values():
             self.assertTrue(0 <= metrics["acc,none"] <= 1)
-
-    def test_pass_key_prompt_fits_its_length_and_hides_the_key_at_its_depth(self):
-        """パスキーの入力を、答えの分を残して指定の長さに収め、番号の文を指定した深さに置く。"""
-        tokenizer = byte_tokenizer()
-        for language, (introduction, filler, needle, question) in TEMPLATES.items():
-            sentence = needle.format(key=12345)
-            for depth in (0.0, 0.5, 1.0):
-                with self.subTest(language=language, depth=depth):
-                    tokens = passkey_prompt(tokenizer, language, 1024, depth, 12345)
-                    self.assertLessEqual(len(tokens), 1024 - ANSWER_TOKENS)
-                    self.assertGreater(len(tokens), 1024 - ANSWER_TOKENS - len(tokenizer.encode(filler).ids))
-                    text = tokenizer.decode(tokens, skip_special_tokens=True)
-                    self.assertTrue(text.startswith(introduction) and text.endswith(question))
-                    before, after = text[len(introduction) : -len(question)].split(sentence)
-                    units = before.count(filler) + after.count(filler)
-                    self.assertEqual(before.count(filler), round(units * depth))
-        with self.assertRaisesRegex(ValueError, "too few"):
-            passkey_prompt(tokenizer, "ja", 100, 0.5, 12345)
-
-    def test_pass_key_accuracy_counts_the_keys_each_language_recalls_at_each_length(self):
-        """言語と長さごとに、隠した番号を答えられた割合を数え、文脈に収まらない長さは断る。"""
-        accuracy = passkey_accuracy(PasskeyReader({"en"}, 1024), byte_tokenizer(), [512, 1024], 3, torch.device("cpu"))
-        self.assertEqual(accuracy, {"en": {"512": 1.0, "1024": 1.0}, "ja": {"512": 0.0, "1024": 0.0}})
-        with self.assertRaisesRegex(ValueError, "context"):
-            passkey_accuracy(PasskeyReader({"en"}, 512), byte_tokenizer(), [1024], 3, torch.device("cpu"))
-
-    def test_benchmark_command_records_pass_key_recall_when_lengths_are_given(self):
-        """長さを指定すると、ベンチマークの結果にパスキーを答えられた割合も記録する。"""
-        self.train_checkpoint()
-        output = self.root / "results.json"
-        recall = {"en": {"32": 1.0, "64": 0.5}, "ja": {"32": 0.5, "64": 0.0}}
-        with (
-            patch("lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset),
-            patch("pretrain.passkey.passkey_accuracy", return_value=recall) as measured,
-            contextlib.redirect_stdout(io.StringIO()),
-        ):
-            main(
-                [
-                    "benchmark", "--checkpoint", str(self.root / "run/last.pt"), "--device", "cpu",
-                    "--threads", "1", "--output", str(output), "--passkey-lengths", "32", "64",
-                    "--passkey-samples", "4", "--tasks", "arc_easy",
-                ]
-            )
-        result = json.loads(output.read_text(encoding="utf-8"))
-        self.assertEqual(result["passkey"], {"samples": 4, "accuracy": recall})
-        self.assertEqual(measured.call_args.args[2:4], ([32, 64], 4))
 
     def test_inspection_saves_standard_benchmark_results_in_the_summary(self):
         """Exports the final checkpoint with its standard benchmark results."""

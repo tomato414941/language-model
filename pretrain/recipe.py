@@ -295,11 +295,6 @@ def read_recipe(path):
     model, training = read_config(path.parent / recipe["training_config"])
     if recipe["seed"] != training.seed:
         raise ValueError("use the same seed for the recipe and training")
-    lengths = recipe["evaluation"].get("passkey_lengths", [])
-    if not isinstance(lengths, list) or not all(
-        type(length) is int and 0 < length <= model.context for length in lengths
-    ):
-        raise ValueError("pass key lengths must be positive and fit within the model's context")
     tokens_per_step = training.batch_size * training.accumulation_steps * model.context
     phases = [item for item in corpora if item["purpose"] == "phase"]
     alternatives = [item for item in corpora if item["purpose"] == "alternative"]
@@ -548,7 +543,6 @@ def inspect_recipe(path, workdir):
         return command
 
     def benchmark_command(checkpoint, selected):
-        lengths = recipe["evaluation"].get("passkey_lengths")
         return [
             "python",
             "-m",
@@ -560,7 +554,6 @@ def inspect_recipe(path, workdir):
             "cuda",
             "--output",
             str(Path(checkpoint).parent / "benchmarks.json"),
-            *(["--passkey-lengths", *map(str, lengths)] if lengths else []),
             "--tasks",
             *selected,
         ]

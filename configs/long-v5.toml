@@ -34,9 +34,6 @@ base_tasks = [
     "humaneval", "mbpp", "jhumaneval", "ja_leaderboard_jsquad",
 ]
 instruction_tasks = ["ifeval", "m_ifeval_ja"]
-# Recall of a number hidden in filler text, from pretraining's window to the
-# longer one.
-passkey_lengths = [4096, 8192, 16384, 32768]
 
 # Pretraining's instruction tuning, with one longer window per micro-batch.
 [sft]
