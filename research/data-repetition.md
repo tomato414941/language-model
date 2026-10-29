@@ -1,6 +1,6 @@
 # 質の高いデータの繰り返し
 
-まだ決めていない。今のコードは、ソースを繰り返したり水増ししたりすることを禁じていて、量が足りないと止まる（v5 の準備でも「ja-math-llmjp is short of its clean corpus budget; do not repeat or pad the source」で止まったことがある）。これが意図して決めたルールかは、まだ分かっていない。
+v6 では繰り返していない。今のコードは、ソースを繰り返したり水増ししたりすることを禁じていて、量が足りないと止まる（v5 の準備でも「ja-math-llmjp is short of its clean corpus budget; do not repeat or pad the source」で止まったことがある）。
 
 繰り返しを支持する報告：
 

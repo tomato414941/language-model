@@ -33,11 +33,10 @@
 - [data-repetition.md](data-repetition.md)
 - [preference-optimization.md](preference-optimization.md)
 - データの候補：[nemotron-cc.md](nemotron-cc.md)、[ultra-fineweb-l3.md](ultra-fineweb-l3.md)、[essential-web.md](essential-web.md)、[finepdfs-edu.md](finepdfs-edu.md)
-- 非商用のライセンスを使ってよいか次第：[climbmix.md](climbmix.md)、[nemotron-climblab.md](nemotron-climblab.md)
 
 ## 入れなかったもの
 
-- データ：[ultra-fineweb.md](ultra-fineweb.md)、[japanese-web-data.md](japanese-web-data.md)、[self-rephrasing.md](self-rephrasing.md)
+- データ：[climbmix.md](climbmix.md)、[nemotron-climblab.md](nemotron-climblab.md)、[ultra-fineweb.md](ultra-fineweb.md)、[japanese-web-data.md](japanese-web-data.md)、[self-rephrasing.md](self-rephrasing.md)
 - モデル：[vocabulary-size.md](vocabulary-size.md)、[untied-embeddings.md](untied-embeddings.md)、[value-residual.md](value-residual.md)、[sliding-window.md](sliding-window.md)、[bigram-hash-embedding.md](bigram-hash-embedding.md)、[logit-softcap.md](logit-softcap.md)、[layernorm-scaling.md](layernorm-scaling.md)、[partial-rope.md](partial-rope.md)、[moe.md](moe.md)、[mtp.md](mtp.md)、[leaky-relu-squared.md](leaky-relu-squared.md)、[orthogonal-init.md](orthogonal-init.md)、[xsa.md](xsa.md)
 - 学習：[embedding-learning-rate.md](embedding-learning-rate.md)、[muoneq.md](muoneq.md)、[muon-plus.md](muon-plus.md)、[polar-express.md](polar-express.md)、[z-loss.md](z-loss.md)、[rlvr.md](rlvr.md)
 - 計算：[liger.md](liger.md)、[fp8.md](fp8.md)、[h100.md](h100.md)、[interruptible-gpu.md](interruptible-gpu.md)
@@ -55,6 +54,5 @@
 
 - 根拠のほとんどは英語だけのモデルの結果で、日英半々のモデルにも当てはまるかは調べていない。
 - 日英の比率、コードと数学の割合は v5 のままで、調べていない。
-- 既存研究の結果を、自分たちのデータで比べて確かめてはいない。既存研究を信用すると決めたのは VE についてで、ほかにも広げたのは私の判断。
+- 既存研究の結果を、自分たちのデータで比べて確かめてはいない。
 - ローカル LLM のコミュニティ（r/LocalLLaMA）は読めず、調べていない。
-- 非商用のライセンスのデータを使ってよいかは決まっていない。

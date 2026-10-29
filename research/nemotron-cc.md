@@ -1,7 +1,5 @@
 # Nemotron-CC v2 / v2.1
 
-いったん見送ったが、候補に戻した。まだ調べ直していない。
+候補。まだ調べていない。
 
-NVIDIA の、品質で選んだ Common Crawl。カードに「ready for commercial use」とあり、NVIDIA Data Access Agreement のもとで使える（申請が必要）。カードに、これで学習して配布したモデルには Qwen、DeepSeek、Phi-4 のライセンスの条件がかかりうるとある。他のモデルが書いた文章を含むと読み、他の人のモデルからの蒸留を禁じるルールに触れるとして見送った。
-
-2026-10-29 にユーザーが、公開されているデータセットに入っている生成文は使ってよいと決めたので、この理由では外さない。残る問題は、Qwen などのライセンスの条件と、使うのに申請が要ること。
+NVIDIA の、品質で選んだ Common Crawl。カードに「ready for commercial use」とあり、NVIDIA Data Access Agreement のもとで使える（申請が必要）。カードに、これで学習して配布したモデルには Qwen、DeepSeek、Phi-4 のライセンスの条件がかかりうるとある。
