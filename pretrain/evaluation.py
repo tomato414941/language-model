@@ -507,6 +507,10 @@ def evaluate_hub_benchmarks(
         batch_size=batch_size,
         trust_remote_code=trust_remote_code,
         add_bos_token=add_bos_token,
+        # In a 16-bit model's own precision, close choices' summed
+        # log-probabilities tie and the harness takes the first; the native
+        # backend sums them in 32 bits.
+        softmax_dtype="float32",
     )
     result = run_benchmarks(backend, tasks, limit)
     result["model"] = {
