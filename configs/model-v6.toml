@@ -63,3 +63,5 @@ decay_shape = "1-sqrt"
 sampling = "sequential"
 optimizer = "normuon"
 weight_decay_schedule = "cosine"
+# Ten snapshots through the decay, the count IMU-1 averaged.
+snapshot_every = 160

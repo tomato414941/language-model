@@ -309,6 +309,12 @@ def main(argv=None):
     growth.add_argument("--checkpoint", type=Path, required=True, help="元のモデルの重み")
     growth.add_argument("--output", type=Path, required=True, help="層を増やしたモデルの重み")
     growth.add_argument("--factor", type=int, default=2, help="層の数を何倍にするか")
+    averaging = commands.add_parser(
+        "average", help="学習の最後に残した重みを平均し、評価できるチェックポイントにする"
+    )
+    averaging.add_argument("--run", type=Path, required=True, help="snapshot_everyで学習した出力先")
+    averaging.add_argument("--count", type=int, default=10, help="最後から平均する数")
+    averaging.add_argument("--output", type=Path, required=True, help="平均したチェックポイント")
     comparison = commands.add_parser(
         "compare-benchmarks",
         help="二つの標準評価の結果を、同じ問題ごとに言語別に比べる",
@@ -484,6 +490,11 @@ def main(argv=None):
             from .growth import grow_checkpoint
 
             result = grow_checkpoint(args.checkpoint, args.output, args.factor)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "average":
+            from .training import average_snapshots
+
+            result = average_snapshots(args.run, args.count, args.output)
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command == "compare-benchmarks":
             from .comparison import compare_benchmarks

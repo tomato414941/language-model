@@ -50,6 +50,9 @@ class TrainConfig:
     # NorMuon updates from weight_decay down to zero over the run, as nanochat
     # does, so the weights settle unpulled by the end.
     weight_decay_schedule: str = "constant"
+    # Every this many steps of a wsd decay, the model's weights are kept apart
+    # from last.pt, for averaging the last of them after training; 0 keeps none.
+    snapshot_every: int = 0
 
     def __post_init__(self):
         for field in (
@@ -105,6 +108,10 @@ class TrainConfig:
             raise ValueError("weight_decay_schedule must be constant or cosine")
         if self.weight_decay_schedule == "cosine" and self.optimizer != "normuon":
             raise ValueError("a cosine weight decay schedule applies to normuon")
+        if type(self.snapshot_every) is not int or self.snapshot_every < 0:
+            raise ValueError("snapshot_every must be a nonnegative integer")
+        if self.snapshot_every and self.schedule != "wsd":
+            raise ValueError("snapshots are kept through a wsd decay")
 
 
 def read_config(path):
@@ -483,6 +490,32 @@ def load_model(path, device):
     return model.to(device), tokenizer, payload
 
 
+def average_snapshots(run, count, output):
+    """Write the run's last checkpoint with its weights averaged over its last snapshots.
+
+    LAWA (arXiv 2306.03241) and IMU-1 (arXiv 2602.02522) found the average of
+    a run's last checkpoints better than the last alone. The average is plain,
+    as LAWA's is; the rest of the checkpoint is last.pt's.
+    """
+    run = Path(run)
+    if type(count) is not int or count < 2:
+        raise ValueError("average at least two snapshots")
+    snapshots = sorted((run / "snapshots").glob("*.pt"))[-count:]
+    if len(snapshots) < count:
+        raise ValueError(f"the run keeps {len(snapshots)} snapshots, fewer than {count}")
+    payload = load_checkpoint(run / "last.pt")
+    saved = [torch.load(path, map_location="cpu", weights_only=True) for path in snapshots]
+    if saved[-1]["step"] != payload["step"]:
+        raise ValueError("the last snapshot must be the last checkpoint's step")
+    payload["model"] = {
+        name: (sum(item["model"][name].float() for item in saved) / count).to(value.dtype)
+        for name, value in payload["model"].items()
+    }
+    payload["averaged_steps"] = [item["step"] for item in saved]
+    atomic_save(payload, output)
+    return {"output": str(output), "averaged_steps": payload["averaged_steps"]}
+
+
 def same_weights(saved, config):
     """Whether a saved model carries over to this configuration.
 
@@ -787,6 +820,12 @@ def train(
             if step % config.save_every == 0 or final:
                 atomic_save(checkpoint(), output / "last.pt")
                 saved_step = step
+            decayed = step - (config.steps - config.decay_steps)
+            if config.snapshot_every and decayed > 0 and decayed % config.snapshot_every == 0:
+                atomic_save(
+                    {"step": step, "tokens_seen": tokens_seen, "model": model.state_dict()},
+                    output / "snapshots" / f"{step:07d}.pt",
+                )
             if step % config.log_every == 0 or "validation" in record:
                 line = json.dumps(record, allow_nan=False)
                 metrics.write(line + "\n")

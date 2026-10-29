@@ -36,6 +36,7 @@ from pretrain.model import (
 from pretrain.training import (
     NorMuon,
     TrainConfig,
+    average_snapshots,
     evaluate,
     evaluate_windows,
     learning_rate,
@@ -1191,6 +1192,27 @@ class PretrainingTests(unittest.TestCase):
         self.assertAlmostEqual(weight_decay(config, 50), 0.14)
         self.assertLess(weight_decay(config, 99), 0.001)
         self.assertEqual(weight_decay(TrainConfig(weight_decay=0.1), 99), 0.1)
+
+    def test_snapshots_of_the_decay_average_into_a_checkpoint_that_loads(self):
+        """減衰中に一定のステップごとに重みを残し、最後のいくつかを平均した重みで読み込めるチェックポイントを作る。"""
+        self.run_training("snapshots", self.wsd_config(steps=10, decay_steps=6, snapshot_every=2))
+        run = self.root / "snapshots"
+        self.assertEqual(
+            [path.name for path in sorted((run / "snapshots").glob("*.pt"))],
+            ["0000006.pt", "0000008.pt", "0000010.pt"],
+        )
+        result = average_snapshots(run, 2, run / "averaged.pt")
+        self.assertEqual(result["averaged_steps"], [8, 10])
+        earlier, last = (
+            torch.load(run / "snapshots" / name, weights_only=True)["model"]
+            for name in ("0000008.pt", "0000010.pt")
+        )
+        model, _, payload = load_model(run / "averaged.pt", torch.device("cpu"))
+        for name, value in model.state_dict().items():
+            torch.testing.assert_close(value, (earlier[name] + last[name]) / 2)
+        self.assertEqual(payload["step"], 10)
+        with self.assertRaisesRegex(ValueError, "fewer than 4"):
+            average_snapshots(run, 4, run / "too-many.pt")
 
     def test_continuation_keeps_the_optimizer_that_saved_its_state(self):
         """継続では保存時の最適化手法を引き継ぎ、手法を変えるには重みだけを引き継ぐよう求める。"""
