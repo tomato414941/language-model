@@ -1,9 +1,10 @@
 # The v6 bilingual model, trained from random weights on the v5 model's
-# recipe: the same sources, tokenizer, corpora and mixes, read by the v6 model
-# for its budget of 8,000 updates of 1,048,576 tokens. Each phase reads fewer
-# of its corpus's tokens than the v5 model did, so the corpora prepared for
-# v5 serve unchanged; the stable phase ends where the learning rate begins to
-# decay.
+# recipe, read by the v6 model for its budget of 8,000 updates of 1,048,576
+# tokens: the same sources, tokenizer and mixes, except that the stable
+# phase's DCLM gives way to DCLM-Edu, the pages of DCLM that FineWeb-Edu's
+# classifier rates as educational. The decay phase reads fewer of its
+# corpus's tokens than the v5 model did, so its corpus prepared for v5 serves
+# unchanged; the stable phase ends where the learning rate begins to decay.
 training_config = "model-v6.toml"
 sources = "sources.toml"
 seed = 42
@@ -58,8 +59,7 @@ max_reply_tokens = 4096
 name = "stable"
 # 6,785 updates.
 training_tokens = 7_114_571_776
-corpus_tokens = 9_961_472_000
-mix = { ja-climblab = 42, ja-wiki = 4, ja-math-llmjp = 2, ja-code-llmjp = 2, en-web = 20, en-dclm = 10, en-code-swallow = 5, en-code-stack-edu = 5, en-qa-stackexchange = 2, en-math = 3, en-math-megamath = 3, en-math-swallow-qa = 1, en-math-swallow-textbook = 1 }
+mix = { ja-climblab = 42, ja-wiki = 4, ja-math-llmjp = 2, ja-code-llmjp = 2, en-web = 20, en-dclm-edu = 10, en-code-swallow = 5, en-code-stack-edu = 5, en-qa-stackexchange = 2, en-math = 3, en-math-megamath = 3, en-math-swallow-qa = 1, en-math-swallow-textbook = 1 }
 
 [[corpora]]
 name = "decay"

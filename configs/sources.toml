@@ -134,6 +134,18 @@ license = "CC-BY-4.0"
 terms_url = "https://commoncrawl.org/terms-of-use"
 minimum = { "language_id_whole_page_fasttext.en" = 0.8 }
 
+# DCLM's pages that FineWeb-Edu's classifier scores 3 or more, which in the
+# SmolLM2 team's 360M ablation on 200B tokens beat both DCLM and FineWeb-Edu
+# on MMLU and ARC.
+[[sources]]
+id = "en-dclm-edu"
+language = "en"
+repository = "HuggingFaceTB/dclm-edu"
+revision = "dbad8ad71224482740cd9c9d353591adbf62fe04"
+prefix = "data/"
+license = "CC-BY-4.0"
+terms_url = "https://commoncrawl.org/terms-of-use"
+
 [[sources]]
 id = "en-cosmopedia"
 language = "en"
