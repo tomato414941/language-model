@@ -488,12 +488,14 @@ def evaluate_benchmarks(
 
 
 def evaluate_hub_benchmarks(
-    repository, revision, device, precision="float32", batch_size=32, tasks=None, limit=None
+    repository, revision, device, precision="float32", batch_size=32, tasks=None, limit=None,
+    trust_remote_code=False, add_bos_token=False,
 ):
-    """Evaluate a model from the Hugging Face Hub on the same tasks and metrics.
+    """Evaluate a Hugging Face model, from the Hub or a directory, on the same tasks and metrics.
 
     The harness's own Hugging Face backend runs the model, as published
-    evaluations of it do.
+    evaluations of it do. A model whose code comes with it needs
+    trust_remote_code; one trained with BOS before each text, add_bos_token.
     """
     from lm_eval.models.huggingface import HFLM
 
@@ -503,6 +505,8 @@ def evaluate_hub_benchmarks(
         device=str(device),
         dtype=precision,
         batch_size=batch_size,
+        trust_remote_code=trust_remote_code,
+        add_bos_token=add_bos_token,
     )
     result = run_benchmarks(backend, tasks, limit)
     result["model"] = {
@@ -510,6 +514,8 @@ def evaluate_hub_benchmarks(
         "revision": revision,
         "parameters": sum(parameter.numel() for parameter in backend.model.parameters()),
         "precision": precision,
+        "trust_remote_code": trust_remote_code,
+        "add_bos_token": add_bos_token,
     }
     return result
 

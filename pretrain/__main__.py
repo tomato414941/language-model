@@ -266,8 +266,16 @@ def main(argv=None):
     hub_benchmark = commands.add_parser(
         "benchmark-hub", help="Hugging Face Hubのモデルを、標準評価と同じ課題と指標で評価する"
     )
-    hub_benchmark.add_argument("--model", required=True, help="Hubのモデル名（例: openai-community/gpt2）")
-    hub_benchmark.add_argument("--revision", required=True, help="評価するモデルのコミット")
+    hub_benchmark.add_argument(
+        "--model", required=True, help="Hubのモデル名（例: openai-community/gpt2）か、書き出したモデルのディレクトリ"
+    )
+    hub_benchmark.add_argument("--revision", help="評価するモデルのコミット（Hubのモデルでは必須）")
+    hub_benchmark.add_argument(
+        "--trust-remote-code", action="store_true", help="モデルに付いているコードで読み込む"
+    )
+    hub_benchmark.add_argument(
+        "--add-bos-token", action="store_true", help="各文の先頭にBOSを付ける（BOSを付けて学習したモデル）"
+    )
     hub_benchmark.add_argument(
         "--tasks", nargs="+", help="評価するタスク名（既定は標準評価の全課題）"
     )
@@ -407,6 +415,8 @@ def main(argv=None):
 
             if args.threads <= 0:
                 raise ValueError("threads must be positive")
+            if args.revision is None and not Path(args.model).is_dir():
+                raise ValueError("a Hub model needs --revision")
             torch.set_num_threads(args.threads)
             # Show each task's steps on stderr while a long evaluation runs.
             setup_logging(logging.INFO)
@@ -421,6 +431,8 @@ def main(argv=None):
                     args.batch_size,
                     args.tasks,
                     args.limit,
+                    args.trust_remote_code,
+                    args.add_bos_token,
                 )
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

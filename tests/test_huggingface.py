@@ -2,15 +2,17 @@ import dataclasses
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from pretrain.conversation import TURN_END, chat_prompt
 from pretrain.data import BOS, EOS
+from pretrain.evaluation import evaluate_benchmarks, evaluate_hub_benchmarks
 from pretrain.huggingface import export_huggingface
 from pretrain.model import LanguageModel, ModelConfig
-from tests.test_benchmarks import byte_tokenizer
+from tests.test_benchmarks import benchmark_dataset, byte_tokenizer
 
 
 class HuggingFaceTest(unittest.TestCase):
@@ -86,6 +88,21 @@ class HuggingFaceTest(unittest.TestCase):
             {"role": "user", "content": "明日は？"},
         ]
         self.assertEqual(loaded.apply_chat_template(messages, tokenize=False, add_generation_prompt=True), chat_prompt(messages))
+
+    def test_標準評価をHugging_Faceの道筋で測っても自前の道筋と同じ点数を出す(self):
+        native, _ = self.export()
+        with patch("lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset):
+            expected = evaluate_benchmarks(native, self.tokenizer, torch.device("cpu"), tasks=["arc_easy"])
+            got = evaluate_hub_benchmarks(
+                str(self.root / "hf"), None, torch.device("cpu"), tasks=["arc_easy"],
+                trust_remote_code=True, add_bos_token=True,
+            )
+        for metric in ("acc,none", "acc_norm,none"):
+            self.assertEqual(got["results"]["arc_easy"][metric], expected["results"]["arc_easy"][metric])
+        for value, reference in zip(
+            got["items"]["arc_easy"]["gold_bits_per_byte"], expected["items"]["arc_easy"]["gold_bits_per_byte"], strict=True
+        ):
+            self.assertAlmostEqual(value, reference, places=4)
 
     def test_書き出せない部品を持つモデルは書き出しを断る(self):
         with self.assertRaisesRegex(ValueError, "value_embeddings"):
