@@ -1,8 +1,6 @@
-# NorMuon
+# NorMuon と cautious weight decay
 
-Muon で直交化した更新の、出力ニューロンごとの2乗平均を移動平均で持ち、その平方根で割ってから全体の大きさを戻す（arXiv 2510.05491）。v6 の実装は nanochat に合わせ、更新の大きさは Muon と同じなので match_rms_adamw の学習率をそのまま使える。
+v6 の行列は NorMuon（arXiv 2510.05491）で更新し、cautious weight decay（arXiv 2510.12402）を 0.28 から cos 形で0まで下げる。nanochat の実装に合わせた（f994a12）。
 
-- IMU-1（arXiv 2602.02522、7000万パラメータの比較）: NorMuon で学習損失 −2.88%。
-- nanochat の dev/LOG.md（commit 92d63d4e）: 標準の最適化として採用している。
-
-2026-10-29 採用（f994a12）。
+- IMU-1（arXiv 2602.02522、7000万パラメータ）：NorMuon で学習損失 −2.88%、cautious weight decay を足して −3.85%。
+- 0.28 が cos 形の下げ方で最適かは確かめていない。
