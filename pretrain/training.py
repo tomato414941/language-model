@@ -246,15 +246,48 @@ def weight_decay(config, step):
     return config.weight_decay
 
 
+# nanochat's AdamW settings for the residual scalars at its reference batch
+# of 2**19 tokens: the scales of the stream multiply through the layers and
+# take a hundredth of the rate of the mixing scales.
+SCALAR_BATCH = 2**19
+SCALAR_SETTINGS = {
+    "residual_scales": {"lr": 0.005, "betas": (0.8, 0.95)},
+    "input_scales": {"lr": 0.5, "betas": (0.96, 0.95)},
+}
+
+
 def make_optimizer(model, config, device):
     """Build the configured optimizer; weight decay applies to matrices only.
 
     Muon, or NorMuon, takes the matrices inside the blocks and AdamW the
     embedding and the norms. Muon scales each matrix's update to the size
-    AdamW's would have, so both follow the same learning rate.
+    AdamW's would have, so both follow the same learning rate. The residual
+    scalars take nanochat's rates instead, grown with the square root of the
+    batch as its rates are, and follow the schedule in proportion through
+    each group's lr_scale.
     """
+    scalars = {
+        id(parameter): name
+        for name, parameter in model.named_parameters()
+        if name in SCALAR_SETTINGS
+    }
+    batch = config.batch_size * config.accumulation_steps * model.config.context
+    scalar_groups = [
+        {
+            "params": [parameter],
+            "weight_decay": 0.0,
+            "betas": SCALAR_SETTINGS[name]["betas"],
+            "eps": 1e-10,
+            "lr_scale": SCALAR_SETTINGS[name]["lr"]
+            * math.sqrt(batch / SCALAR_BATCH)
+            / config.learning_rate,
+        }
+        for name, parameter in model.named_parameters()
+        if name in SCALAR_SETTINGS
+    ]
 
     def adamw(parameters):
+        parameters = [p for p in parameters if id(p) not in scalars]
         return torch.optim.AdamW(
             [
                 {
@@ -265,6 +298,7 @@ def make_optimizer(model, config, device):
                     "params": [p for p in parameters if p.ndim < 2],
                     "weight_decay": 0.0,
                 },
+                *scalar_groups,
             ],
             lr=config.learning_rate,
             betas=(0.9, 0.95),
@@ -548,8 +582,12 @@ def train(
                 "use initialize_from to restart the schedule"
             )
         model.load_state_dict(saved["model"])
+        # The scalars' rates follow this phase's batch, not the saved one's.
+        scales = [group.get("lr_scale") for group in optimizer.param_groups]
         optimizer.load_state_dict(saved["optimizer"])
-        for group in optimizer.param_groups:
+        for group, scale in zip(optimizer.param_groups, scales, strict=True):
+            if scale is not None:
+                group["lr_scale"] = scale
             # Only AdamW's groups have a fused kernel to select.
             if "fused" in group:
                 group["fused"] = device.type == "cuda"
@@ -680,7 +718,7 @@ def train(
             optimizer.zero_grad(set_to_none=True)
             rate = learning_rate(config, step)
             for group in optimizer.param_groups:
-                group["lr"] = rate
+                group["lr"] = rate * group.get("lr_scale", 1.0)
             if config.optimizer == "normuon":
                 for group in optimizer.optimizers[0].param_groups:
                     group["weight_decay"] = weight_decay(config, step)

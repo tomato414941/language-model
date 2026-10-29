@@ -5,6 +5,9 @@
 # FlashAttention runs faster at that head width, and Marin's and nanochat's
 # comparisons found it trained to a lower loss. Value embeddings in every
 # other layer, gated, follow nanochat, whose comparisons found that form best.
+# So do the learned scalars that scale the stream and mix the first layer's
+# input back in before each layer, which nanochat and Marin found lowered the
+# loss, and the output projections that start at zero.
 # Thirty-two layers rather than 24 grow the model by depth, which nanochat
 # found better than width at the same compute: about 400M parameters outside
 # the value embeddings, the compute-optimal size at the v5 model's compute.
@@ -29,6 +32,8 @@ rope_theta = 10000.0
 qk_norm = true
 attention_gate = "headwise"
 value_embeddings = true
+residual_scalars = true
+zero_output_init = true
 # The tokenizer's BOS, which begins each document.
 document_start = 0
 

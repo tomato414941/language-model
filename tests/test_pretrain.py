@@ -232,6 +232,7 @@ class PretrainingTests(unittest.TestCase):
                 qk_norm=True,
                 document_start=bos,
                 value_embeddings=True,
+                residual_scalars=True,
             ),
         ):
             torch.manual_seed(3)
@@ -1031,7 +1032,9 @@ class PretrainingTests(unittest.TestCase):
                 active_experts=2,
                 prediction_depth=1,
             ),
-            dataclasses.replace(self.llama_config(), value_embeddings=True),
+            dataclasses.replace(
+                self.llama_config(), value_embeddings=True, residual_scalars=True
+            ),
         ):
             model = LanguageModel(258, model_config)
             muon, adamw = make_optimizer(model, config, torch.device("cpu")).optimizers
@@ -1063,6 +1066,39 @@ class PretrainingTests(unittest.TestCase):
             # Only the positions from the changed token onward see its value.
             torch.testing.assert_close(before[:, :2], after[:, :2], rtol=0, atol=1e-6)
             self.assertFalse(torch.allclose(before[:, 2:], after[:, 2:]))
+
+    def test_zero_output_init_starts_each_layer_as_the_identity(self):
+        """出力の重みをゼロから始めると、各層は入力をそのまま通し、予測は埋め込みだけで決まる。"""
+        config = dataclasses.replace(self.llama_config(), zero_output_init=True)
+        model = LanguageModel(258, config).eval()
+        tokens = torch.tensor([[1, 2, 3, 4]])
+        expected = torch.nn.functional.linear(
+            model.norm(model.embedding(tokens)), model.embedding.weight
+        )
+        torch.testing.assert_close(model(tokens), expected)
+
+    def test_residual_scalars_start_from_nanochat_values_and_take_its_rates(self):
+        """残差のスカラーは nanochat の初期値から始まり、バッチの平方根に比例させた nanochat の学習率で更新される。"""
+        model = LanguageModel(
+            258, dataclasses.replace(self.llama_config(), layers=3, residual_scalars=True)
+        )
+        torch.testing.assert_close(model.residual_scales.data, torch.tensor([1.15, 1.10, 1.05]))
+        torch.testing.assert_close(model.input_scales.data, torch.tensor([0.20, 0.125, 0.05]))
+        config = TrainConfig(
+            **{**self.config().__dict__, "optimizer": "normuon", "learning_rate": 0.002}
+        )
+        batch = config.batch_size * config.accumulation_steps * model.config.context
+        groups = {
+            id(group["params"][0]): group
+            for group in make_optimizer(model, config, torch.device("cpu")).param_groups
+        }
+        for parameter, rate in ((model.residual_scales, 0.005), (model.input_scales, 0.5)):
+            group = groups[id(parameter)]
+            self.assertEqual(len(group["params"]), 1)
+            self.assertAlmostEqual(
+                0.002 * group["lr_scale"], rate * math.sqrt(batch / 2**19)
+            )
+            self.assertEqual(group["weight_decay"], 0.0)
 
     def test_muon_training_learns_and_resumes_the_same_updates(self):
         """Muon で両言語の検証損失を下げ、途中保存から再開しても連続学習と同じ重みを得る。"""

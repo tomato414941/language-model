@@ -56,6 +56,13 @@ class ModelConfig:
     # as nanochat does after ResFormer (Zhou et al., ACL 2025). The tables are
     # looked up rather than computed, so they add parameters, not computation.
     value_embeddings: bool = False
+    # Before each layer the stream is scaled and mixed with the stream that
+    # entered the first layer, by two learned numbers per layer, as nanochat
+    # does after modded-nanogpt.
+    residual_scalars: bool = False
+    # The projections that write each layer's output into the stream start at
+    # zero, as nanochat's do, so each layer starts as the identity.
+    zero_output_init: bool = False
 
     def __post_init__(self):
         if any(
@@ -111,6 +118,8 @@ class ModelConfig:
             raise ValueError("prediction_depth must be an integer from 0 to 4")
         if type(self.value_embeddings) is not bool:
             raise ValueError("value_embeddings must be true or false")
+        if type(self.residual_scalars) is not bool or type(self.zero_output_init) is not bool:
+            raise ValueError("residual_scalars and zero_output_init must be true or false")
         if self.value_embeddings and self.full_attention_every is not None:
             raise ValueError("value_embeddings require attention in every layer")
         if self.value_embeddings and self.width < VALUE_GATE_CHANNELS:
@@ -125,11 +134,13 @@ class ModelConfig:
             or self.experts is not None
             or self.prediction_depth
             or self.value_embeddings
+            or self.residual_scalars
+            or self.zero_output_init
         ):
             raise ValueError(
                 "kv_heads, intermediate_size, qk_norm, attention_gate, document_start, "
-                "full_attention_every, experts, prediction_depth and value_embeddings "
-                "require llama architecture"
+                "full_attention_every, experts, prediction_depth, value_embeddings, "
+                "residual_scalars and zero_output_init require llama architecture"
             )
 
     def has_value_embedding(self, layer):
@@ -703,6 +714,12 @@ class LanguageModel(nn.Module):
         self.predictors = nn.ModuleList(
             Predictor(self.config) for _ in range(self.config.prediction_depth)
         )
+        if self.config.residual_scalars:
+            # nanochat's start: the stream is kept a little more, and the first
+            # layer's input mixed in a little more, in the early layers.
+            depth = torch.arange(self.config.layers) / max(self.config.layers - 1, 1)
+            self.residual_scales = nn.Parameter(1.15 - 0.10 * depth)
+            self.input_scales = nn.Parameter(0.20 - 0.15 * depth)
         self.apply(self._initialize)
         # Scale residual projections to keep deep, randomly initialized models stable.
         for name, parameter in self.named_parameters():
@@ -715,7 +732,10 @@ class LanguageModel(nn.Module):
                     "linear_output.weight",
                 )
             ):
-                nn.init.normal_(parameter, std=0.02 / math.sqrt(2 * self.config.layers))
+                if self.config.zero_output_init:
+                    nn.init.zeros_(parameter)
+                else:
+                    nn.init.normal_(parameter, std=0.02 / math.sqrt(2 * self.config.layers))
             # Gates start a little above their midpoint, 1.5 times the embedded values.
             if name.endswith("value_gate.weight"):
                 nn.init.uniform_(parameter, 0.0, 0.02)
@@ -729,6 +749,12 @@ class LanguageModel(nn.Module):
         """The layer's value embedding of the tokens, or None where it has none."""
         table = self.value_embeddings[str(index)] if str(index) in self.value_embeddings else None
         return None if table is None else table(tokens)
+
+    def layer_input(self, index, hidden, first):
+        """The stream a layer reads: scaled and mixed with the first layer's input where the model learns to."""
+        if not self.config.residual_scalars:
+            return hidden
+        return self.residual_scales[index] * hidden + self.input_scales[index] * first
 
     def document_mask(self, starts):
         """Which earlier positions each position sees within its own document.
@@ -758,8 +784,14 @@ class LanguageModel(nn.Module):
         )
         mask = self.document_mask(starts)
         objective = 0.0
+        first = hidden
         for index, block in enumerate(self.blocks):
-            hidden, extra = block(hidden, mask=mask, starts=starts, values=self.embedded_values(index, tokens))
+            hidden, extra = block(
+                self.layer_input(index, hidden, first),
+                mask=mask,
+                starts=starts,
+                values=self.embedded_values(index, tokens),
+            )
             objective = objective + extra
         # Input and output embeddings share the same learned weights.
         logits = F.linear(self.norm(hidden), self.embedding.weight)
@@ -899,8 +931,16 @@ class LanguageModel(nn.Module):
         if self.position is not None:
             hidden = hidden + self.position(queries[None])
         starts = (queries == 0)[None] if start == 0 else None
+        first = hidden
         for index, (block, cache) in enumerate(zip(self.blocks, caches)):
-            hidden, _ = block(hidden, queries[None], mask, cache, starts, self.embedded_values(index, tokens))
+            hidden, _ = block(
+                self.layer_input(index, hidden, first),
+                queries[None],
+                mask,
+                cache,
+                starts,
+                self.embedded_values(index, tokens),
+            )
         return F.linear(self.norm(hidden[0, -1]), self.embedding.weight)
 
     def continue_greedily(self, sequences, max_new_tokens, end, banned=(), finished=None):
@@ -975,9 +1015,10 @@ class LanguageModel(nn.Module):
                 hidden = self.embedding(tokens)
                 if self.position is not None:
                     hidden = hidden + self.position(positions)
+                first = hidden
                 for index, (block, cache) in enumerate(zip(self.blocks, caches)):
                     hidden, _ = block(
-                        hidden,
+                        self.layer_input(index, hidden, first),
                         positions,
                         mask,
                         cache,

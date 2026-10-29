@@ -33,6 +33,9 @@ def grow_checkpoint(checkpoint, output, factor=2):
     if config.value_embeddings:
         # Which layers hold value embeddings also follows their positions.
         raise ValueError("growth keeps no value embeddings")
+    if config.residual_scalars:
+        # Each layer's scalars also follow its position.
+        raise ValueError("growth keeps no residual scalars")
     weights = {}
     for name, value in saved["model"].items():
         if not name.startswith("blocks."):
