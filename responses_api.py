@@ -366,11 +366,12 @@ class ModelSettings:
 
 
 class ResponseService:
-    def __init__(self, settings):
+    def __init__(self, settings, backend=None):
         self.settings = settings
         self.capacity = threading.BoundedSemaphore(1)
-        self.backend = None
-        self.revision = None
+        # A model given here, such as one sampling in another container, names its own revision.
+        self.backend = backend
+        self.revision = None if backend is None else backend.revision
 
     def authorize(self, request):
         if self.settings.api_key:
@@ -641,8 +642,8 @@ class ResponseSession:
             self.close()
 
 
-def install_routes(app: FastAPI, settings=None):
-    service = ResponseService(settings or ModelSettings.from_env())
+def install_routes(app: FastAPI, settings=None, backend=None):
+    service = ResponseService(settings or ModelSettings.from_env(), backend)
     app.state.responses = service
     access_key = HTTPBearer(
         scheme_name="LanguageModelAPIKey",

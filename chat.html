@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>言語モデル</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --background: #ffffff;
+    --surface: #f2f3f5;
+    --text: #1f2328;
+    --muted: #59636e;
+    --border: #d1d9e0;
+    --accent: #0969da;
+    --on-accent: #ffffff;
+    --error: #cf222e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --background: #0d1117;
+      --surface: #1f242c;
+      --text: #e6edf3;
+      --muted: #9198a1;
+      --border: #3d444d;
+      --accent: #4493f8;
+      --on-accent: #0d1117;
+      --error: #f85149;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--background);
+    color: var(--text);
+    font: 16px/1.7 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+  }
+  button, input, textarea { font: inherit; color: inherit; }
+  button {
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    cursor: pointer;
+  }
+  button.primary { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+  .page {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 0 16px;
+  }
+  header, #key-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  h1 { flex: 1; display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; margin: 0; font-size: 1rem; }
+  #model { color: var(--muted); font-size: .875rem; font-weight: normal; white-space: nowrap; }
+  #key { flex: 1; min-width: 12rem; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--background); }
+  #key-form p { flex-basis: 100%; margin: 0; color: var(--muted); font-size: .875rem; }
+  #messages {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 16px 0;
+    overflow-y: auto;
+  }
+  .message { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .user { align-self: flex-end; max-width: 85%; padding: 8px 14px; border-radius: 16px; background: var(--surface); }
+  .note { color: var(--muted); font-size: .875rem; }
+  .error { color: var(--error); font-size: .875rem; }
+  #composer { display: flex; align-items: flex-end; gap: 8px; padding: 12px 0 16px; border-top: 1px solid var(--border); }
+  #input {
+    flex: 1;
+    max-height: 40vh;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--background);
+    resize: none;
+  }
+</style>
+</head>
+<body>
+<div class="page" data-model="{{model}}" data-max-output-tokens="{{max_output_tokens}}">
+  <header>
+    <h1>言語モデル<span id="model"></span></h1>
+    <button type="button" id="new">新しい会話</button>
+    <button type="button" id="key-button">API キー</button>
+  </header>
+  <form id="key-form" hidden>
+    <label for="key">API キー</label>
+    <input id="key" type="password" autocomplete="off" required>
+    <button class="primary">保存</button>
+    <p>キーは、このブラウザの中にだけ保存します。</p>
+  </form>
+  <div id="messages" aria-live="polite"></div>
+  <form id="composer">
+    <textarea id="input" rows="1" placeholder="メッセージを入力" aria-label="メッセージ"></textarea>
+    <button class="primary" id="send">送信</button>
+  </form>
+</div>
+<script>
+"use strict";
+const page = document.querySelector(".page");
+const model = page.dataset.model;
+const maxOutputTokens = Number(page.dataset.maxOutputTokens);
+const messages = document.getElementById("messages");
+const composer = document.getElementById("composer");
+const input = document.getElementById("input");
+const send = document.getElementById("send");
+const keyForm = document.getElementById("key-form");
+const keyInput = document.getElementById("key");
+const storageName = "language-model-api-key";
+const tooLong = "会話が長くなりすぎました。「新しい会話」から始め直してください。";
+const errors = {
+  rate_limit_exceeded: "ほかの返事を作っているところです。少し待ってから送ってください。",
+  context_length_exceeded: tooLong,
+  request_too_large: tooLong,
+  model_unavailable: "モデルを読み込めませんでした。少し待ってから送ってください。",
+};
+let apiKey = "";
+let history = [];
+let controller = null;
+
+try { apiKey = localStorage.getItem(storageName) || ""; } catch {}
+document.getElementById("model").textContent = model;
+if (!apiKey) showKeyForm();
+
+function showKeyForm() {
+  keyForm.hidden = false;
+  keyInput.value = apiKey;
+  keyInput.focus();
+}
+
+keyForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  apiKey = keyInput.value.trim();
+  try { localStorage.setItem(storageName, apiKey); } catch {}
+  keyForm.hidden = true;
+  input.focus();
+});
+
+document.getElementById("key-button").addEventListener("click", () => {
+  if (keyForm.hidden) showKeyForm();
+  else keyForm.hidden = true;
+});
+
+document.getElementById("new").addEventListener("click", () => {
+  if (controller) controller.abort();
+  history = [];
+  messages.replaceChildren();
+  input.focus();
+});
+
+function add(className, text) {
+  const element = document.createElement("div");
+  element.className = className;
+  element.textContent = text;
+  messages.append(element);
+  messages.scrollTop = messages.scrollHeight;
+  return element;
+}
+
+function note(text, className = "note") {
+  const element = document.createElement("div");
+  element.className = className;
+  element.textContent = text;
+  return element;
+}
+
+function resize() {
+  input.style.height = "auto";
+  input.style.height = input.scrollHeight + 2 + "px";
+}
+
+input.addEventListener("input", resize);
+input.addEventListener("keydown", (event) => {
+  // Enter sends, Shift+Enter starts a new line, and Enter that confirms an IME conversion does neither.
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+    event.preventDefault();
+    if (!controller) composer.requestSubmit();
+  }
+});
+
+async function failure(response) {
+  let code = "";
+  let message = "";
+  try {
+    ({ code, message } = (await response.json()).error);
+  } catch {}
+  if (response.status === 401) {
+    showKeyForm();
+    return new Error("API キーが正しくありません。");
+  }
+  return new Error(errors[code] || message || "返事を作れませんでした（" + response.status + "）。");
+}
+
+// Read the Responses API's server-sent events, passing on the text as it arrives, and return the final status.
+async function read(response, onText) {
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  let status;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return status;
+    buffer += value;
+    let end;
+    while ((end = buffer.indexOf("\n\n")) !== -1) {
+      const data = buffer.slice(0, end).split("\n")
+        .filter((line) => line.startsWith("data: "))
+        .map((line) => line.slice(6))
+        .join("\n");
+      buffer = buffer.slice(end + 2);
+      if (!data) continue;
+      const event = JSON.parse(data);
+      if (event.type === "response.output_text.delta") onText(event.delta);
+      else if (["response.completed", "response.incomplete", "response.failed"].includes(event.type)) {
+        status = event.response.status;
+      }
+    }
+  }
+}
+
+composer.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (controller) {
+    controller.abort();
+    return;
+  }
+  const text = input.value.trim();
+  if (!text) return;
+  if (!apiKey) {
+    showKeyForm();
+    return;
+  }
+  const conversation = history;
+  conversation.push({ role: "user", content: text });
+  add("message user", text);
+  input.value = "";
+  resize();
+  const reply = add("message assistant", "");
+  const written = reply.appendChild(document.createTextNode(""));
+  const waiting = reply.appendChild(note("返事を待っています…"));
+  controller = new AbortController();
+  send.textContent = "停止";
+  try {
+    const response = await fetch("/v1/responses", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
+      body: JSON.stringify({ model, input: conversation, max_output_tokens: maxOutputTokens, stream: true }),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw await failure(response);
+    const status = await read(response, (delta) => {
+      waiting.remove();
+      written.appendData(delta);
+      messages.scrollTop = messages.scrollHeight;
+    });
+    waiting.remove();
+    if (status === "incomplete") reply.append(note("長さの上限に達したので、ここで止めました。"));
+    else if (status !== "completed") throw new Error("返事を最後まで作れませんでした。");
+  } catch (error) {
+    waiting.remove();
+    reply.append(error.name === "AbortError" ? note("止めました。") : note(error.message, "error"));
+  } finally {
+    controller = null;
+    send.textContent = "送信";
+    if (written.data) {
+      conversation.push({ role: "assistant", content: written.data });
+    } else {
+      // Leave an unanswered message out of the conversation, and offer it again to send.
+      conversation.pop();
+      if (conversation === history && !input.value) {
+        input.value = text;
+        resize();
+      }
+    }
+  }
+});
+</script>
+</body>
+</html>

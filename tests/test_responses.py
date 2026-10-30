@@ -1,4 +1,5 @@
 import json
+import pickle
 import socket
 import tempfile
 import threading
@@ -17,6 +18,8 @@ from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 
 from pretrain.conversation import CALL_END, CALL_START, THINK_END, TURN_END, chat_prompt
 from pretrain.model import LanguageModel, ModelConfig
+from pretrain.remote import RemoteTextModel, relay
+from pretrain.serving import TextModel
 from responses_api import ModelSettings
 from server import create_app
 
@@ -197,7 +200,20 @@ class ResponsesTests(unittest.TestCase):
         self.assertIsNone(response["incomplete_details"])
         self.assertEqual(response["usage"]["output_tokens"], 1)
 
-    def scripted(self, *pieces, app=None):
+    def remote(self):
+        """A client of an app whose model samples elsewhere, its records serialized as between containers."""
+        model = TextModel(self.checkpoint)
+
+        def sample(*arguments):
+            for record in relay(model, *arguments):
+                yield pickle.loads(pickle.dumps(record))
+
+        client = TestClient(create_app(response_settings=self.settings, backend=RemoteTextModel(sample, "f" * 40)))
+        client.__enter__()
+        self.addCleanup(client.__exit__, None, None, None)
+        return client, model
+
+    def scripted(self, *pieces, app=None, model=None):
         """Make the model emit these texts and reserved tokens, one token per step."""
         tokens = iter(
             [
@@ -217,7 +233,7 @@ class ResponsesTests(unittest.TestCase):
             return logits
 
         return patch.object(
-            (app or self.app).state.responses.backend.model, "cached_logits", side_effect=scripted_logits
+            model or (app or self.app).state.responses.backend.model, "cached_logits", side_effect=scripted_logits
         )
 
     def test_returns_reasoning_before_the_answer_when_asked_to_reason(self):
@@ -466,6 +482,46 @@ class ResponsesTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 413)
         self.assertEqual(response.json()["error"]["code"], "request_too_large")
+
+    def test_streams_replies_sampled_elsewhere_as_the_local_model_does(self):
+        """別の場所で生成した返事も、考えた内容・文章・道具の呼び出しを手元と同じ順で流し、同じ応答とトークン数を返す。"""
+        self.post()
+        client, model = self.remote()
+        pieces = ("2と2", THINK_END, "見ます", CALL_START, WEATHER_CALL, CALL_END, TURN_END)
+        request = {
+            "model": "test-model",
+            "input": "天気は？",
+            "tools": [WEATHER],
+            "reasoning": {"effort": "medium"},
+            "max_output_tokens": 96,
+            "temperature": 0,
+            "stream": True,
+        }
+        streams = []
+        for target, sampler in ((self.client, self.app.state.responses.backend.model), (client, model.model)):
+            with self.scripted(*pieces, model=sampler):
+                response = target.post("/v1/responses", json=request)
+            self.assertEqual(response.status_code, 200, response.text)
+            streams.append([json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")])
+
+        def outcome(events):
+            final = events[-1]["response"]
+            items = [{key: value for key, value in item.items() if key not in ("id", "call_id")} for item in final["output"]]
+            return [event["type"] for event in events], final["status"], items, final["usage"]
+
+        local, elsewhere = streams
+        self.assertEqual(outcome(elsewhere), outcome(local))
+        self.assertEqual([item["type"] for item in outcome(elsewhere)[2]], ["reasoning", "message", "function_call"])
+        self.assertEqual(elsewhere[-1]["response"]["model_revision"], "f" * 40)
+
+    def test_refuses_inputs_beyond_the_context_before_sampling_elsewhere(self):
+        """別の場所で生成するときも、文脈の長さを超える入力は生成を始める前に断る。"""
+        client, _ = self.remote()
+        response = client.post(
+            "/v1/responses", json={"model": "test-model", "input": "a" * 256, "max_output_tokens": 4}
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"]["code"], "context_length_exceeded")
 
     def test_reports_unknown_models_and_context_limits(self):
         """Reports unavailable models and exceeded context limits."""

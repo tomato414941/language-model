@@ -1,12 +1,14 @@
-"""Serve locally trained models with FastAPI and the Responses API."""
+"""Serve trained models through the Responses API and a chat page."""
 
+import html
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -21,6 +23,7 @@ from responses_api import (
 )
 
 MAX_BODY_BYTES = 65536
+CHAT_PAGE = Path(__file__).with_name("chat.html")
 
 
 class HealthResponse(BaseModel):
@@ -78,7 +81,7 @@ class GenerationBodyLimit:
         await self.app(scope, receive_body, send)
 
 
-def create_app(*, response_settings=None) -> FastAPI:
+def create_app(*, response_settings=None, backend=None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         try:
@@ -93,7 +96,13 @@ def create_app(*, response_settings=None) -> FastAPI:
         lifespan=lifespan,
     )
     app.add_middleware(GenerationBodyLimit)
-    install_routes(app, response_settings)
+    install_routes(app, response_settings, backend)
+    settings = app.state.responses.settings
+    chat_page = (
+        CHAT_PAGE.read_text(encoding="utf-8")
+        .replace("{{model}}", html.escape(settings.model_id))
+        .replace("{{max_output_tokens}}", str(settings.max_output_tokens))
+    )
 
     @app.middleware("http")
     async def prevent_caching(request: Request, call_next):
@@ -122,6 +131,10 @@ def create_app(*, response_settings=None) -> FastAPI:
     @app.get("/healthz", summary="Check service health")
     async def health() -> HealthResponse:
         return HealthResponse()
+
+    @app.get("/", include_in_schema=False)
+    async def chat() -> HTMLResponse:
+        return HTMLResponse(chat_page)
 
     return app
 
