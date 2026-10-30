@@ -3,9 +3,12 @@
 The layers and parameter names follow pretrain.model's llama blocks: grouped
 keys and values, rotary positions, optional per-head normalization of
 queries and keys, an optional sigmoid gate on the attention output, SwiGLU,
-RMSNorm and input and output embeddings that share their weights. Attention
-stays within the documents of a sequence, which begin at document_start, as
-in training.
+RMSNorm and input and output embeddings that share their weights. Optional
+value embeddings in every other layer add to the attention's values through
+a gate per key-value head, and optional learned scalars scale the stream and
+mix the first layer's input back in before each layer. Attention stays
+within the documents of a sequence, which begin at document_start, as in
+training.
 """
 
 import math
@@ -18,14 +21,22 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from .configuration_native import NativeConfig
 
+# The channels of a block's normalized input that set its value embedding's gate.
+VALUE_GATE_CHANNELS = 12
+
 
 def rotated(value, cosine, sine):
     first, second = value.chunk(2, dim=-1)
     return value * cosine + torch.cat((-second, first), dim=-1) * sine
 
 
+def has_value_embedding(config, index):
+    """Whether the layer adds a value embedding: every other layer, the last among them."""
+    return config.value_embeddings and index % 2 == (config.num_hidden_layers - 1) % 2
+
+
 class NativeBlock(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, value_embedding=False):
         super().__init__()
         width = config.hidden_size
         self.heads = config.num_attention_heads
@@ -44,11 +55,14 @@ class NativeBlock(nn.Module):
         if config.attention_gate is not None:
             gates = self.heads if config.attention_gate == "headwise" else width
             self.attention_gate = nn.Linear(width, gates, bias=False)
+        self.value_gate = (
+            nn.Linear(VALUE_GATE_CHANNELS, self.kv_heads, bias=False) if value_embedding else None
+        )
         self.gate = nn.Linear(width, intermediate, bias=False)
         self.up = nn.Linear(width, intermediate, bias=False)
         self.down = nn.Linear(intermediate, width, bias=False)
 
-    def forward(self, hidden, cosine, sine, mask, cache, index):
+    def forward(self, hidden, cosine, sine, mask, cache, index, values=None):
         normalized = self.norm_attention(hidden)
         batch, length, width = normalized.shape
         query = self.query(normalized).view(batch, length, self.heads, self.head_width)
@@ -56,6 +70,10 @@ class NativeBlock(nn.Module):
             tensor.view(batch, length, self.kv_heads, self.head_width)
             for tensor in self.key_value(normalized).chunk(2, dim=-1)
         ]
+        if self.value_gate is not None:
+            # Between 0 and 3 times each head's embedded values.
+            gate = 3 * torch.sigmoid(self.value_gate(normalized[..., :VALUE_GATE_CHANNELS]))
+            value = value + gate[..., None] * values.view(batch, length, self.kv_heads, self.head_width)
         if self.query_norm is not None:
             query, key = self.query_norm(query), self.key_norm(key)
         query = rotated(query.transpose(1, 2), cosine, sine)
@@ -83,7 +101,21 @@ class NativeForCausalLM(PreTrainedModel, GenerationMixin):
     def __init__(self, config):
         super().__init__(config)
         self.embedding = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.blocks = nn.ModuleList(NativeBlock(config) for _ in range(config.num_hidden_layers))
+        self.blocks = nn.ModuleList(
+            NativeBlock(config, has_value_embedding(config, index))
+            for index in range(config.num_hidden_layers)
+        )
+        kv_width = config.num_key_value_heads * (config.hidden_size // config.num_attention_heads)
+        self.value_embeddings = nn.ModuleDict(
+            {
+                str(index): nn.Embedding(config.vocab_size, kv_width)
+                for index in range(config.num_hidden_layers)
+                if has_value_embedding(config, index)
+            }
+        )
+        if config.residual_scalars:
+            self.residual_scales = nn.Parameter(torch.ones(config.num_hidden_layers))
+            self.input_scales = nn.Parameter(torch.zeros(config.num_hidden_layers))
         self.norm = nn.RMSNorm(config.hidden_size, eps=1e-5)
         self.post_init()
 
@@ -146,8 +178,13 @@ class NativeForCausalLM(PreTrainedModel, GenerationMixin):
         hidden = self.embedding(input_ids)
         cosine, sine = angles.cos().to(hidden.dtype), angles.sin().to(hidden.dtype)
         mask = self.mask(input_ids, attention_mask, past, length)
+        first = hidden
         for index, block in enumerate(self.blocks):
-            hidden = block(hidden, cosine, sine, mask, past_key_values, index)
+            if self.config.residual_scalars:
+                hidden = self.residual_scales[index] * hidden + self.input_scales[index] * first
+            table = self.value_embeddings[str(index)] if str(index) in self.value_embeddings else None
+            values = None if table is None else table(input_ids)
+            hidden = block(hidden, cosine, sine, mask, past_key_values, index, values)
         hidden = self.norm(hidden)
         if logits_to_keep:
             hidden = hidden[:, -logits_to_keep:]

@@ -6,6 +6,7 @@ each text, as training did, and its chat template writes the conversation
 format that pretrain.conversation defines.
 """
 
+import dataclasses
 import math
 from pathlib import Path
 
@@ -16,12 +17,15 @@ from .data import BOS, EOS
 from .model import ModelConfig
 from .training import load_checkpoint
 
-# The parts of pretrain.model that the Hugging Face model does not have.
-UNSUPPORTED = {
-    "full_attention_every": None,
-    "experts": None,
-    "value_embeddings": False,
-    "residual_scalars": False,
+# The settings of pretrain.model that the Hugging Face model reproduces, with
+# the two that shape only training: multi-token prediction, which the export
+# leaves out, and the starting weights. A model that sets any other away from
+# its default is refused, so that a part added to pretrain.model cannot go
+# missing from the export unnoticed.
+SUPPORTED = {
+    "width", "heads", "layers", "context", "architecture", "kv_heads", "intermediate_size",
+    "rope_theta", "qk_norm", "attention_gate", "document_start", "value_embeddings",
+    "residual_scalars", "prediction_depth", "zero_output_init",
 }
 CHAT_TEMPLATE = (
     "{%- for message in messages -%}"
@@ -38,7 +42,11 @@ def native_config(config, tokenizer):
 
     if config.architecture != "llama":
         raise ValueError("only rotary (llama) models have a Hugging Face form")
-    unsupported = [name for name, off in UNSUPPORTED.items() if getattr(config, name) != off]
+    unsupported = [
+        field.name
+        for field in dataclasses.fields(config)
+        if field.name not in SUPPORTED and getattr(config, field.name) != field.default
+    ]
     if unsupported:
         raise ValueError(f"the Hugging Face model lacks {', '.join(unsupported)}")
     markers = all(tokenizer.token_to_id(marker) is not None for marker in MARKERS)
@@ -57,6 +65,8 @@ def native_config(config, tokenizer):
         qk_norm=config.qk_norm,
         attention_gate=config.attention_gate,
         document_start=config.document_start,
+        value_embeddings=config.value_embeddings,
+        residual_scalars=config.residual_scalars,
         bos_token_id=tokenizer.token_to_id(BOS),
         eos_token_id=ends,
         pad_token_id=tokenizer.token_to_id(EOS),

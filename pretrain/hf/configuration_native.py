@@ -19,6 +19,8 @@ class NativeConfig(PretrainedConfig):
         qk_norm=False,
         attention_gate=None,
         document_start=None,
+        value_embeddings=False,
+        residual_scalars=False,
         tie_word_embeddings=True,
         use_cache=True,
         **kwargs,
@@ -34,5 +36,7 @@ class NativeConfig(PretrainedConfig):
         self.qk_norm = qk_norm
         self.attention_gate = attention_gate
         self.document_start = document_start
+        self.value_embeddings = value_embeddings
+        self.residual_scalars = residual_scalars
         self.use_cache = use_cache
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)

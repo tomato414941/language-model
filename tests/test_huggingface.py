@@ -14,6 +14,9 @@ from pretrain.huggingface import export_huggingface
 from pretrain.model import LanguageModel, ModelConfig
 from tests.test_benchmarks import benchmark_dataset, byte_tokenizer
 
+# The checks run on a model without and with value embeddings and residual scalars.
+PARTS = ({}, {"value_embeddings": True, "residual_scalars": True})
+
 
 class HuggingFaceTest(unittest.TestCase):
     def setUp(self):
@@ -47,35 +50,45 @@ class HuggingFaceTest(unittest.TestCase):
         return native, loaded
 
     def test_書き出したモデルは自前のモデルと同じ確率を出す(self):
-        native, loaded = self.export()
         tokens = torch.tensor([[self.bos, 70, 71, 72, self.bos, 73, 74, 75, 76]])
-        with torch.no_grad():
-            expected = native(tokens)
-            got = loaded(input_ids=tokens).logits
-        torch.testing.assert_close(got, expected, atol=1e-5, rtol=1e-5)
+        for parts in PARTS:
+            with self.subTest(**parts):
+                native, loaded = self.export(**parts)
+                with torch.no_grad():
+                    expected = native(tokens)
+                    got = loaded(input_ids=tokens).logits
+                torch.testing.assert_close(got, expected, atol=1e-5, rtol=1e-5)
 
     def test_左に詰め物をした一括の入力でも詰め物なしと同じ確率を出す(self):
-        native, loaded = self.export()
         sequences = [[self.bos, 70, 71, 72, 73, 74], [self.bos, 75, 76]]
         pad = self.tokenizer.token_to_id(EOS)
         longest = max(map(len, sequences))
         tokens = torch.tensor([[pad] * (longest - len(row)) + row for row in sequences])
         mask = torch.tensor([[0] * (longest - len(row)) + [1] * len(row) for row in sequences])
-        with torch.no_grad():
-            got = loaded(input_ids=tokens, attention_mask=mask).logits
-            for index, row in enumerate(sequences):
-                expected = native(torch.tensor([row]))[0]
-                torch.testing.assert_close(got[index, longest - len(row) :], expected, atol=1e-5, rtol=1e-5)
+        for parts in PARTS:
+            with self.subTest(**parts):
+                native, loaded = self.export(**parts)
+                with torch.no_grad():
+                    got = loaded(input_ids=tokens, attention_mask=mask).logits
+                    for index, row in enumerate(sequences):
+                        expected = native(torch.tensor([row]))[0]
+                        torch.testing.assert_close(
+                            got[index, longest - len(row) :], expected, atol=1e-5, rtol=1e-5
+                        )
 
     def test_キャッシュを使った生成は自前の貪欲な生成と同じ語を書く(self):
-        native, loaded = self.export()
         prompt = [self.bos, 70, 71, 72]
-        expected = native.continue_greedily([prompt], 12, self.ends)[0]
-        with torch.no_grad():
-            written = loaded.generate(torch.tensor([prompt]), max_new_tokens=12, do_sample=False)[0, len(prompt) :]
-        written = written.tolist()
-        stop = next((index for index, token in enumerate(written) if token in self.ends), len(written))
-        self.assertEqual(written[:stop], expected)
+        for parts in PARTS:
+            with self.subTest(**parts):
+                native, loaded = self.export(**parts)
+                expected = native.continue_greedily([prompt], 12, self.ends)[0]
+                with torch.no_grad():
+                    written = loaded.generate(
+                        torch.tensor([prompt]), max_new_tokens=12, do_sample=False
+                    )[0, len(prompt) :]
+                written = written.tolist()
+                stop = next((index for index, token in enumerate(written) if token in self.ends), len(written))
+                self.assertEqual(written[:stop], expected)
 
     def test_トークナイザは先頭にBOSを付けて自前と同じ番号を返し会話を自前と同じ書式で書く(self):
         self.export()
@@ -90,23 +103,27 @@ class HuggingFaceTest(unittest.TestCase):
         self.assertEqual(loaded.apply_chat_template(messages, tokenize=False, add_generation_prompt=True), chat_prompt(messages))
 
     def test_標準評価をHugging_Faceの道筋で測っても自前の道筋と同じ点数を出す(self):
-        native, _ = self.export()
-        with patch("lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset):
-            expected = evaluate_benchmarks(native, self.tokenizer, torch.device("cpu"), tasks=["arc_easy"])
-            got = evaluate_hub_benchmarks(
-                str(self.root / "hf"), None, torch.device("cpu"), tasks=["arc_easy"],
-                trust_remote_code=True, add_bos_token=True,
-            )
-        for metric in ("acc,none", "acc_norm,none"):
-            self.assertEqual(got["results"]["arc_easy"][metric], expected["results"]["arc_easy"][metric])
-        for value, reference in zip(
-            got["items"]["arc_easy"]["gold_bits_per_byte"], expected["items"]["arc_easy"]["gold_bits_per_byte"], strict=True
-        ):
-            self.assertAlmostEqual(value, reference, places=4)
+        for parts in PARTS:
+            with self.subTest(**parts):
+                native, _ = self.export(**parts)
+                with patch("lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset):
+                    expected = evaluate_benchmarks(native, self.tokenizer, torch.device("cpu"), tasks=["arc_easy"])
+                    got = evaluate_hub_benchmarks(
+                        str(self.root / "hf"), None, torch.device("cpu"), tasks=["arc_easy"],
+                        trust_remote_code=True, add_bos_token=True,
+                    )
+                for metric in ("acc,none", "acc_norm,none"):
+                    self.assertEqual(got["results"]["arc_easy"][metric], expected["results"]["arc_easy"][metric])
+                for value, reference in zip(
+                    got["items"]["arc_easy"]["gold_bits_per_byte"],
+                    expected["items"]["arc_easy"]["gold_bits_per_byte"],
+                    strict=True,
+                ):
+                    self.assertAlmostEqual(value, reference, places=4)
 
     def test_書き出せない部品を持つモデルは書き出しを断る(self):
-        with self.assertRaisesRegex(ValueError, "value_embeddings"):
-            self.export(value_embeddings=True)
+        with self.assertRaisesRegex(ValueError, "experts"):
+            self.export(experts=2, active_experts=1)
 
 
 if __name__ == "__main__":
