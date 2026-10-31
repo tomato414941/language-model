@@ -267,15 +267,14 @@ class InstructionTests(unittest.TestCase):
                     request = ResponseRequest.model_validate(
                         {"model": "test", **fields}
                     )
-                    self.assertEqual(text[: replies[reply][0]], request.prompt())
-                    self.assertEqual(chat_prompt(history), request.prompt())
+                    prompt = chat_prompt(request.messages())
+                    self.assertEqual(text[: replies[reply][0]], prompt)
+                    self.assertEqual(chat_prompt(history), prompt)
                     self.assertEqual(
                         tokens[: reply_starts[reply]].tolist(),
                         [
                             self.tokenizer.token_to_id("<|bos|>"),
-                            *self.tokenizer.encode(
-                                request.prompt(), add_special_tokens=False
-                            ).ids,
+                            *self.tokenizer.encode(prompt, add_special_tokens=False).ids,
                         ],
                     )
 
@@ -295,7 +294,8 @@ class InstructionTests(unittest.TestCase):
                     request = ResponseRequest(
                         model="test", input=content, instructions=instructions
                     )
-                    self.assertEqual(request.prompt(), text[: replies[0][0]])
+                    prompt = chat_prompt(request.messages())
+                    self.assertEqual(prompt, text[: replies[0][0]])
                     tokens, mask = encode_conversations(self.tokenizer, [messages])[0]
                     reply_start = (
                         np.flatnonzero((mask[1:] == 1) & (mask[:-1] == 0))[0] + 1
@@ -304,9 +304,7 @@ class InstructionTests(unittest.TestCase):
                         tokens[:reply_start].tolist(),
                         [
                             self.tokenizer.token_to_id("<|bos|>"),
-                            *self.tokenizer.encode(
-                                request.prompt(), add_special_tokens=False
-                            ).ids,
+                            *self.tokenizer.encode(prompt, add_special_tokens=False).ids,
                         ],
                     )
 

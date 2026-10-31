@@ -1,7 +1,7 @@
 """Sample replies in one container and serve them from another.
 
-The GPU container runs `relay` on a TextModel, and the API's container reads
-its records through a RemoteTextModel, which starts replies as TextModel does.
+The GPU container runs `relay` on a model, and the API's container reads its
+records through a RemoteTextModel, which starts replies as the model does.
 """
 
 import math
@@ -85,30 +85,32 @@ class RemoteTextModel:
     def __init__(self, sample, revision, gpu_time):
         self.sample, self.revision, self.gpu_time = sample, revision, gpu_time
 
-    def start(self, prompt, max_output_tokens, temperature, top_p, reasoning=False, tools=(), single_call=False):
+    def start(self, messages, max_output_tokens, temperature, top_p, reasoning=False, tools=(), single_call=False):
         started = self.gpu_time.begin()
-        try:
-            records = self.sample(prompt, max_output_tokens, temperature, top_p, reasoning, list(tools), single_call)
-            return RemoteGeneration(records, reasoning, lambda: self.gpu_time.end(started))
-        except BaseException:
-            # The GPU started to read even an input it refused.
-            self.gpu_time.end(started)
-            raise
+        records = self.sample(messages, max_output_tokens, temperature, top_p, reasoning, list(tools), single_call)
+        return RemoteGeneration(records, reasoning, lambda: self.gpu_time.end(started))
 
 
 class RemoteGeneration:
-    """A reply sampled elsewhere, with TextGeneration's deltas, parts and token counts."""
+    """A reply sampled elsewhere, with TextGeneration's deltas, parts and token counts.
+
+    It exists before the GPU has started, so a stream can start before then.
+    Reading its deltas has to wait until `wait` returns.
+    """
 
     def __init__(self, records, reasoning, ended):
         self.records, self.reasoning, self.ended = records, reasoning, ended
-        kind, value = next(records)
-        if kind == "refused":
-            raise ValueError(value)
-        self.input_tokens = value
-        self.output_tokens = self.reasoning_tokens = 0
+        self.input_tokens = self.output_tokens = self.reasoning_tokens = 0
         self.finished = False
         self.parts = {"reasoning": "", "text": ""}
         self.deltas = self._read()
+
+    def wait(self):
+        """Return once the GPU has started the reply, or raise ValueError for an input it refuses."""
+        kind, value = next(self.records)
+        if kind == "refused":
+            raise ValueError(value)
+        self.input_tokens = value
 
     @property
     def text(self):

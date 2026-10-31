@@ -4,7 +4,7 @@ import threading
 import torch
 from tokenizers.decoders import DecodeStream
 
-from .conversation import CALL_END, CALL_START, THINK_END, parse_call, reply_ends, require_markers
+from .conversation import CALL_END, CALL_START, THINK_END, chat_prompt, parse_call, reply_ends, require_markers
 from .training import load_model, select_device
 
 
@@ -22,7 +22,8 @@ class TextModel:
         self.tokens_seen = saved["tokens_seen"]
         self.context = self.model.config.context
 
-    def start(self, prompt, max_output_tokens, temperature, top_p, reasoning=False, tools=(), single_call=False):
+    def start(self, messages, max_output_tokens, temperature, top_p, reasoning=False, tools=(), single_call=False):
+        prompt = chat_prompt(messages, reasoning)
         return TextGeneration(self, prompt, max_output_tokens, temperature, top_p, reasoning, tools, single_call)
 
 
@@ -139,6 +140,9 @@ class TextGeneration:
         if text:
             self.parts["text"] += text
             yield "text", text
+
+    def wait(self):
+        """A reply sampled here has started already."""
 
     def __iter__(self):
         return self.deltas

@@ -11,6 +11,7 @@ from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import anyio
 import openai
 import torch
 import uvicorn
@@ -21,7 +22,7 @@ from pretrain.conversation import CALL_END, CALL_START, THINK_END, TURN_END, cha
 from pretrain.model import LanguageModel, ModelConfig
 from pretrain.remote import GPUTime, OutOfGPUTime, RemoteTextModel, relay
 from pretrain.serving import TextModel
-from responses_api import ModelSettings
+from responses_api import ModelSettings, ResponseRequest
 from server import create_app
 
 WEATHER = {
@@ -526,6 +527,68 @@ class ResponsesTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error"]["code"], "context_length_exceeded")
+
+    def test_reports_an_input_the_gpu_refuses_in_a_stream_that_has_started(self):
+        """Reports an input the GPU refuses as the failure of a stream that has started, and frees the model."""
+        client, _ = self.remote()
+        request = {"model": "test-model", "input": "a" * 256, "max_output_tokens": 4, "stream": True}
+        with client.stream("POST", "/v1/responses", json=request) as stream:
+            self.assertEqual(stream.status_code, 200)
+            events = [json.loads(line[6:]) for line in stream.iter_lines() if line.startswith("data: ")]
+        self.assertEqual(
+            [event["type"] for event in events], ["response.created", "response.in_progress", "response.failed"]
+        )
+        self.assertEqual(events[-1]["response"]["error"]["code"], "context_length_exceeded")
+        reply = {"model": "test-model", "input": "日本語", "max_output_tokens": 4}
+        self.assertEqual(client.post("/v1/responses", json=reply).status_code, 200)
+
+    def test_starts_a_stream_before_the_gpu_starts_the_reply(self):
+        """Starts a stream's response without asking the GPU, which it asks only after its first events."""
+        model = TextModel(self.checkpoint)
+        asked = []
+
+        def sample(*arguments):
+            asked.append(True)
+            yield from relay(model, *arguments)
+
+        backend = RemoteTextModel(sample, "f" * 40, GPUTime({}, 3600, 60))
+        with TestClient(create_app(response_settings=self.settings, backend=backend)) as client:
+            service = client.app.state.responses
+            session = service.start(ResponseRequest(model="test-model", input="日本語", max_output_tokens=4, stream=True))
+            self.assertEqual(asked, [])
+
+            async def first_events():
+                events = session.events()
+                seen = [await anext(events), await anext(events)]
+                self.assertEqual(asked, [])
+                seen.append(await anext(events))
+                await events.aclose()
+                return seen
+
+            seen = anyio.run(first_events)
+        self.assertEqual(asked, [True])
+        self.assertTrue(seen[0].startswith("event: response.created"))
+        self.assertTrue(seen[1].startswith("event: response.in_progress"))
+
+    def test_uses_the_top_p_of_the_settings_unless_the_request_gives_one(self):
+        """Uses the model's top_p from the settings unless the request gives one."""
+        settings = ModelSettings(model_id="test-model", checkpoint=self.checkpoint, top_p=0.95)
+        with TestClient(create_app(response_settings=settings)) as client:
+            request = {"model": "test-model", "input": "日本語", "max_output_tokens": 1}
+            self.assertEqual(client.post("/v1/responses", json=request).json()["top_p"], 0.95)
+            self.assertEqual(client.post("/v1/responses", json={**request, "top_p": 0.5}).json()["top_p"], 0.5)
+
+    def test_names_the_tool_beside_its_output(self):
+        """Gives each tool output the name of the call it answers."""
+        request = ResponseRequest(
+            model="test-model",
+            input=[
+                {"role": "user", "content": "天気は？"},
+                {"type": "function_call", "call_id": "call_1", "name": "weather", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "雨"},
+            ],
+        )
+        self.assertEqual(request.messages()[-1], {"role": "tool", "content": "雨", "name": "weather"})
 
     def test_counts_the_gpu_time_of_replies_and_of_inputs_the_gpu_refuses(self):
         """Counts from the request until the GPU shuts down, for replies and for inputs the GPU refuses."""

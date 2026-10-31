@@ -205,14 +205,14 @@ async function failure(response) {
   return new Error(errors[code] || message || "返事を作れませんでした（" + response.status + "）。");
 }
 
-// Read the Responses API's server-sent events, passing on the text as it arrives, and return the final status.
+// Read the Responses API's server-sent events, passing on the text as it arrives, and return the final response.
 async function read(response, onText) {
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = "";
-  let status;
+  let final;
   for (;;) {
     const { value, done } = await reader.read();
-    if (done) return status;
+    if (done) return final;
     buffer += value;
     let end;
     while ((end = buffer.indexOf("\n\n")) !== -1) {
@@ -225,7 +225,7 @@ async function read(response, onText) {
       const event = JSON.parse(data);
       if (event.type === "response.output_text.delta") onText(event.delta);
       else if (["response.completed", "response.incomplete", "response.failed"].includes(event.type)) {
-        status = event.response.status;
+        final = event.response;
       }
     }
   }
@@ -251,6 +251,7 @@ composer.addEventListener("submit", async (event) => {
   const reply = add("message assistant", "");
   const written = reply.appendChild(document.createTextNode(""));
   const waiting = reply.appendChild(note("返事を待っています…"));
+  const starting = setTimeout(() => { waiting.textContent = "モデルを起動しています。数分かかることがあります…"; }, 10000);
   controller = new AbortController();
   send.textContent = "停止";
   try {
@@ -261,18 +262,19 @@ composer.addEventListener("submit", async (event) => {
       signal: controller.signal,
     });
     if (!response.ok) throw await failure(response);
-    const status = await read(response, (delta) => {
+    const final = await read(response, (delta) => {
       waiting.remove();
       written.appendData(delta);
       messages.scrollTop = messages.scrollHeight;
     });
     waiting.remove();
-    if (status === "incomplete") reply.append(note("長さの上限に達したので、ここで止めました。"));
-    else if (status !== "completed") throw new Error("返事を最後まで作れませんでした。");
+    if (final?.status === "incomplete") reply.append(note("長さの上限に達したので、ここで止めました。"));
+    else if (final?.status !== "completed") throw new Error(errors[final?.error?.code] || "返事を最後まで作れませんでした。");
   } catch (error) {
     waiting.remove();
     reply.append(error.name === "AbortError" ? note("止めました。") : note(error.message, "error"));
   } finally {
+    clearTimeout(starting);
     controller = null;
     send.textContent = "送信";
     if (written.data) {

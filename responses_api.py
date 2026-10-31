@@ -17,7 +17,6 @@ from fastapi.security import HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from starlette.background import BackgroundTask
 
-from pretrain.conversation import chat_prompt
 from pretrain.remote import OutOfGPUTime
 
 
@@ -146,7 +145,7 @@ class ResponseRequest(InputSchema):
     instructions: str | None = None
     max_output_tokens: int | None = Field(default=None, ge=1)
     temperature: float | None = Field(default=1.0, ge=0, le=2, allow_inf_nan=False)
-    top_p: float | None = Field(default=1.0, gt=0, le=1, allow_inf_nan=False)
+    top_p: float | None = Field(default=None, gt=0, le=1, allow_inf_nan=False)
     stream: bool | None = False
     store: bool | None = Field(
         default=False,
@@ -177,7 +176,8 @@ class ResponseRequest(InputSchema):
         """The names of the tools the reply may call, none when tool_choice is none."""
         return [tool.name for tool in self.tools or ()] if self.tool_choice != "none" else []
 
-    def prompt(self):
+    def messages(self):
+        """The conversation's turns, from which the model writes its own prompt."""
         for name in ("store", "previous_response_id", "background", "include"):
             if getattr(self, name):
                 raise APIError(
@@ -190,7 +190,7 @@ class ResponseRequest(InputSchema):
         tools = self.tools or []
         if len({tool.name for tool in tools}) < len(tools):
             raise APIError("Give each tool a different name.", "tools")
-        messages, calls = [], set()
+        messages, calls = [], {}
         if self.instructions:
             messages.append({"role": "system", "content": self.instructions})
         inputs = (
@@ -214,7 +214,7 @@ class ResponseRequest(InputSchema):
                 if not messages or messages[-1]["role"] != "assistant":
                     messages.append({"role": "assistant", "content": ""})
                 messages[-1].setdefault("tool_calls", []).append({"name": message.name, "arguments": arguments})
-                calls.add(message.call_id)
+                calls[message.call_id] = message.name
                 continue
             if isinstance(message, InputFunctionCallOutput):
                 if message.call_id not in calls:
@@ -228,7 +228,7 @@ class ResponseRequest(InputSchema):
                     raise APIError("Use input_text for function call outputs.", "input." + str(index) + ".output")
                 else:
                     output = "".join(part.text for part in message.output)
-                messages.append({"role": "tool", "content": output})
+                messages.append({"role": "tool", "content": output, "name": calls[message.call_id]})
                 continue
             if isinstance(message.content, str):
                 content = message.content
@@ -251,7 +251,7 @@ class ResponseRequest(InputSchema):
             if not messages or messages[0]["role"] != "system":
                 messages.insert(0, {"role": "system", "content": ""})
             messages[0]["tools"] = [tool.definition() for tool in tools]
-        return chat_prompt(messages, self.reasons())
+        return messages
 
 
 class OutputText(BaseModel):
@@ -343,6 +343,7 @@ class ModelSettings:
     device: str = "cpu"
     threads: int = 1
     max_output_tokens: int = 512
+    top_p: float = 1.0
     api_key: str | None = None
 
     def __post_init__(self):
@@ -411,7 +412,7 @@ class ResponseService:
         self.backend, self.revision = backend, revision
 
     def start(self, payload):
-        prompt = payload.prompt()
+        messages = payload.messages()
         if payload.model != self.settings.model_id:
             raise APIError(
                 "The requested model is not available. Check GET /v1/models.",
@@ -449,10 +450,10 @@ class ResponseService:
             temperature = (
                 payload.temperature if payload.temperature is not None else 1.0
             )
-            top_p = payload.top_p if payload.top_p is not None else 1.0
+            top_p = payload.top_p if payload.top_p is not None else self.settings.top_p
             try:
                 generation = self.backend.start(
-                    prompt,
+                    messages,
                     limit,
                     temperature,
                     top_p,
@@ -503,6 +504,13 @@ class ResponseSession:
         self.items = [] if self.thought is None else [self.thought]
         self.current = self.thought
         self.closed = False
+
+    def wait(self):
+        """Return once the model has started the reply, reporting an input it refuses."""
+        try:
+            self.generation.wait()
+        except ValueError as error:
+            raise APIError(str(error), "input", "context_length_exceeded") from None
 
     def updates(self):
         """Fill the output items as the reply is generated, yielding the stream's events for them.
@@ -595,7 +603,7 @@ class ResponseSession:
             self.response.incomplete_details = {"reason": "max_output_tokens"}
         return self.response
 
-    def fail(self):
+    def fail(self, code="server_error", message="Text generation failed."):
         for item in self.items:
             if item.status == "in_progress":
                 item.status = "incomplete"
@@ -603,10 +611,7 @@ class ResponseSession:
             self.thought.content = [ReasoningText(text=self.generation.reasoning_text)]
         self.record()
         self.response.status = "failed"
-        self.response.error = {
-            "code": "server_error",
-            "message": "Text generation failed.",
-        }
+        self.response.error = {"code": code, "message": message}
         return self.response
 
     def close(self):
@@ -635,6 +640,9 @@ class ResponseSession:
         try:
             for kind in ("response.created", "response.in_progress"):
                 yield event(kind, response=self.response.model_dump())
+            # The response has now started, so however long the model takes to
+            # start, the request stays within the time a web request may wait.
+            await anyio.to_thread.run_sync(self.wait)
             updates = self.updates()
             sentinel = object()
             while True:
@@ -646,6 +654,8 @@ class ResponseSession:
                 yield event(kind, **fields)
             response = self.finish()
             yield event("response." + response.status, response=response.model_dump())
+        except APIError as error:
+            yield event("response.failed", response=self.fail(error.code, error.message).model_dump())
         except Exception:  # noqa: BLE001 - Finish the SSE protocol on a backend failure.
             yield event("response.failed", response=self.fail().model_dump())
         finally:
@@ -731,12 +741,15 @@ def install_routes(app: FastAPI, settings=None, backend=None):
                 background=BackgroundTask(session.close),
             )
         try:
+            session.wait()
             for _ in session.updates():
                 pass
             return JSONResponse(
                 session.finish().model_dump(),
                 headers={"x-request-id": session.response.id},
             )
+        except APIError:
+            raise
         except Exception:  # noqa: BLE001 - Keep backend failures in the API error format.
             raise APIError(
                 "Text generation failed.",

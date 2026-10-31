@@ -91,7 +91,7 @@ def create_app(*, response_settings=None, backend=None) -> FastAPI:
 
     app = FastAPI(
         title="Language Model API",
-        description="Generate text with a model trained from scratch using the Responses API.",
+        description="Generate text with a language model using the Responses API.",
         version="0.1.0",
         lifespan=lifespan,
     )

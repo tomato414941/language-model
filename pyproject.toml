@@ -14,6 +14,7 @@ train = ["numpy>=2.2,<3", "tokenizers>=0.22,<1", "torch>=2.14,<3", "fla-core==0.
 train-cpu = ["numpy>=2.2,<3", "tokenizers>=0.22,<1", "torch>=2.14,<3"]
 corpus = ["huggingface-hub>=0.35,<2", "pyarrow>=21,<30", "pyahocorasick>=2.3,<3", "zstandard>=0.23,<1"]
 hub = ["huggingface-hub>=0.35,<2"]
+serve-huggingface = ["accelerate>=1,<2", "transformers>=5.20,<6"]
 deploy = ["modal>=1.6.1,<2"]
 eval = [
     "lm-eval[hf,ifeval]==0.4.13",

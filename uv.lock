@@ -1249,6 +1249,10 @@ eval = [
 hub = [
     { name = "huggingface-hub" },
 ]
+serve-huggingface = [
+    { name = "accelerate" },
+    { name = "transformers" },
+]
 train = [
     { name = "fla-core" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'extra-14-language-model-train') or (extra == 'extra-14-language-model-train' and extra == 'extra-14-language-model-train-cpu')" },
@@ -1272,6 +1276,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "accelerate", marker = "extra == 'serve-huggingface'", specifier = ">=1,<2" },
     { name = "fastapi", specifier = ">=0.143.0" },
     { name = "fla-core", marker = "extra == 'train'", specifier = "==0.5.2" },
     { name = "huggingface-hub", marker = "extra == 'corpus'", specifier = ">=0.35,<2" },
@@ -1289,10 +1294,11 @@ requires-dist = [
     { name = "tokenizers", marker = "extra == 'train-cpu'", specifier = ">=0.22,<1" },
     { name = "torch", marker = "extra == 'train'", specifier = ">=2.14,<3" },
     { name = "torch", marker = "extra == 'train-cpu'", specifier = ">=2.14,<3", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "language-model", extra = "train-cpu" } },
+    { name = "transformers", marker = "extra == 'serve-huggingface'", specifier = ">=5.20,<6" },
     { name = "uvicorn", specifier = ">=0.54.0" },
     { name = "zstandard", marker = "extra == 'corpus'", specifier = ">=0.23,<1" },
 ]
-provides-extras = ["train", "train-cpu", "corpus", "hub", "deploy", "eval"]
+provides-extras = ["train", "train-cpu", "corpus", "hub", "serve-huggingface", "deploy", "eval"]
 
 [package.metadata.requires-dev]
 dev = [
