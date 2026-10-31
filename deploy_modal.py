@@ -24,12 +24,14 @@ CONTEXT_TOKENS = 8192
 MAX_OUTPUT_TOKENS = 2048
 # The top_p that Google recommends for this model.
 TOP_P = 0.95
-# The deploy's check runs as the containers do, as vLLM compiles anew for a machine that looks different.
+# vLLM compiles anew on a machine that looks different to it, so what it compiled
+# stays on the Volume, where the next container on such a machine finds it.
+VLLM_CACHE = f"{WEIGHTS_ROOT}/vllm-cache"
 SAMPLER_CORES = 4
 SAMPLER_MEMORY_MIB = 16384
 GPU_IDLE_SECONDS = 60
-# Billing shows the GPU up about 45 seconds past its idle window.
-GPU_SECONDS_AFTER_REPLY = 105
+# The GPU stays up this long after a reply, with its idle window, until vLLM and its container have stopped.
+GPU_SECONDS_AFTER_REPLY = 135
 GPU_SECONDS_PER_DAY = 3600
 
 weights = modal.Volume.from_name(WEIGHTS_VOLUME, create_if_missing=True, version=2)
@@ -43,13 +45,11 @@ def download_model(repo_id, revision, directory, volume):
     modal.Volume.from_name(volume).commit()
 
 
-def check_model(directory, context_tokens):
-    """Fail unless this code can start the model on this GPU, reply, and hold a full context.
-
-    vLLM caches what it compiles here, in this layer of the image, so that the
-    containers that start from it skip compiling.
-    """
+def check_model(directory, context_tokens, volume):
+    """Fail unless this code can start the model on this GPU, reply, and hold a full context."""
     import time
+
+    import modal
 
     from pretrain.vllm_serving import VLLMModel
 
@@ -68,6 +68,7 @@ def check_model(directory, context_tokens):
         if not written:
             raise ValueError("The model wrote no reply")
     model.close()
+    modal.Volume.from_name(volume).commit()
 
 
 # Downloading comes before application code, so changing the code does not repeat it.
@@ -76,7 +77,7 @@ model_image = (
     # torch.compile builds small helpers for its kernels with a C compiler.
     .apt_install("gcc")
     .pip_install_from_requirements(str(ROOT / "deploy/requirements-vllm.txt"))
-    .env({"HF_XET_HIGH_PERFORMANCE": "1"})
+    .env({"HF_XET_HIGH_PERFORMANCE": "1", "VLLM_CACHE_ROOT": VLLM_CACHE})
     .run_function(
         download_model,
         args=(MODEL_REPO, MODEL_REVISION, MODEL_DIRECTORY, WEIGHTS_VOLUME),
@@ -89,9 +90,9 @@ model_image = (
     # A model this code cannot use stops the deploy here, and the running version stays up.
     .run_function(
         check_model,
-        args=(MODEL_DIRECTORY, CONTEXT_TOKENS),
+        args=(MODEL_DIRECTORY, CONTEXT_TOKENS, WEIGHTS_VOLUME),
         gpu=GPU,
-        volumes={WEIGHTS_ROOT: weights.with_mount_options(read_only=True)},
+        volumes={WEIGHTS_ROOT: weights},
         cpu=SAMPLER_CORES,
         memory=SAMPLER_MEMORY_MIB,
         timeout=1800,
@@ -112,7 +113,7 @@ app = modal.App(f"{MODEL_ID}-api")
     image=model_image,
     gpu=GPU,
     cpu=SAMPLER_CORES,
-    volumes={WEIGHTS_ROOT: weights.with_mount_options(read_only=True)},
+    volumes={WEIGHTS_ROOT: weights},
     memory=SAMPLER_MEMORY_MIB,
     min_containers=0,
     max_containers=1,
@@ -127,6 +128,7 @@ class Sampler:
         from pretrain.vllm_serving import VLLMModel
 
         self.model = VLLMModel.serve(MODEL_DIRECTORY, CONTEXT_TOKENS)
+        weights.commit()
 
     @modal.exit()
     def stop(self):
