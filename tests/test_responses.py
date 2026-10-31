@@ -570,6 +570,14 @@ class ResponsesTests(unittest.TestCase):
         self.assertTrue(seen[0].startswith("event: response.created"))
         self.assertTrue(seen[1].startswith("event: response.in_progress"))
 
+    def test_page_asks_for_reasoning_when_the_settings_say_so(self):
+        """Has the chat page ask the model to reason only when the settings say so."""
+        for reasons, effort in ((True, "medium"), (False, "")):
+            with self.subTest(reasons=reasons):
+                settings = ModelSettings(model_id="test-model", checkpoint=self.checkpoint, page_reasons=reasons)
+                with TestClient(create_app(response_settings=settings)) as client:
+                    self.assertIn(f'data-reasoning-effort="{effort}"', client.get("/").text)
+
     def test_uses_the_top_p_of_the_settings_unless_the_request_gives_one(self):
         """Uses the model's top_p from the settings unless the request gives one."""
         settings = ModelSettings(model_id="test-model", checkpoint=self.checkpoint, top_p=0.95)

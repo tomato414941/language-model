@@ -21,7 +21,8 @@ MODEL_DIRECTORY = f"{WEIGHTS_ROOT}/{MODEL_REPO}/{MODEL_REVISION}"
 GPU = "A100-80GB"
 # What the weights leave of the GPU's memory holds about 1 MB for each token a reply caches.
 CONTEXT_TOKENS = 8192
-MAX_OUTPUT_TOKENS = 2048
+# Reasoning takes its share of a reply's tokens.
+MAX_OUTPUT_TOKENS = 4096
 # The top_p that Google recommends for this model.
 TOP_P = 0.95
 # vLLM compiles anew on a machine that looks different to it, so what it compiled
@@ -177,7 +178,7 @@ def api():
     )
     return create_app(
         response_settings=ModelSettings(
-            model_id=MODEL_ID, api_key=api_key, max_output_tokens=MAX_OUTPUT_TOKENS, top_p=TOP_P
+            model_id=MODEL_ID, api_key=api_key, max_output_tokens=MAX_OUTPUT_TOKENS, top_p=TOP_P, page_reasons=True
         ),
         backend=RemoteTextModel(Sampler().sample.remote_gen, MODEL_REVISION, gpu_time),
     )

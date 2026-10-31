@@ -344,6 +344,8 @@ class ModelSettings:
     threads: int = 1
     max_output_tokens: int = 512
     top_p: float = 1.0
+    # Whether the chat page asks the model to reason before it answers.
+    page_reasons: bool = False
     api_key: str | None = None
 
     def __post_init__(self):

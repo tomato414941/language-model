@@ -102,6 +102,7 @@ def create_app(*, response_settings=None, backend=None) -> FastAPI:
         CHAT_PAGE.read_text(encoding="utf-8")
         .replace("{{model}}", html.escape(settings.model_id))
         .replace("{{max_output_tokens}}", str(settings.max_output_tokens))
+        .replace("{{reasoning_effort}}", "medium" if settings.page_reasons else "")
     )
 
     @app.middleware("http")

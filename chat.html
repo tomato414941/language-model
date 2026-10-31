@@ -90,7 +90,7 @@
 </style>
 </head>
 <body>
-<div class="page" data-model="{{model}}" data-max-output-tokens="{{max_output_tokens}}">
+<div class="page" data-model="{{model}}" data-max-output-tokens="{{max_output_tokens}}" data-reasoning-effort="{{reasoning_effort}}">
   <header>
     <h1>言語モデル<span id="model"></span></h1>
     <button type="button" id="new">新しい会話</button>
@@ -113,6 +113,7 @@
 const page = document.querySelector(".page");
 const model = page.dataset.model;
 const maxOutputTokens = Number(page.dataset.maxOutputTokens);
+const reasoningEffort = page.dataset.reasoningEffort;
 const messages = document.getElementById("messages");
 const composer = document.getElementById("composer");
 const input = document.getElementById("input");
@@ -206,7 +207,7 @@ async function failure(response) {
 }
 
 // Read the Responses API's server-sent events, passing on the text as it arrives, and return the final response.
-async function read(response, onText) {
+async function read(response, onText, onReasoning) {
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = "";
   let final;
@@ -224,6 +225,7 @@ async function read(response, onText) {
       if (!data) continue;
       const event = JSON.parse(data);
       if (event.type === "response.output_text.delta") onText(event.delta);
+      else if (event.type === "response.reasoning_text.delta") onReasoning();
       else if (["response.completed", "response.incomplete", "response.failed"].includes(event.type)) {
         final = event.response;
       }
@@ -258,7 +260,10 @@ composer.addEventListener("submit", async (event) => {
     const response = await fetch("/v1/responses", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
-      body: JSON.stringify({ model, input: conversation, max_output_tokens: maxOutputTokens, stream: true }),
+      body: JSON.stringify({
+        model, input: conversation, max_output_tokens: maxOutputTokens, stream: true,
+        ...(reasoningEffort && { reasoning: { effort: reasoningEffort } }),
+      }),
       signal: controller.signal,
     });
     if (!response.ok) throw await failure(response);
@@ -266,6 +271,9 @@ composer.addEventListener("submit", async (event) => {
       waiting.remove();
       written.appendData(delta);
       messages.scrollTop = messages.scrollHeight;
+    }, () => {
+      clearTimeout(starting);
+      waiting.textContent = "考えています…";
     });
     waiting.remove();
     if (final?.status === "incomplete") reply.append(note("長さの上限に達したので、ここで止めました。"));
