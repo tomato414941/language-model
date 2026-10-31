@@ -81,6 +81,8 @@ REFERENCE_ANSWERS = {
 }
 # These tasks ask in the conversation format that the API serves.
 CONVERSATION_TASKS = ("ifeval",)
+# These score the words of a text, so a conversation has nothing to ask.
+TEXT_TASKS = ("lambada_openai", "blimp")
 RESULT_SECTIONS = (
     "results",
     "group_subtasks",
@@ -480,11 +482,30 @@ def evaluate_benchmarks(
     batch_tokens=4096,
     tasks=None,
     limit=None,
+    conversation_tasks=CONVERSATION_TASKS,
 ):
     """Use the harness's task definitions, default few-shot counts and metrics."""
     return run_benchmarks(
-        NativeLM(model, tokenizer, device, precision, batch_tokens), tasks, limit
+        NativeLM(model, tokenizer, device, precision, batch_tokens),
+        tasks,
+        limit,
+        conversation_tasks,
     )
+
+
+def as_conversation_tasks(tasks=None):
+    """The tasks an instruction-tuned model is also asked in the format it learned.
+
+    Published evaluations ask a tuned model in its conversation format and a
+    pretrained one as plain text, so a tuned model's plain scores alone would
+    measure it in a form it did not learn. Both are kept, to compare with
+    earlier results.
+    """
+    return [
+        name
+        for name in (DEFAULT_TASKS if tasks is None else tasks)
+        if name not in CONVERSATION_TASKS and name not in TEXT_TASKS
+    ]
 
 
 def evaluate_hub_benchmarks(
@@ -524,7 +545,7 @@ def evaluate_hub_benchmarks(
     return result
 
 
-def run_benchmarks(backend, tasks=None, limit=None):
+def run_benchmarks(backend, tasks=None, limit=None, conversation_tasks=CONVERSATION_TASKS):
     """Ask a harness backend the standard tasks and record each question's results."""
     if limit is not None and (type(limit) is not int or limit <= 0):
         raise ValueError("limit must be a positive integer")
@@ -551,7 +572,7 @@ def run_benchmarks(backend, tasks=None, limit=None):
         group = [
             task
             for name, task in chosen.items()
-            if (name in CONVERSATION_TASKS) == conversation
+            if (name in conversation_tasks) == conversation
         ]
         if not group:
             continue
@@ -574,7 +595,7 @@ def run_benchmarks(backend, tasks=None, limit=None):
     result["items"] = items
     result["by_language"] = by_language(result, chosen)
     result["conversation_format_tasks"] = [
-        name for name in chosen if name in CONVERSATION_TASKS
+        name for name in chosen if name in conversation_tasks
     ]
     result["framework"] = {
         "name": "lm-evaluation-harness",

@@ -102,14 +102,15 @@ class LlmJpEvalTest(unittest.TestCase):
         saved = json.loads((replies / "mif_eval_ja.eval-generated.json").read_text(encoding="utf-8"))
         self.assertNotIn("answer_extract_pattern", saved)
 
-    def evaluated(self, name, reply, scores):
+    def evaluated(self, name, reply, scores, **options):
         """What evaluate_llm_jp returns for one task's reply, and what the tool read of it."""
         home = self.tool_home()
         self.replies_of(name, reply)
         read = []
+        self.conversations = []
 
-        def replied(_backend, _prompts, results, _datasets):
-            self.assertEqual(results, self.root.resolve() / "work/replies")
+        def replied(_backend, _prompts, results, datasets, conversation):
+            self.conversations.append([name for name in datasets if name in conversation])
             shutil.copytree(self.root / "replies", results)
 
         with (
@@ -120,7 +121,7 @@ class LlmJpEvalTest(unittest.TestCase):
             patch("pretrain.llm_jp_eval.require_markers"),
             patch("pretrain.llm_jp_eval.generate_replies", side_effect=replied),
         ):
-            output = evaluate_llm_jp(None, None, "cpu", "bfloat16", 1, [name], self.root / "work")
+            output = evaluate_llm_jp(None, None, "cpu", "bfloat16", 1, [name], self.root / "work", **options)
         return output, read
 
     def test_返答全体を判定する課題は既定の点と全文の点の両方を返す(self):
@@ -136,6 +137,25 @@ class LlmJpEvalTest(unittest.TestCase):
         self.assertEqual(read, ["2"])
         self.assertEqual(output["evaluation"]["scores"], {"exact_match": 0.25})
         self.assertNotIn("whole_reply_scores", output)
+
+    def test_指示学習のモデルには続きを書かせる形に加えて会話形式でも問う(self):
+        """Scores the plain form first, and then the same task in the conversation format."""
+        output, _ = self.evaluated(
+            "kuci", "2", [{"exact_match": 0.25}, {"exact_match": 0.5}], also_as_conversation=True
+        )
+        self.assertEqual(self.conversations, [[], ["kuci"]])
+        self.assertEqual(output["evaluation"]["scores"], {"exact_match": 0.25})
+        self.assertEqual(output["conversation_format_datasets"], [])
+        self.assertEqual(output["as_conversation"]["evaluation"]["scores"], {"exact_match": 0.5})
+        self.assertEqual(output["as_conversation"]["conversation_format_datasets"], ["kuci"])
+
+    def test_もともと会話形式で問う課題はもう一度は問わない(self):
+        """Asks a task once when the plain form already uses the conversation format."""
+        output, _ = self.evaluated(
+            "mif_eval_ja", "前置き", [{"strict": 0.1}, {"strict": 0.1}], also_as_conversation=True
+        )
+        self.assertEqual(self.conversations, [["mif_eval_ja"]])
+        self.assertNotIn("as_conversation", output)
 
     def test_各データセットの問いに続きを書きllm_jp_evalの形式で保存する(self):
         """Continues each dumped prompt for its output length and saves the replies where the evaluation reads them."""

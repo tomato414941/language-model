@@ -261,6 +261,11 @@ def main(argv=None):
         help="llm-jp-evalで全問を評価する日本語のデータセット名",
     )
     benchmark.add_argument(
+        "--also-as-conversation",
+        action="store_true",
+        help="指示学習のモデルを、問いのある課題について会話形式でも評価する",
+    )
+    benchmark.add_argument(
         "--output", type=Path, required=True, help="問題ごとの記録を含む結果のJSONファイル"
     )
     hub_benchmark = commands.add_parser(
@@ -660,7 +665,7 @@ def main(argv=None):
             device = select_device(args.device)
             model, tokenizer, payload = load_model(args.checkpoint, device)
             if args.command == "benchmark":
-                from .evaluation import evaluate_benchmarks
+                from .evaluation import as_conversation_tasks, evaluate_benchmarks
                 from lm_eval.utils import setup_logging
 
                 # Show each task's steps on stderr while a long evaluation runs.
@@ -677,6 +682,18 @@ def main(argv=None):
                         args.tasks,
                         args.limit,
                     )
+                    asked = as_conversation_tasks(args.tasks) if args.also_as_conversation else []
+                    if asked:
+                        result["as_conversation"] = evaluate_benchmarks(
+                            model,
+                            tokenizer,
+                            device,
+                            precision,
+                            args.batch_tokens,
+                            asked,
+                            args.limit,
+                            conversation_tasks=asked,
+                        )
                     if args.llm_jp_eval:
                         from .llm_jp_eval import evaluate_llm_jp
 
@@ -688,6 +705,7 @@ def main(argv=None):
                             args.batch_tokens,
                             args.llm_jp_eval,
                             args.output.parent / f"{args.output.stem}-llm-jp-eval",
+                            also_as_conversation=args.also_as_conversation,
                         )
                 result["checkpoint"] = {
                     "checkpoint": str(args.checkpoint),
@@ -702,7 +720,10 @@ def main(argv=None):
                     json.dumps(result, indent=2) + "\n", encoding="utf-8"
                 )
                 # The file keeps every question; the summary is what to read.
-                print(json.dumps(result["by_language"], indent=2))
+                summary = result["by_language"]
+                if "as_conversation" in result:
+                    summary = {**summary, "as_conversation": result["as_conversation"]["by_language"]}
+                print(json.dumps(summary, indent=2))
             elif args.command == "evaluate":
                 corpus = open_corpus(args.data, ("validation",))
                 corpus.validate_context(model.config.context)

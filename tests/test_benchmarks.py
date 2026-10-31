@@ -39,6 +39,7 @@ from pretrain.evaluation import (
     DEFAULT_TASKS,
     STANDARD_TASKS,
     NativeLM,
+    as_conversation_tasks,
     evaluate_benchmarks,
     evaluate_hub_benchmarks,
     result_keys,
@@ -892,6 +893,67 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(result["results"]["ifeval"]["prompt_level_strict_acc,none"], 1)
         self.assertIn("acc,none", result["results"]["arc_easy"])
         self.assertEqual(result["conversation_format_tasks"], ["ifeval"])
+
+    def test_tuned_models_are_asked_their_examples_as_earlier_turns(self):
+        """Asks a choice task in the conversation format, its examples as earlier turns."""
+        tokenizer = byte_tokenizer(reserved_tokens=8)
+        model = LanguageModel(
+            tokenizer.get_vocab_size(), ModelConfig(width=8, heads=2, layers=1, context=2048)
+        )
+        encode = NativeLM.tok_encode
+        with (
+            patch("lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset),
+            patch.object(NativeLM, "tok_encode", autospec=True, side_effect=encode) as encoded,
+        ):
+            result = evaluate_benchmarks(
+                model,
+                tokenizer,
+                torch.device("cpu"),
+                tasks=["arc_easy", "ja_leaderboard_jcommonsenseqa"],
+                conversation_tasks=["ja_leaderboard_jcommonsenseqa"],
+            )
+        texts = [call.args[1] for call in encoded.call_args_list]
+        asked = [text for text in texts if TURN_START in text]
+        opening = chat_prompt([{"role": "user", "content": "x"}]).split("x")[-1]
+        self.assertTrue(any(text.endswith(opening) for text in asked))
+        self.assertIn("子ども向けの絵が多い本は？", asked[0])
+        # Three examples and the question, each a user turn.
+        self.assertEqual(asked[0].count(f"{TURN_START}user\n"), 4)
+        self.assertIn("Question: Which gas do plants take in?\nAnswer:", texts)
+        self.assertEqual(result["conversation_format_tasks"], ["ja_leaderboard_jcommonsenseqa"])
+        self.assertTrue(0 <= result["results"]["ja_leaderboard_jcommonsenseqa"]["acc,none"] <= 1)
+
+    def test_tuned_models_are_asked_as_conversations_only_where_there_is_a_question(self):
+        """Leaves out the tasks that score a text's words and those already asked as conversations."""
+        self.assertEqual(
+            as_conversation_tasks(["arc_easy", "ifeval", "blimp", "lambada_openai", "gsm8k"]),
+            ["arc_easy", "gsm8k"],
+        )
+
+    def test_benchmark_command_adds_the_conversation_scores_of_a_tuned_model(self):
+        """会話形式でも問うと指定すると、その点を今の形の点と別に記録する。"""
+        self.train_checkpoint()
+        output = self.root / "results.json"
+        with (
+            patch("lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset),
+            patch.object(NativeLM, "apply_chat_template", return_value="Question") as templated,
+            contextlib.redirect_stdout(io.StringIO()) as shown,
+        ):
+            main(
+                [
+                    "benchmark", "--checkpoint", str(self.root / "run/last.pt"), "--device", "cpu",
+                    "--threads", "1", "--output", str(output), "--also-as-conversation",
+                    "--tasks", "arc_easy", "lambada_openai",
+                ]
+            )
+        result = json.loads(output.read_text(encoding="utf-8"))
+        self.assertTrue(templated.called)
+        self.assertEqual(result["conversation_format_tasks"], [])
+        self.assertEqual(result["as_conversation"]["conversation_format_tasks"], ["arc_easy"])
+        self.assertIn("arc_easy", result["as_conversation"]["results"])
+        self.assertNotIn("lambada_openai", result["as_conversation"]["results"])
+        summary = json.loads(shown.getvalue())
+        self.assertEqual(summary["as_conversation"], result["as_conversation"]["by_language"])
 
     def test_limited_standard_evaluation_is_reported_as_a_smoke_check(self):
         """Records the limited scope and item count for a smoke check."""

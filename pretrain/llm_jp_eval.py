@@ -9,9 +9,10 @@ pinned, its default settings stand, and every question is asked.
 
 Tasks asked in the conversation format put the prompt in a user turn, as
 llm-jp-eval-inference's chat template option does; the others continue the
-prompt as plain text. The template leaves out the datasets llm-jp-eval does
-not process for commercial use, JHumanEval among them, so asking for one is
-refused before any reply is written.
+prompt as plain text. An instruction-tuned model may be asked all of them in the
+conversation format as well, the form it learned. The template leaves out the
+datasets llm-jp-eval does not process for commercial use, JHumanEval among them,
+so asking for one is refused before any reply is written.
 
 By default the tool scores only what precedes a reply's first blank line. Tasks
 that judge the whole reply, as their authors' code does, are scored that way as
@@ -106,7 +107,7 @@ def dumped_prompts(work, datasets):
     return prompts
 
 
-def generate_replies(backend, prompts, results, datasets):
+def generate_replies(backend, prompts, results, datasets, conversation=CONVERSATION_DATASETS):
     """Write each dataset's replies and the run's record where llm-jp-eval's evaluation reads them."""
     results.mkdir(parents=True, exist_ok=True)
     profiles, times, dumped = {}, {}, {}
@@ -117,7 +118,7 @@ def generate_replies(backend, prompts, results, datasets):
         texts = []
         for sample in data["samples"]:
             text = sample["prompt"]
-            if name in CONVERSATION_DATASETS:
+            if name in conversation:
                 messages = [{"role": "user", "content": text}]
                 if sample.get("system_prompt"):
                     messages.insert(0, {"role": "system", "content": sample["system_prompt"]})
@@ -182,28 +183,42 @@ def score_whole_replies(home, work, replies, datasets):
     return json.loads(scored.read_text(encoding="utf-8"))["evaluation"]["scores"]
 
 
-def evaluate_llm_jp(model, tokenizer, device, precision, batch_tokens, datasets, work):
-    """Scores, settings and every reply of llm-jp-eval's evaluation of the chosen datasets."""
-    if not datasets:
-        raise ValueError("select at least one llm-jp-eval dataset")
-    if any(name in CONVERSATION_DATASETS for name in datasets):
-        require_markers(tokenizer)
-    work = Path(work).resolve()
+def ask_llm_jp(home, backend, datasets, conversation, work):
+    """One evaluation by the tool: its prompts, the model's replies and the tool's scores."""
     work.mkdir(parents=True, exist_ok=True)
-    home = checkout(os.environ.get("LLM_JP_EVAL_HOME") or work / "llm-jp-eval")
     for name in datasets:
         tool(home, "scripts/preprocess_dataset.py", "--dataset-name", name, "--output-dir", str(work / "files"))
     tool(home, "scripts/evaluate_llm.py", "dump", "--config", str(write_config(home, work, datasets)))
     prompts = dumped_prompts(work, datasets)
     results = work / "replies"
-    backend = NativeLM(model, tokenizer, device, precision, batch_tokens)
-    generate_replies(backend, prompts, results, datasets)
+    generate_replies(backend, prompts, results, datasets, conversation)
     tool(home, "scripts/evaluate_llm.py", "eval", "--config", str(write_config(home, work, datasets, results)))
     [scored] = (work / "files/results").glob("result_*.json")
     output = json.loads(scored.read_text(encoding="utf-8"))
     output["framework"] = {"name": "llm-jp-eval", "version": RELEASE}
-    output["conversation_format_datasets"] = [name for name in datasets if name in CONVERSATION_DATASETS]
+    output["conversation_format_datasets"] = [name for name in datasets if name in conversation]
     judged_whole = [name for name in datasets if name in WHOLE_REPLY_DATASETS]
     if judged_whole:
         output["whole_reply_scores"] = score_whole_replies(home, work, results, judged_whole)
+    return output
+
+
+def evaluate_llm_jp(model, tokenizer, device, precision, batch_tokens, datasets, work, also_as_conversation=False):
+    """Scores, settings and every reply of llm-jp-eval's evaluation of the chosen datasets.
+
+    With also_as_conversation, the datasets asked as plain text are asked in
+    the conversation format too, under as_conversation.
+    """
+    if not datasets:
+        raise ValueError("select at least one llm-jp-eval dataset")
+    plain = [name for name in datasets if name not in CONVERSATION_DATASETS]
+    if also_as_conversation or len(plain) != len(datasets):
+        require_markers(tokenizer)
+    work = Path(work).resolve()
+    work.mkdir(parents=True, exist_ok=True)
+    home = checkout(os.environ.get("LLM_JP_EVAL_HOME") or work / "llm-jp-eval")
+    backend = NativeLM(model, tokenizer, device, precision, batch_tokens)
+    output = ask_llm_jp(home, backend, datasets, CONVERSATION_DATASETS, work)
+    if also_as_conversation and plain:
+        output["as_conversation"] = ask_llm_jp(home, backend, plain, plain, work / "as-conversation")
     return output

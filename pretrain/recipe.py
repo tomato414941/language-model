@@ -570,7 +570,7 @@ def inspect_recipe(path, workdir):
         ]
         return command
 
-    def benchmark_command(checkpoint, selected, japanese):
+    def benchmark_command(checkpoint, selected, japanese, tuned=False):
         return [
             "python",
             "-m",
@@ -582,6 +582,7 @@ def inspect_recipe(path, workdir):
             "cuda",
             "--output",
             str(Path(checkpoint).parent / "benchmarks.json"),
+            *(["--also-as-conversation"] if tuned else []),
             *(["--llm-jp-eval", *japanese] if japanese else []),
             "--tasks",
             *selected,
@@ -715,6 +716,7 @@ def inspect_recipe(path, workdir):
                 instruction_output / "last.pt",
                 [*tasks, *recipe["evaluation"]["instruction_tasks"]],
                 [*japanese, *recipe["evaluation"].get("llm_jp_eval_instruction_tasks", [])],
+                tuned=True,
             ),
         ]
     sources = sources_by_id(recipe)

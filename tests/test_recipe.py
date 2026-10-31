@@ -242,6 +242,11 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(asked[0], ["kuci", "jmmlu"])
         self.assertEqual(asked[-1], ["kuci", "jmmlu", "mif_eval_ja"])
 
+    def test_指示学習の評価だけを会話形式でも問う手順にする(self):
+        plan = inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6")
+        benchmarks = [command for command in plan["commands"] if command[3] == "benchmark"]
+        self.assertEqual(["--also-as-conversation" in command for command in benchmarks], [False, True])
+
     def test_縮小した学習計画を既定として学習量と保存先を表示する(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

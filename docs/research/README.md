@@ -104,6 +104,7 @@
 
 ### 評価
 
+- [asking-in-conversation.md](topics/asking-in-conversation.md)
 - [m-ifeval-ja.md](topics/m-ifeval-ja.md)
 - [elyza-tasks-100.md](topics/elyza-tasks-100.md)
 - [japanese-mt-bench.md](topics/japanese-mt-bench.md)
