@@ -294,7 +294,39 @@ class RecipeTests(unittest.TestCase):
         plan = inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6")
         training = [command for command in plan["commands"] if command[3] == "train"]
         self.assertTrue(plan["training"]["fp8"])
-        self.assertEqual(["--compile" in command for command in training], [True, True, False])
+        self.assertEqual(["--compile" in command for command in training], [True, True, True, False])
+
+    def test_パッチで読む段階の重みから次の段階を始める(self):
+        plan = inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6")
+        patches, stable, decay = [command for command in plan["commands"] if command[3] == "train"][:3]
+        self.assertTrue(patches[patches.index("--config") + 1].endswith("model-v6-patch.toml"))
+        self.assertEqual(patches[patches.index("--data") + 1], "data/pretrain-v6/corpus-patch")
+        self.assertEqual(
+            stable[stable.index("--initialize-from") + 1], "runs/pretrain-v6-patch/last.pt"
+        )
+        self.assertEqual(decay[decay.index("--continue-from") + 1], "runs/pretrain-v6-stable/last.pt")
+        self.assertEqual(
+            plan["nominal_training_tokens"], 5333 * 32 * (8192 * 4 + 3) + 2667 * 1_048_576
+        )
+
+    def test_パッチの設定が合わない計画は断る(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "configs"
+            shutil.copytree(ROOT / "configs", root)
+            recipe = root / "pretrain-v6.toml"
+            text = recipe.read_text()
+            recipe.write_text(text.replace('patch_config = "model-v6-patch.toml"\n', ""))
+            with self.assertRaisesRegex(ValueError, "patch_config"):
+                read_recipe(recipe)
+            recipe.write_text(text)
+            settings = root / "model-v6-patch.toml"
+            patches = settings.read_text()
+            settings.write_text(patches.replace("steps = 5333", "steps = 5300"))
+            with self.assertRaisesRegex(ValueError, "cover the patch corpus"):
+                read_recipe(recipe)
+            settings.write_text(patches.replace("layers = 32", "layers = 24"))
+            with self.assertRaisesRegex(ValueError, "same model"):
+                read_recipe(recipe)
 
     def test_各データ源の割当を満たす日英コーパスを作成する(self):
         corpus = self.prepare()

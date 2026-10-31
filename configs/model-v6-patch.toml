@@ -1,0 +1,47 @@
+# The first stage of the v6 model's training (model-v6.toml has the reasons): the
+# same model reads two thirds of its tokens in patches of four.
+[model]
+architecture = "llama"
+width = 1024
+heads = 8
+kv_heads = 2
+layers = 32
+feed_forward = "relu_squared"
+intermediate_size = 4096
+context = 8192
+rope_theta = 10000.0
+qk_norm = true
+attention_gate = "headwise"
+value_embeddings = true
+residual_scalars = true
+zero_output_init = true
+# The tokenizer's BOS, which begins each document.
+document_start = 0
+
+[training]
+# 32 windows of 32,768 tokens (8,192 patches) per update: 1,048,576 tokens, as
+# in the rest of training, at a quarter of the computation. 5,333 updates read
+# 5.59B tokens, two thirds of the 8.39B.
+steps = 5333
+batch_size = 4
+accumulation_steps = 8
+patch_size = 4
+learning_rate = 0.0032
+min_learning_rate = 0.000032
+# Warmup and the decay keep their shares of these updates.
+warmup_steps = 120
+# Each update's decay is as in the rest of training.
+weight_decay = 0.28
+gradient_clip = 1.0
+eval_every = 200
+save_every = 25
+eval_batches = 16
+log_every = 5
+seed = 42
+schedule = "wsd"
+decay_steps = 1067
+decay_shape = "1-sqrt"
+sampling = "sequential"
+optimizer = "normuon"
+weight_decay_schedule = "cosine"
+fp8 = true

@@ -31,6 +31,13 @@
 # measured 1.17 times the speed at 26 layers, about 1.05 times once it matched
 # bfloat16's loss, and the speedrun's record 92 saved about a tenth of its time.
 # Instruction tuning stays in bfloat16.
+# Training begins in patches (model-v6-patch.toml): two thirds of the tokens are
+# read four at a time, at a quarter of the computation, which Shao et al. found
+# halves the cost without lowering downstream scores from 370M to 2.7B
+# parameters. These settings then read the last third token by token, from those
+# weights with a new optimizer and schedule, as the paper does. Updates keep
+# their tokens, rate and weight decay, and the decay stays over the last fifth
+# of all 8,000 updates.
 [model]
 architecture = "llama"
 width = 1024
@@ -50,14 +57,14 @@ zero_output_init = true
 document_start = 0
 
 [training]
-# 128 windows of 8,192 tokens per update: 1,048,576 tokens; 8,000 updates
-# read 8.39B tokens.
-steps = 8000
+# 128 windows of 8,192 tokens per update: 1,048,576 tokens; these 2,667 updates
+# read 2.80B tokens, after the 5.59B of the patches, for 8.39B in all.
+steps = 2667
 batch_size = 4
 accumulation_steps = 32
 learning_rate = 0.0032
 min_learning_rate = 0.000032
-warmup_steps = 180
+warmup_steps = 60
 # 0.1 x 2 x 11.74B / 8.39B.
 weight_decay = 0.28
 gradient_clip = 1.0

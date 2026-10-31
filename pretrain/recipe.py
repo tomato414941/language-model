@@ -34,7 +34,7 @@ from .conversation import conversation_text
 from .data import BOS, EOS, LANGUAGES, Corpus, file_digest, read_documents
 from .instructions import BenchmarkFilter
 from .model import LanguageModel
-from .training import TrainConfig, read_config
+from .training import TrainConfig, read_config, read_length
 
 SOURCE_FORMATS = {
     "parquet": ".parquet",
@@ -61,8 +61,9 @@ SOURCE_FIELDS = {
     "maximum_characters",
     *FILTERS,
 }
-PURPOSES = ("phase", "alternative", "evaluation", "pool")
-# A pool is read from the sources but never trained on. A corpus that selects
+PURPOSES = ("patch", "phase", "alternative", "evaluation", "pool")
+# A patch corpus is read in patches before the phases, whose first takes the
+# weights it leaves. A pool is read from the sources but never trained on. A corpus that selects
 # from it takes either a random sample or the documents a model learns most from.
 SELECTIONS = ("random", "learnable")
 TOKEN_PIECE_DTYPE = "<u2"
@@ -325,6 +326,24 @@ def read_recipe(path):
         )
     if "initialize_from" in recipe and not isinstance(recipe["initialize_from"], str):
         raise ValueError("initialize_from must name a checkpoint")
+    patches = [item for item in corpora if item["purpose"] == "patch"]
+    if patches or "patch_config" in recipe:
+        if len(patches) != 1 or "patch_config" not in recipe or not phases:
+            raise ValueError("patches need one patch corpus, its patch_config and phases to follow")
+        if "initialize_from" in recipe or "continue_from" in recipe:
+            raise ValueError("a recipe with patches starts from random weights")
+        patch_model, patch_training = read_config(path.parent / recipe["patch_config"])
+        if patch_training.patch_size == 1 or training.patch_size != 1:
+            raise ValueError("patch_config reads patches, and training_config reads tokens")
+        if patch_model != model or patch_training.seed != training.seed:
+            raise ValueError("patch_config must train the same model from the same seed")
+        patch_tokens = (
+            patch_training.batch_size
+            * patch_training.accumulation_steps
+            * read_length(patch_model.context, patch_training.patch_size)
+        )
+        if patch_training.steps != math.ceil(patches[0]["training_tokens"] / patch_tokens):
+            raise ValueError("patch_config's steps must cover the patch corpus")
     if recipe["evaluation"]["framework"] != "lm-eval":
         raise ValueError("evaluation uses the standard lm-evaluation-harness tasks")
     if "sft" in recipe and (
@@ -448,7 +467,14 @@ def run_paths(recipe_path, recipe):
 
 # Settings that shape training and evaluation but neither the tokenizer nor
 # the corpora, so they may change without rebuilding either.
-TRAINING_SETTINGS = ("training_config", "evaluation", "sft", "initialize_from", "continue_from")
+TRAINING_SETTINGS = (
+    "training_config",
+    "patch_config",
+    "evaluation",
+    "sft",
+    "initialize_from",
+    "continue_from",
+)
 
 
 def corpus_tokens(item):
@@ -524,14 +550,14 @@ def inspect_recipe(path, workdir):
         ],
     ]
 
-    def train_command(name):
+    def train_command(name, settings=config, fp8=training.fp8):
         command = [
             "python",
             "-m",
             "pretrain",
             "train",
             "--config",
-            config,
+            settings,
             "--data",
             str(corpora[name]),
             "--output",
@@ -540,7 +566,7 @@ def inspect_recipe(path, workdir):
             "cuda",
             "--precision",
             "bfloat16",
-            *(["--compile"] if training.fp8 else []),
+            *(["--compile"] if fp8 else []),
         ]
         return command
 
@@ -564,12 +590,22 @@ def inspect_recipe(path, workdir):
     phases = [item for item in recipe["corpora"] if item["purpose"] == "phase"]
     tokens_per_step = training.batch_size * training.accumulation_steps * model.context
     start = continued_step(recipe)
+    patches = [item for item in recipe["corpora"] if item["purpose"] == "patch"]
+    patch_run = None
+    if patches:
+        patch_path = Path(path).parent / recipe["patch_config"]
+        commands.append(
+            train_command(patches[0]["name"], str(patch_path), read_config(patch_path)[1].fp8)
+        )
+        patch_run = runs[patches[0]["name"]]
     if phases:
         previous = None
         for item, end in zip(phases, phase_ends(phases, tokens_per_step, start)):
             command = train_command(item["name"])
             if previous is not None:
                 command += ["--continue-from", str(previous / "last.pt")]
+            elif patch_run is not None:
+                command += ["--initialize-from", str(patch_run / "last.pt")]
             elif "continue_from" in recipe:
                 command += ["--continue-from", recipe["continue_from"]["checkpoint"]]
             elif "initialize_from" in recipe:
@@ -689,7 +725,7 @@ def inspect_recipe(path, workdir):
         or recipe.get("initialize_from", "random_weights"),
         "model": asdict(model),
         "training": asdict(training),
-        "nominal_training_tokens": sum(item["training_tokens"] for item in phases)
+        "nominal_training_tokens": sum(item["training_tokens"] for item in [*patches, *phases])
         if phases
         else trained(recipe)[0]["training_tokens"],
         "scheduled_training_tokens": (training.steps - start) * tokens_per_step,

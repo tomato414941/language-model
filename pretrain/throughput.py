@@ -8,7 +8,15 @@ import torch
 from torch._dynamo.utils import counters
 
 from .model import LanguageModel, ModelConfig
-from .training import TrainConfig, autocast, check_fp8, convert_to_fp8, make_optimizer
+from .training import (
+    TrainConfig,
+    autocast,
+    check_fp8,
+    convert_to_fp8,
+    make_optimizer,
+    patch_batch,
+    read_length,
+)
 
 
 def measure_training(
@@ -39,7 +47,7 @@ def measure_training(
     torch.set_num_threads(2)
     torch.manual_seed(training.seed)
     torch.cuda.manual_seed_all(training.seed)
-    model = LanguageModel(vocabulary_size, model_config).to(device).train()
+    model = LanguageModel(vocabulary_size, model_config, patch_size=training.patch_size).to(device).train()
     if training.fp8:
         check_fp8(device, "bfloat16", compiled)
         convert_to_fp8(model)
@@ -59,14 +67,16 @@ def measure_training(
             tokens = torch.randint(
                 2,
                 vocabulary_size,
-                (batch_size, model_config.context + 1),
+                (batch_size, read_length(model_config.context, training.patch_size) + 1),
                 device=device,
             )
             if document_length is not None:
                 tokens[torch.rand(tokens.shape, device=device) < 1 / document_length] = (
                     model_config.document_start
                 )
-            inputs, targets = tokens[:, :-1].contiguous(), tokens[:, 1:].contiguous()
+            inputs, targets = patch_batch(
+                tokens[:, :-1].contiguous(), tokens[:, 1:].contiguous(), training.patch_size
+            )
             with autocast(device, "bfloat16"):
                 loss = model(inputs, targets)
             # Training reads each micro-batch's loss, waiting for its forward pass.
@@ -109,7 +119,7 @@ def measure_training(
                     "warmup_seconds": warmup,
                     "measured_steps": steps,
                     "elapsed_seconds": elapsed,
-                    "tokens_per_second": steps * rows * model_config.context / elapsed,
+                    "tokens_per_second": steps * rows * model_config.context * training.patch_size / elapsed,
                     "peak_memory_gib": torch.cuda.max_memory_allocated() / 1024**3,
                 }
             )
@@ -130,7 +140,9 @@ def measure_training(
         "parameters": sum(parameter.numel() for parameter in model.parameters()),
         "vocabulary_size": vocabulary_size,
         "context": model_config.context,
-        "tokens_per_step": rows * model_config.context,
+        "tokens_per_step": rows * model_config.context * training.patch_size,
+        "patch_size": training.patch_size,
+        "fp8": training.fp8,
         "input": "synthetic_tokens",
         "document_length": document_length,
         "includes": [

@@ -697,9 +697,18 @@ class RecurrentCache:
 
 
 class LanguageModel(nn.Module):
-    def __init__(self, vocabulary_size, config=None):
+    def __init__(self, vocabulary_size, config=None, patch_size=1):
+        """A model that reads tokens, or in training, patches of patch_size tokens.
+
+        A patch is the mean of its tokens' embeddings, and one prediction from
+        it covers every token of the next patch (Shao et al., arXiv 2407.12665).
+        Patches change nothing in the weights, which go on to read tokens.
+        """
         super().__init__()
         self.config = config or ModelConfig()
+        if patch_size != 1 and (self.config.architecture != "llama" or self.config.prediction_depth):
+            raise ValueError("patches need a rotary model that predicts one step ahead")
+        self.patch_size = patch_size
         self.vocabulary_size = vocabulary_size
         self.embedding = nn.Embedding(vocabulary_size, self.config.width)
         modern = self.config.architecture == "llama"
@@ -768,7 +777,20 @@ class LanguageModel(nn.Module):
     def embedded_values(self, index, tokens):
         """The layer's value embedding of the tokens, or None where it has none."""
         table = self.value_embeddings[str(index)] if str(index) in self.value_embeddings else None
-        return None if table is None else table(tokens)
+        return None if table is None else self.patch_means(table(tokens))
+
+    def patch_means(self, embedded):
+        """Each patch's mean of its tokens' embeddings."""
+        if self.patch_size == 1:
+            return embedded
+        batch, length, width = embedded.shape
+        return embedded.view(batch, length // self.patch_size, self.patch_size, width).mean(2)
+
+    def patch_loss(self, logits, targets):
+        """The cross entropy of every token of each next patch under one prediction."""
+        batch, patches, _ = logits.shape
+        chosen = targets.view(batch, patches, self.patch_size)
+        return -F.log_softmax(logits, dim=-1).gather(-1, chosen).mean()
 
     def layer_input(self, index, hidden, first):
         """The stream a layer reads: scaled and mixed with the first layer's input where the model learns to."""
@@ -793,14 +815,21 @@ class LanguageModel(nn.Module):
         return ((documents[:, :, None] == documents[:, None, :]) & causal)[:, None]
 
     def forward(self, tokens, targets=None):
-        if tokens.ndim != 2 or not 0 < tokens.shape[1] <= self.config.context:
+        if tokens.ndim != 2 or not 0 < tokens.shape[1] <= self.config.context * self.patch_size:
             raise ValueError("input must be a nonempty batch within the context length")
-        hidden = self.embedding(tokens)
+        if tokens.shape[1] % self.patch_size:
+            raise ValueError("input must be whole patches")
+        hidden = self.patch_means(self.embedding(tokens))
         if self.position is not None:
             positions = torch.arange(tokens.shape[1], device=tokens.device)
             hidden = hidden + self.position(positions)
         starts = (
-            None if self.config.document_start is None else tokens == self.config.document_start
+            None
+            if self.config.document_start is None
+            # A patch that holds a document's first token begins that document.
+            else (tokens == self.config.document_start)
+            .view(tokens.shape[0], -1, self.patch_size)
+            .any(2)
         )
         mask = self.document_mask(starts)
         objective = 0.0
@@ -817,7 +846,11 @@ class LanguageModel(nn.Module):
         logits = F.linear(self.norm(hidden), self.embedding.weight)
         if targets is None:
             return logits
-        loss = F.cross_entropy(logits.flatten(0, 1), targets.flatten())
+        loss = (
+            self.patch_loss(logits, targets)
+            if self.patch_size > 1
+            else F.cross_entropy(logits.flatten(0, 1), targets.flatten())
+        )
         if not self.training:
             return loss
         predictions = []

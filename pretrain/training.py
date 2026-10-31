@@ -55,9 +55,12 @@ class TrainConfig:
     snapshot_every: int = 0
     # Multiply the large matrices in FP8; the weights stay as they are.
     fp8: bool = False
+    # Read this many tokens as one position; context then counts patches.
+    patch_size: int = 1
 
     def __post_init__(self):
         for field in (
+            "patch_size",
             "steps",
             "batch_size",
             "accumulation_steps",
@@ -160,6 +163,16 @@ def convert_to_fp8(model):
         config=Float8LinearConfig.from_recipe_name("tensorwise"),
         module_filter_fn=fp8_matrix,
     )
+
+
+def read_length(context, patch_size):
+    """The context a data batch needs so that patches and their next patches fit."""
+    return context * patch_size + patch_size - 1
+
+
+def patch_batch(inputs, targets, patch_size):
+    """Whole patches of a read_length batch, and for each, the next patch."""
+    return inputs[:, : inputs.shape[1] - patch_size + 1], targets[:, patch_size - 1 :]
 
 
 def read_config(path):
@@ -326,7 +339,7 @@ def make_optimizer(model, config, device):
         for name, parameter in model.named_parameters()
         if name in SCALAR_SETTINGS
     }
-    batch = config.batch_size * config.accumulation_steps * model.config.context
+    batch = config.batch_size * config.accumulation_steps * model.config.context * config.patch_size
     scalar_groups = [
         {
             "params": [parameter],
@@ -393,11 +406,12 @@ def evaluate(model, corpus, device, precision="float32", batches=16, batch_size=
                 x, y = corpus.batch(
                     "validation",
                     batch_size,
-                    model.config.context,
+                    read_length(model.config.context, model.patch_size),
                     generator,
                     device,
                     language,
                 )
+                x, y = patch_batch(x, y, model.patch_size)
                 with autocast(device, precision):
                     loss = model(x, y)
                 value = loss.item()
@@ -413,7 +427,7 @@ def evaluate(model, corpus, device, precision="float32", batches=16, batch_size=
                 "loss": loss,
                 "perplexity": math.exp(min(loss, 700)),
                 "bits_per_byte": bits / size,
-                "evaluated_tokens": batches * batch_size * model.config.context,
+                "evaluated_tokens": batches * batch_size * model.config.context * model.patch_size,
                 "evaluated_bytes": size,
             }
     finally:
@@ -604,7 +618,7 @@ def train(
             "choose one of resume, initialize_from or continue_from for a training phase"
         )
     corpus = open_corpus(data)
-    corpus.validate_context(model_config.context)
+    corpus.validate_context(read_length(model_config.context, config.patch_size))
     precision = select_precision(device, precision)
     if config.fp8:
         check_fp8(device, precision, compiled)
@@ -620,7 +634,9 @@ def train(
         torch.cuda.manual_seed_all(config.seed)
     if model_config.document_start not in (None, corpus.tokenizer.token_to_id(BOS)):
         raise ValueError("document_start must be the token that begins each document")
-    model = LanguageModel(corpus.tokenizer.get_vocab_size(), model_config).to(device)
+    model = LanguageModel(
+        corpus.tokenizer.get_vocab_size(), model_config, patch_size=config.patch_size
+    ).to(device)
     if config.fp8:
         convert_to_fp8(model)
     optimizer = make_optimizer(model, config, device)
@@ -775,7 +791,7 @@ def train(
     atomic_save(checkpoint(), output / "last.pt")
     saved_step = step
     tokens_per_step = (
-        config.batch_size * config.accumulation_steps * model_config.context
+        config.batch_size * config.accumulation_steps * model_config.context * config.patch_size
     )
     print(
         json.dumps(
@@ -815,7 +831,7 @@ def train(
                         + ((step - phase_start) * config.accumulation_steps + micro)
                         * config.batch_size,
                         config.batch_size,
-                        model_config.context,
+                        read_length(model_config.context, config.patch_size),
                         config.seed,
                         device,
                     )
@@ -823,10 +839,11 @@ def train(
                     x, y = corpus.batch(
                         "train",
                         config.batch_size,
-                        model_config.context,
+                        read_length(model_config.context, config.patch_size),
                         generator,
                         device,
                     )
+                x, y = patch_batch(x, y, config.patch_size)
                 with autocast(device, precision):
                     loss = model(x, y)
                 if not torch.isfinite(loss).item():

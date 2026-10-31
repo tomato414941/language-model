@@ -1124,6 +1124,77 @@ class PretrainingTests(unittest.TestCase):
                 self.llama_config(), feed_forward="relu_squared", experts=4, active_experts=2
             )
 
+    def patch_model_config(self):
+        return ModelConfig(
+            architecture="llama", width=32, heads=4, kv_heads=2, layers=2, context=16, qk_norm=True,
+            value_embeddings=True, residual_scalars=True, document_start=0,
+        )
+
+    def test_patches_of_a_repeated_token_predict_as_that_token_does(self):
+        """A patch is the mean of its tokens' embeddings, so repeating a token changes nothing."""
+        tokens = torch.randint(1, 258, (2, 8), generator=torch.Generator().manual_seed(1))
+        tokens[0, 3] = 0
+        torch.manual_seed(0)
+        plain = LanguageModel(258, self.patch_model_config())
+        torch.manual_seed(0)
+        patched = LanguageModel(258, self.patch_model_config(), patch_size=4)
+        torch.testing.assert_close(patched(tokens.repeat_interleave(4, 1)), plain(tokens))
+
+    def test_one_prediction_is_scored_on_every_token_of_the_next_patch(self):
+        """The patch loss is the cross entropy of each next token under its patch's prediction."""
+        generator = torch.Generator().manual_seed(2)
+        tokens = torch.randint(1, 258, (2, 12), generator=generator)
+        targets = torch.randint(1, 258, (2, 12), generator=generator)
+        torch.manual_seed(0)
+        model = LanguageModel(258, self.patch_model_config(), patch_size=3).eval()
+        logits = model(tokens)
+        self.assertEqual(logits.shape[:2], (2, 4))
+        expected = torch.nn.functional.cross_entropy(
+            logits.repeat_interleave(3, 1).flatten(0, 1), targets.flatten()
+        )
+        torch.testing.assert_close(model(tokens, targets), expected)
+
+    def test_a_patch_that_holds_a_first_token_begins_its_document(self):
+        """Patches see earlier patches of their own document and nothing before or after."""
+        tokens = torch.randint(1, 258, (1, 12), generator=torch.Generator().manual_seed(3))
+        tokens[0, 5] = 0
+        torch.manual_seed(0)
+        model = LanguageModel(258, self.patch_model_config(), patch_size=4)
+        logits = model(tokens)
+        before, after = tokens.clone(), tokens.clone()
+        before[0, :4] = 7
+        after[0, 8:] = 7
+        torch.testing.assert_close(model(before)[0, 1:], logits[0, 1:])
+        torch.testing.assert_close(model(after)[0, :2], logits[0, :2])
+
+    def test_a_patch_stage_counts_its_tokens_and_leaves_weights_for_token_training(self):
+        """Training in patches reads context patches per row, and its checkpoint starts a run on tokens."""
+        config = ModelConfig(architecture="llama", width=32, heads=4, kv_heads=2, layers=1, context=8)
+        settings = {**self.config(steps=2).__dict__, "sampling": "sequential", "warmup_steps": 0}
+        patches = TrainConfig(**{**settings, "patch_size": 2})
+        with contextlib.redirect_stdout(io.StringIO()):
+            train(self.data, self.root / "patches", config, patches, torch.device("cpu"))
+            saved = load_checkpoint(self.root / "patches/last.pt")
+            self.assertEqual(
+                saved["tokens_seen"], 2 * patches.batch_size * patches.accumulation_steps * 8 * 2
+            )
+            train(
+                self.data, self.root / "tokens", config, TrainConfig(**settings), torch.device("cpu"),
+                initialize_from=self.root / "patches/last.pt", stop_requested=lambda: True,
+            )
+        self.assertEqual(
+            load_checkpoint(self.root / "tokens/last.pt")["initialization"]["source_step"], 2
+        )
+
+    def test_patch_settings_that_cannot_work_are_refused(self):
+        """Patches need a rotary model that predicts one step, and input in whole patches."""
+        with self.assertRaisesRegex(ValueError, "rotary"):
+            LanguageModel(258, ModelConfig(width=24, heads=4, layers=1, context=16), patch_size=2)
+        with self.assertRaisesRegex(ValueError, "whole patches"):
+            LanguageModel(258, self.patch_model_config(), patch_size=4)(torch.ones((1, 6), dtype=torch.long))
+        with self.assertRaisesRegex(ValueError, "patch_size"):
+            TrainConfig(patch_size=0)
+
     def fp8_model(self):
         torch.manual_seed(0)
         return LanguageModel(

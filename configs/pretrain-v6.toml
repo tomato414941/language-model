@@ -3,8 +3,10 @@
 # tokens: the same sources and mixes, except that the stable phase's DCLM
 # gives way to DCLM-Edu, the pages of DCLM that FineWeb-Edu's classifier rates
 # as educational, and the tokenizer splits numbers into digits. The stable
-# phase ends where the learning rate begins to decay.
+# phase ends where the learning rate begins to decay. Two thirds of what the
+# stable phase read now comes first, in patches, from the same mix.
 training_config = "model-v6.toml"
+patch_config = "model-v6-patch.toml"
 sources = "sources.toml"
 seed = 42
 
@@ -60,9 +62,17 @@ max_reply_tokens = 4096
 # Code about 12% and mathematics about 10%, between SmolLM3's first and
 # second stages.
 [[corpora]]
+name = "patch"
+purpose = "patch"
+# 5,333 updates of 32 windows, each of 8,192 patches and the three tokens that
+# let the last patch's next patch fit.
+training_tokens = 5_592_567_776
+mix = { ja-climblab = 42, ja-wiki = 4, ja-math-llmjp = 2, ja-code-llmjp = 2, en-web = 20, en-dclm-edu = 10, en-code-swallow = 5, en-code-stack-edu = 5, en-qa-stackexchange = 2, en-math = 3, en-math-megamath = 3, en-math-swallow-qa = 1, en-math-swallow-textbook = 1 }
+
+[[corpora]]
 name = "stable"
-# 6,400 updates.
-training_tokens = 6_710_886_400
+# 1,067 updates.
+training_tokens = 1_118_830_592
 mix = { ja-climblab = 42, ja-wiki = 4, ja-math-llmjp = 2, ja-code-llmjp = 2, en-web = 20, en-dclm-edu = 10, en-code-swallow = 5, en-code-stack-edu = 5, en-qa-stackexchange = 2, en-math = 3, en-math-megamath = 3, en-math-swallow-qa = 1, en-math-swallow-textbook = 1 }
 
 [[corpora]]
