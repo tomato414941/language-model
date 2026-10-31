@@ -63,6 +63,9 @@ class ModelConfig:
     # The projections that write each layer's output into the stream start at
     # zero, as nanochat's do, so each layer starts as the identity.
     zero_output_init: bool = False
+    # The feed-forward network: SwiGLU, or "relu_squared", which squares a ReLU
+    # between two matrices rather than gating across three, as nanochat does.
+    feed_forward: str = "swiglu"
 
     def __post_init__(self):
         if any(
@@ -120,6 +123,10 @@ class ModelConfig:
             raise ValueError("value_embeddings must be true or false")
         if type(self.residual_scalars) is not bool or type(self.zero_output_init) is not bool:
             raise ValueError("residual_scalars and zero_output_init must be true or false")
+        if self.feed_forward not in ("swiglu", "relu_squared"):
+            raise ValueError("feed_forward must be swiglu or relu_squared")
+        if self.feed_forward != "swiglu" and self.experts is not None:
+            raise ValueError("experts are SwiGLU networks, so feed_forward must be swiglu")
         if self.value_embeddings and self.full_attention_every is not None:
             raise ValueError("value_embeddings require attention in every layer")
         if self.value_embeddings and self.width < VALUE_GATE_CHANNELS:
@@ -136,16 +143,25 @@ class ModelConfig:
             or self.value_embeddings
             or self.residual_scalars
             or self.zero_output_init
+            or self.feed_forward != "swiglu"
         ):
             raise ValueError(
                 "kv_heads, intermediate_size, qk_norm, attention_gate, document_start, "
                 "full_attention_every, experts, prediction_depth, value_embeddings, "
-                "residual_scalars and zero_output_init require llama architecture"
+                "residual_scalars, zero_output_init and feed_forward require llama architecture"
             )
 
     def has_value_embedding(self, layer):
         """Whether the layer adds a value embedding: every other layer, the last among them."""
         return self.value_embeddings and layer % 2 == (self.layers - 1) % 2
+
+    def feed_forward_units(self):
+        """The hidden units of a feed-forward network, by default about the same parameters in either form."""
+        if self.intermediate_size:
+            return self.intermediate_size
+        if self.feed_forward == "relu_squared":
+            return 4 * self.width
+        return math.ceil(8 * self.width / 3 / 64) * 64
 
 
 class Rotary(nn.Module):
@@ -387,11 +403,10 @@ class ModernBlock(nn.Module):
         self.norm_mlp = nn.RMSNorm(config.width, eps=1e-5)
 
     def build_feed_forward(self, config):
-        intermediate = (
-            config.intermediate_size or math.ceil(8 * config.width / 3 / 64) * 64
-        )
+        intermediate = config.feed_forward_units()
         if config.experts is None:
-            self.gate = nn.Linear(config.width, intermediate, bias=False)
+            if config.feed_forward == "swiglu":
+                self.gate = nn.Linear(config.width, intermediate, bias=False)
             self.up = nn.Linear(config.width, intermediate, bias=False)
             self.down = nn.Linear(intermediate, config.width, bias=False)
         else:
@@ -406,7 +421,9 @@ class ModernBlock(nn.Module):
         if hasattr(self, "experts"):
             update, loss = self.experts(normalized)
             return hidden + update, loss
-        return hidden + self.down(F.silu(self.gate(normalized)) * self.up(normalized)), 0.0
+        if hasattr(self, "gate"):
+            return hidden + self.down(F.silu(self.gate(normalized)) * self.up(normalized)), 0.0
+        return hidden + self.down(F.relu(self.up(normalized)).square()), 0.0
 
 
 class LlamaBlock(ModernBlock):
@@ -739,6 +756,9 @@ class LanguageModel(nn.Module):
             # Gates start a little above their midpoint, 1.5 times the embedded values.
             if name.endswith("value_gate.weight"):
                 nn.init.uniform_(parameter, 0.0, 0.02)
+            # What a squared ReLU reads starts at nanochat's scale for the width.
+            if self.config.feed_forward == "relu_squared" and name.endswith("up.weight"):
+                nn.init.normal_(parameter, std=0.4 / math.sqrt(self.config.width))
 
     @staticmethod
     def _initialize(module):

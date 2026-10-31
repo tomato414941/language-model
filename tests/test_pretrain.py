@@ -1036,6 +1036,7 @@ class PretrainingTests(unittest.TestCase):
             dataclasses.replace(
                 self.llama_config(), value_embeddings=True, residual_scalars=True
             ),
+            dataclasses.replace(self.llama_config(), feed_forward="relu_squared"),
         ):
             model = LanguageModel(258, model_config)
             muon, adamw = make_optimizer(model, config, torch.device("cpu")).optimizers
@@ -1077,6 +1078,49 @@ class PretrainingTests(unittest.TestCase):
             model.norm(model.embedding(tokens)), model.embedding.weight
         )
         torch.testing.assert_close(model(tokens), expected)
+
+    def test_squared_relu_adds_the_square_of_what_its_first_matrix_keeps_positive(self):
+        """A squared ReLU network writes back the square of the positive part of its first matrix's output."""
+        config = dataclasses.replace(self.llama_config(), layers=1, feed_forward="relu_squared")
+        model = LanguageModel(258, config).eval()
+        block = model.blocks[0]
+        torch.nn.init.zeros_(block.attention_output.weight)
+        tokens = torch.tensor([[1, 2, 3, 4]])
+        embedded = model.embedding(tokens)
+        written = block.down(torch.relu(block.up(block.norm_mlp(embedded))).square())
+        expected = torch.nn.functional.linear(
+            model.norm(embedded + written), model.embedding.weight
+        )
+        torch.testing.assert_close(model(tokens), expected)
+
+    def test_squared_relu_by_default_has_the_parameters_of_swiglu(self):
+        """Without a set size, a squared ReLU network has as many parameters as a SwiGLU network."""
+        swiglu = dataclasses.replace(self.llama_config(), intermediate_size=None)
+        squared = dataclasses.replace(swiglu, feed_forward="relu_squared")
+        self.assertEqual(
+            *(
+                sum(parameter.numel() for parameter in LanguageModel(258, config).parameters())
+                for config in (swiglu, squared)
+            )
+        )
+
+    def test_squared_relu_reads_a_matrix_that_starts_at_nanochat_scale(self):
+        """The matrix a squared ReLU reads starts at 0.4 over the root of the width."""
+        torch.manual_seed(0)
+        config = dataclasses.replace(self.llama_config(), feed_forward="relu_squared")
+        weight = LanguageModel(258, config).blocks[0].up.weight
+        self.assertAlmostEqual(weight.std().item(), 0.4 / 24**0.5, delta=0.01)
+
+    def test_feed_forward_settings_that_cannot_work_are_refused_before_training(self):
+        """An unknown network, and a squared ReLU outside rotary models or with experts, are refused."""
+        with self.assertRaisesRegex(ValueError, "feed_forward"):
+            dataclasses.replace(self.llama_config(), feed_forward="gelu")
+        with self.assertRaisesRegex(ValueError, "require llama"):
+            ModelConfig(width=24, heads=4, layers=1, context=16, feed_forward="relu_squared")
+        with self.assertRaisesRegex(ValueError, "experts"):
+            dataclasses.replace(
+                self.llama_config(), feed_forward="relu_squared", experts=4, active_experts=2
+            )
 
     def test_residual_scalars_start_from_nanochat_values_and_take_its_rates(self):
         """残差のスカラーは nanochat の初期値から始まり、バッチの平方根に比例させた nanochat の学習率で更新される。"""

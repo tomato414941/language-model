@@ -14,8 +14,13 @@ from pretrain.huggingface import export_huggingface
 from pretrain.model import LanguageModel, ModelConfig
 from tests.test_benchmarks import benchmark_dataset, byte_tokenizer
 
-# The checks run on a model without and with value embeddings and residual scalars.
-PARTS = ({}, {"value_embeddings": True, "residual_scalars": True})
+# The checks run on a model without and with value embeddings and residual
+# scalars, and with a squared ReLU in place of SwiGLU.
+PARTS = (
+    {},
+    {"value_embeddings": True, "residual_scalars": True},
+    {"feed_forward": "relu_squared"},
+)
 
 
 class HuggingFaceTest(unittest.TestCase):

@@ -23,13 +23,18 @@
 # tenths, and Straight to Zero found decaying to zero better than stopping at
 # a tenth. The matrices take NorMuon with cautious weight decay that falls to
 # zero over the run, nanochat's optimizer.
+# The feed-forward networks square a ReLU between two matrices, as nanochat's
+# do, at about the parameters and computation of SwiGLU's three: nanochat found
+# SwiGLU worse by steps, time and computation at 12 and 24 layers, and Marin
+# found no difference.
 [model]
 architecture = "llama"
 width = 1024
 heads = 8
 kv_heads = 2
 layers = 32
-intermediate_size = 2752
+feed_forward = "relu_squared"
+intermediate_size = 4096
 context = 8192
 rope_theta = 10000.0
 qk_norm = true

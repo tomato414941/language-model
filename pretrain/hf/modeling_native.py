@@ -2,13 +2,13 @@
 
 The layers and parameter names follow pretrain.model's llama blocks: grouped
 keys and values, rotary positions, optional per-head normalization of
-queries and keys, an optional sigmoid gate on the attention output, SwiGLU,
-RMSNorm and input and output embeddings that share their weights. Optional
-value embeddings in every other layer add to the attention's values through
-a gate per key-value head, and optional learned scalars scale the stream and
-mix the first layer's input back in before each layer. Attention stays
-within the documents of a sequence, which begin at document_start, as in
-training.
+queries and keys, an optional sigmoid gate on the attention output, SwiGLU or
+a squared ReLU, RMSNorm and input and output embeddings that share their
+weights. Optional value embeddings in every other layer add to the attention's
+values through a gate per key-value head, and optional learned scalars scale
+the stream and mix the first layer's input back in before each layer.
+Attention stays within the documents of a sequence, which begin at
+document_start, as in training.
 """
 
 import math
@@ -42,7 +42,10 @@ class NativeBlock(nn.Module):
         self.heads = config.num_attention_heads
         self.kv_heads = config.num_key_value_heads
         self.head_width = width // self.heads
-        intermediate = config.intermediate_size or math.ceil(8 * width / 3 / 64) * 64
+        squared = config.feed_forward == "relu_squared"
+        intermediate = config.intermediate_size or (
+            4 * width if squared else math.ceil(8 * width / 3 / 64) * 64
+        )
         self.norm_attention = nn.RMSNorm(width, eps=1e-5)
         self.norm_mlp = nn.RMSNorm(width, eps=1e-5)
         self.query = nn.Linear(width, width, bias=False)
@@ -58,7 +61,7 @@ class NativeBlock(nn.Module):
         self.value_gate = (
             nn.Linear(VALUE_GATE_CHANNELS, self.kv_heads, bias=False) if value_embedding else None
         )
-        self.gate = nn.Linear(width, intermediate, bias=False)
+        self.gate = None if squared else nn.Linear(width, intermediate, bias=False)
         self.up = nn.Linear(width, intermediate, bias=False)
         self.down = nn.Linear(intermediate, width, bias=False)
 
@@ -89,6 +92,8 @@ class NativeBlock(nn.Module):
             attended = attended * gate.view(batch, length, self.heads, -1)
         hidden = hidden + self.attention_output(attended.reshape(batch, length, width))
         normalized = self.norm_mlp(hidden)
+        if self.gate is None:
+            return hidden + self.down(F.relu(self.up(normalized)).square())
         return hidden + self.down(F.silu(self.gate(normalized)) * self.up(normalized))
 
 

@@ -7,7 +7,6 @@ format that pretrain.conversation defines.
 """
 
 import dataclasses
-import math
 from pathlib import Path
 
 from tokenizers import Tokenizer, processors
@@ -25,7 +24,7 @@ from .training import load_checkpoint
 SUPPORTED = {
     "width", "heads", "layers", "context", "architecture", "kv_heads", "intermediate_size",
     "rope_theta", "qk_norm", "attention_gate", "document_start", "value_embeddings",
-    "residual_scalars", "prediction_depth", "zero_output_init",
+    "residual_scalars", "prediction_depth", "zero_output_init", "feed_forward",
 }
 CHAT_TEMPLATE = (
     "{%- for message in messages -%}"
@@ -59,7 +58,7 @@ def native_config(config, tokenizer):
         num_attention_heads=config.heads,
         num_key_value_heads=config.kv_heads or config.heads,
         num_hidden_layers=config.layers,
-        intermediate_size=config.intermediate_size or math.ceil(8 * config.width / 3 / 64) * 64,
+        intermediate_size=config.feed_forward_units(),
         max_position_embeddings=config.context,
         rope_theta=config.rope_theta,
         qk_norm=config.qk_norm,
@@ -67,6 +66,7 @@ def native_config(config, tokenizer):
         document_start=config.document_start,
         value_embeddings=config.value_embeddings,
         residual_scalars=config.residual_scalars,
+        feed_forward=config.feed_forward,
         bos_token_id=tokenizer.token_to_id(BOS),
         eos_token_id=ends,
         pad_token_id=tokenizer.token_to_id(EOS),

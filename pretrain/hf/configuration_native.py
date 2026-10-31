@@ -21,6 +21,7 @@ class NativeConfig(PretrainedConfig):
         document_start=None,
         value_embeddings=False,
         residual_scalars=False,
+        feed_forward="swiglu",
         tie_word_embeddings=True,
         use_cache=True,
         **kwargs,
@@ -38,5 +39,6 @@ class NativeConfig(PretrainedConfig):
         self.document_start = document_start
         self.value_embeddings = value_embeddings
         self.residual_scalars = residual_scalars
+        self.feed_forward = feed_forward
         self.use_cache = use_cache
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
