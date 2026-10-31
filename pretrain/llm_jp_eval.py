@@ -12,11 +12,17 @@ llm-jp-eval-inference's chat template option does; the others continue the
 prompt as plain text. The template leaves out the datasets llm-jp-eval does
 not process for commercial use, JHumanEval among them, so asking for one is
 refused before any reply is written.
+
+By default the tool scores only what precedes a reply's first blank line. Tasks
+that judge the whole reply, as their authors' code does, are scored that way as
+well, by the tool's own setting for a dataset's extraction. The default scores
+stay, to compare with others who keep the defaults.
 """
 
 import copy
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -30,6 +36,9 @@ REPOSITORY = "https://github.com/llm-jp/llm-jp-eval.git"
 RELEASE = "v2.1.5"
 # These tasks ask in the conversation format that the API serves.
 CONVERSATION_DATASETS = ("mif_eval_ja",)
+# These tasks judge the whole reply, so they are scored on it as well.
+WHOLE_REPLY_DATASETS = ("mif_eval_ja",)
+WHOLE_REPLY = "(?s)^(.*)$"
 
 
 class Request:
@@ -156,6 +165,23 @@ def generate_replies(backend, prompts, results, datasets):
     )
 
 
+def score_whole_replies(home, work, replies, datasets):
+    """The tool's scores of these datasets' replies, each taken whole."""
+    whole = work / "whole-reply"
+    results = whole / "replies"
+    results.mkdir(parents=True, exist_ok=True)
+    shutil.copy(replies / "_config.json", results)
+    for name in datasets:
+        data = json.loads((replies / f"{name}.eval-generated.json").read_text(encoding="utf-8"))
+        data["answer_extract_pattern"] = WHOLE_REPLY
+        (results / f"{name}.eval-generated.json").write_text(
+            json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+    tool(home, "scripts/evaluate_llm.py", "eval", "--config", str(write_config(home, whole, datasets, results)))
+    [scored] = (whole / "files/results").glob("result_*.json")
+    return json.loads(scored.read_text(encoding="utf-8"))["evaluation"]["scores"]
+
+
 def evaluate_llm_jp(model, tokenizer, device, precision, batch_tokens, datasets, work):
     """Scores, settings and every reply of llm-jp-eval's evaluation of the chosen datasets."""
     if not datasets:
@@ -177,4 +203,7 @@ def evaluate_llm_jp(model, tokenizer, device, precision, batch_tokens, datasets,
     output = json.loads(scored.read_text(encoding="utf-8"))
     output["framework"] = {"name": "llm-jp-eval", "version": RELEASE}
     output["conversation_format_datasets"] = [name for name in datasets if name in CONVERSATION_DATASETS]
+    judged_whole = [name for name in datasets if name in WHOLE_REPLY_DATASETS]
+    if judged_whole:
+        output["whole_reply_scores"] = score_whole_replies(home, work, results, judged_whole)
     return output
