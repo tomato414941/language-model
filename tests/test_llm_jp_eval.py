@@ -69,14 +69,20 @@ class LlmJpEvalTest(unittest.TestCase):
         return replies
 
     def fake_tool(self, read, scores):
-        """Evaluates as the tool does: extracts each reply by its pattern, then writes the scores."""
+        """Evaluates as the tool does: needs each dataset in its output directory, extracts each reply by its pattern, then writes the scores."""
+        prepared = set()
 
         def run(_home, script, *arguments):
+            if script == "scripts/preprocess_dataset.py":
+                prepared.add((arguments[1], arguments[3]))
+                return
             if script != "scripts/evaluate_llm.py" or arguments[0] != "eval":
                 return
             config = yaml.safe_load(Path(arguments[-1]).read_text())
             selection = yaml.safe_load(Path(config["eval_dataset_config_path"]).read_text())
             for name in selection["datasets"]:
+                if (name, config["output_dir"]) not in prepared:
+                    raise RuntimeError(f"{name} not found in {config['output_dir']}")
                 data = json.loads(
                     (Path(config["inference_result_dir"]) / f"{name}.eval-generated.json").read_text(encoding="utf-8")
                 )

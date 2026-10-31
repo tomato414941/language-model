@@ -173,6 +173,8 @@ def score_whole_replies(home, work, replies, datasets):
     results.mkdir(parents=True, exist_ok=True)
     shutil.copy(replies / "_config.json", results)
     for name in datasets:
+        # The tool needs the dataset in its output directory even to score saved replies.
+        tool(home, "scripts/preprocess_dataset.py", "--dataset-name", name, "--output-dir", str(whole / "files"))
         data = json.loads((replies / f"{name}.eval-generated.json").read_text(encoding="utf-8"))
         data["answer_extract_pattern"] = WHOLE_REPLY
         (results / f"{name}.eval-generated.json").write_text(
