@@ -44,6 +44,14 @@ def download_model(repo_id, run_id, revision, directory):
         raise ValueError("The downloaded model does not match the pinned revision")
 
 
+def check_model(run_id, directory):
+    from pretrain.conversation import chat_prompt
+    from pretrain.serving import TextModel
+
+    model = TextModel(Path(directory) / "runs" / run_id / "model.pt", "cpu", 1)
+    list(model.start(chat_prompt([{"role": "user", "content": "Hello"}]), 4, 1.0, 1.0))
+
+
 # Keep the authenticated download in a cached build layer, before application code.
 # Running containers only need the verified model files.
 model_image = (
@@ -70,7 +78,15 @@ model_image = (
         memory=2048,
         timeout=600,
     )
-    .add_local_python_source("pretrain")
+    .add_local_python_source("pretrain", copy=True)
+    # A model this code cannot use stops the deploy here, and the running version stays up.
+    .run_function(
+        check_model,
+        args=(MODEL_RUN, MODEL_DIRECTORY),
+        cpu=1,
+        memory=6144,
+        timeout=600,
+    )
 )
 # The entrance needs only the API's own dependencies.
 entrance_image = (
