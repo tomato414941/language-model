@@ -528,7 +528,7 @@ class ResponsesTests(unittest.TestCase):
         self.assertEqual(response.json()["error"]["code"], "context_length_exceeded")
 
     def test_counts_the_gpu_time_of_replies_and_of_inputs_the_gpu_refuses(self):
-        """返事も、GPU が断った入力も、頼んでから GPU が止まるまでの時間を数える。"""
+        """Counts from the request until the GPU shuts down, for replies and for inputs the GPU refuses."""
         reply = {"input": "日本語", "max_output_tokens": 4}
         for request, status in (
             (reply, 200),
@@ -544,7 +544,7 @@ class ResponsesTests(unittest.TestCase):
                 self.assertEqual(store[GPUTime.day(NOON)][0], 70)
 
     def test_does_not_count_requests_refused_before_they_reach_the_gpu(self):
-        """GPU に届く前に断った呼び出しは数えない。"""
+        """Leaves out requests refused before they reach the GPU."""
         store = {}
         client, _ = self.remote(GPUTime(store, 3600, 60))
         response = client.post("/v1/responses", json={"model": "unknown", "input": "日本語"})
@@ -552,7 +552,7 @@ class ResponsesTests(unittest.TestCase):
         self.assertEqual(store, {})
 
     def test_refuses_replies_without_asking_the_gpu_once_its_time_has_run_out(self):
-        """GPU の時間を使い切ると、GPU に頼まず、翌日までの秒数を添えて断り続ける。"""
+        """Keeps refusing replies without asking the GPU once its time has run out, giving the seconds until the next day."""
         store = {GPUTime.day(NOON): (3600.0, 0.0)}
         sample = Mock()
         backend = RemoteTextModel(sample, "f" * 40, GPUTime(store, 3600, 60, lambda: NOON))
@@ -924,31 +924,31 @@ class GPUTimeTests(unittest.TestCase):
         return self.gpu_time.counted(self.now)[0]
 
     def test_counts_a_reply_until_the_gpu_shuts_down_after_it(self):
-        """頼まれてから、返事が終わって GPU が止まるまでの時間を数える。"""
+        """Counts from the request until the GPU shuts down after the reply."""
         self.reply(24)
         self.assertEqual(self.spent(), 84)
 
     def test_counts_time_that_replies_share_once(self):
-        """GPU が動いている間に次を頼まれたら、重なる時間は一度だけ数える。"""
+        """Counts the time that replies share once."""
         self.reply(10)
         self.now += 30
         self.reply(10)
         self.assertEqual(self.spent(), 110)
 
     def test_does_not_count_the_time_the_gpu_is_down(self):
-        """GPU が止まっていた時間は数えない。"""
+        """Leaves out the time the GPU is down."""
         self.reply(10)
         self.now += 1000
         self.reply(10)
         self.assertEqual(self.spent(), 140)
 
     def test_counts_a_reply_from_its_start_before_it_ends(self):
-        """返事の終わりを待たず、頼まれた時点で GPU が止まるまでの分を数える。"""
+        """Counts the time until the GPU would shut down as soon as a reply is asked for."""
         self.gpu_time.begin()
         self.assertEqual(self.spent(), 60)
 
     def test_refuses_replies_once_the_time_has_run_out_and_lets_the_last_one_finish(self):
-        """作っている返事は最後まで数え、上限に達したら次を断って、翌日までの秒数を伝える。"""
+        """Counts the reply in progress to its end, then refuses the next, giving the seconds until the next day."""
         self.reply(280)
         self.assertEqual(self.spent(), 340)
         counted = dict(self.store)
@@ -958,13 +958,13 @@ class GPUTimeTests(unittest.TestCase):
         self.assertEqual(self.store, counted)
 
     def test_sees_the_time_counted_from_another_container(self):
-        """入口のコンテナが替わっても、それまでに数えた時間を引き継ぐ。"""
+        """Carries the counted time over to the next container."""
         self.reply(240)
         with self.assertRaises(OutOfGPUTime):
             self.limited(300).begin()
 
     def test_counts_from_zero_on_the_next_utc_day(self):
-        """UTC の日付が変わると、また頼めるようになる。"""
+        """Accepts replies again when the UTC date changes."""
         self.reply(280)
         self.now = NOON + 43200
         self.gpu_time.begin()
