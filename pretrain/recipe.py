@@ -1902,7 +1902,7 @@ def write_sft_config(recipe_path, data, tokenizer_directory, output):
     if "sft" not in recipe:
         raise ValueError("this recipe has no instruction tuning settings")
     corpus = InstructionCorpus(data)
-    model, _ = read_config(
+    model, pretraining = read_config(
         Path(recipe_path).resolve().parent / recipe["training_config"]
     )
     corpus.validate_context(model.context)
@@ -1920,6 +1920,13 @@ def write_sft_config(recipe_path, data, tokenizer_directory, output):
         )
     sft = recipe["sft"]
     tokens_per_step = sft["batch_size"] * sft["accumulation_steps"] * model.context
+    # The residual scalars' rates do not follow a run's learning rate, so they
+    # take the share of their peak that this rate is of the peak pretraining's
+    # rule gives this batch: its rate grown with the square root of the batch.
+    pretraining_tokens = pretraining.batch_size * pretraining.accumulation_steps * model.context
+    scalar_rate = sft["learning_rate"] / (
+        pretraining.learning_rate * math.sqrt(tokens_per_step / pretraining_tokens)
+    )
     balanced_tokens = (
         2
         * model.context
@@ -1932,6 +1939,7 @@ def write_sft_config(recipe_path, data, tokenizer_directory, output):
         accumulation_steps=sft["accumulation_steps"],
         learning_rate=sft["learning_rate"],
         min_learning_rate=sft["min_learning_rate"],
+        scalar_rate=scalar_rate,
         warmup_steps=min(steps - 1, max(1, steps // 20)),
         eval_every=max(1, steps // 10),
         save_every=max(1, steps // 10),

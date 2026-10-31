@@ -1279,6 +1279,32 @@ class PretrainingTests(unittest.TestCase):
             )
             self.assertEqual(group["weight_decay"], 0.0)
 
+    def test_residual_scalars_take_the_share_of_their_rates_a_run_asks_for(self):
+        """残差のスカラーは、設定された割合だけ下げた学習率で更新される。"""
+        model = LanguageModel(
+            258, dataclasses.replace(self.llama_config(), layers=3, residual_scalars=True)
+        )
+
+        def scaled_rate(scalar_rate):
+            config = TrainConfig(
+                **{
+                    **self.config().__dict__,
+                    "optimizer": "normuon",
+                    "learning_rate": 0.002,
+                    "scalar_rate": scalar_rate,
+                }
+            )
+            groups = make_optimizer(model, config, torch.device("cpu")).param_groups
+            return next(
+                0.002 * group["lr_scale"]
+                for group in groups
+                if group["params"][0] is model.input_scales
+            )
+
+        self.assertAlmostEqual(scaled_rate(0.1), scaled_rate(1.0) / 10)
+        with self.assertRaisesRegex(ValueError, "scalar_rate"):
+            TrainConfig(scalar_rate=-1.0)
+
     def test_muon_training_learns_and_resumes_the_same_updates(self):
         """Muon で両言語の検証損失を下げ、途中保存から再開しても連続学習と同じ重みを得る。"""
         self.model_config = self.llama_config()

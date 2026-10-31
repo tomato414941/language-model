@@ -790,6 +790,21 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(model, read_config(self.root / "training.toml")[0])
         self.assertEqual(config.learning_rate, 0.00002)
         self.assertEqual((config.optimizer, config.sampling), ("muon", "sequential"))
+        # The residual scalars fall by the share that this rate is of pretraining's
+        # peak at this batch.
+        _, pretraining = read_config(self.root / "training.toml")
+        self.assertAlmostEqual(
+            config.scalar_rate,
+            0.00002
+            / (
+                pretraining.learning_rate
+                * math.sqrt(
+                    config.batch_size
+                    * config.accumulation_steps
+                    / (pretraining.batch_size * pretraining.accumulation_steps)
+                )
+            ),
+        )
         corpus = InstructionCorpus(self.root / "instructions")
         target = (
             2

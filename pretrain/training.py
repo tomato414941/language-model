@@ -57,6 +57,8 @@ class TrainConfig:
     fp8: bool = False
     # Read this many tokens as one position; context then counts patches.
     patch_size: int = 1
+    # The share of their rates that the residual scalars take.
+    scalar_rate: float = 1.0
 
     def __post_init__(self):
         for field in (
@@ -85,6 +87,7 @@ class TrainConfig:
             "min_learning_rate",
             "weight_decay",
             "gradient_clip",
+            "scalar_rate",
         ):
             value = getattr(self, field)
             if type(value) not in (float, int) or not math.isfinite(value) or value < 0:
@@ -331,8 +334,8 @@ def make_optimizer(model, config, device):
     embedding and the norms. Muon scales each matrix's update to the size
     AdamW's would have, so both follow the same learning rate. The residual
     scalars take nanochat's rates instead, grown with the square root of the
-    batch as its rates are, and follow the schedule in proportion through
-    each group's lr_scale.
+    batch as its rates are, times the config's scalar_rate, and follow the
+    schedule in proportion through each group's lr_scale.
     """
     scalars = {
         id(parameter): name
@@ -347,6 +350,7 @@ def make_optimizer(model, config, device):
             "betas": SCALAR_SETTINGS[name]["betas"],
             "eps": 1e-10,
             "lr_scale": SCALAR_SETTINGS[name]["lr"]
+            * config.scalar_rate
             * math.sqrt(batch / SCALAR_BATCH)
             / config.learning_rate,
         }
