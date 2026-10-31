@@ -24,6 +24,9 @@ CONTEXT_TOKENS = 8192
 MAX_OUTPUT_TOKENS = 2048
 # The top_p that Google recommends for this model.
 TOP_P = 0.95
+# The deploy's check runs as the containers do, as vLLM compiles anew for a machine that looks different.
+SAMPLER_CORES = 4
+SAMPLER_MEMORY_MIB = 16384
 GPU_IDLE_SECONDS = 60
 # Billing shows the GPU up about 45 seconds past its idle window.
 GPU_SECONDS_AFTER_REPLY = 105
@@ -89,8 +92,8 @@ model_image = (
         args=(MODEL_DIRECTORY, CONTEXT_TOKENS),
         gpu=GPU,
         volumes={WEIGHTS_ROOT: weights.with_mount_options(read_only=True)},
-        cpu=8,
-        memory=32768,
+        cpu=SAMPLER_CORES,
+        memory=SAMPLER_MEMORY_MIB,
         timeout=1800,
     )
 )
@@ -108,10 +111,9 @@ app = modal.App(f"{MODEL_ID}-api")
 @app.cls(
     image=model_image,
     gpu=GPU,
-    cpu=(4, 4),
+    cpu=SAMPLER_CORES,
     volumes={WEIGHTS_ROOT: weights.with_mount_options(read_only=True)},
-    # Loading reads all the weights through memory on their way to the GPU.
-    memory=(16384, 102400),
+    memory=SAMPLER_MEMORY_MIB,
     min_containers=0,
     max_containers=1,
     buffer_containers=0,
@@ -125,6 +127,10 @@ class Sampler:
         from pretrain.vllm_serving import VLLMModel
 
         self.model = VLLMModel.serve(MODEL_DIRECTORY, CONTEXT_TOKENS)
+
+    @modal.exit()
+    def stop(self):
+        self.model.close()
 
     @modal.method()
     def sample(self, *arguments):

@@ -17,6 +17,8 @@ import urllib.request
 PORT = 8000
 START_SECONDS = 900
 SERVED_NAME = "model"
+# The API writes one reply at a time, so preparing for larger batches would only lengthen the start.
+BATCH_SIZES = [1, 2, 4]
 # vLLM's default sampler needs kernels built with a CUDA toolkit, which the image does not have.
 ENVIRONMENT = {"VLLM_USE_FLASHINFER_SAMPLER": "0"}
 
@@ -27,6 +29,7 @@ def server_command(directory, context, parser):
         "--host", "127.0.0.1", "--port", str(PORT), "--max-model-len", str(context), "--gpu-memory-utilization", "0.92",
         "--language-model-only", "--limit-mm-per-prompt", json.dumps({"image": 0, "audio": 0, "video": 0}),
         "--reasoning-parser", parser, "--tool-call-parser", parser, "--enable-auto-tool-choice",
+        "--compilation-config", json.dumps({"cudagraph_capture_sizes": BATCH_SIZES}),
     ]
 
 
@@ -89,7 +92,7 @@ class VLLMModel:
         if self.process is not None:
             self.process.terminate()
             try:
-                self.process.wait(timeout=60)
+                self.process.wait(timeout=20)
             except subprocess.TimeoutExpired:
                 self.process.kill()
 
