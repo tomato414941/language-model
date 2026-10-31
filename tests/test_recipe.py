@@ -50,7 +50,9 @@ from pretrain.recipe import (
     prepare_part,
     prepare_tokenizer,
     read_recipe,
+    source_columns,
     source_sizes,
+    source_text,
     validate_corpus,
     validate_source,
     validation_document,
@@ -814,6 +816,19 @@ class RecipeTests(unittest.TestCase):
         )
         self.assertGreaterEqual(result["scheduled_tokens"], target)
         self.assertEqual(config.steps, max(2, math.ceil(target / (4 * 8 * 128))))
+
+    def test_リストの中の項目から本文を読む(self):
+        rewritten = {"id": "rewritten", "text_field": "rollout_results.0.text"}
+        row = {"text": "元の文書", "rollout_results": [{"text": "書き直した文書"}]}
+        self.assertEqual(source_text(row, rewritten), "書き直した文書")
+        self.assertIn("rollout_results", source_columns(rewritten))
+        self.assertNotIn("text", source_columns(rewritten))
+        self.assertIsNone(source_text({"rollout_results": []}, rewritten))
+        asked = {"id": "asked", "template": "User: {messages.0.content}\n\nAssistant: {messages.1.content}"}
+        talk = {"messages": [{"content": "問い"}, {"content": "答え"}]}
+        self.assertEqual(source_text(talk, asked), "User: 問い\n\nAssistant: 答え")
+        self.assertIn("messages", source_columns(asked))
+        self.assertIsNone(source_text({"messages": [{"content": "問い"}]}, asked))
 
     def test_固定した版の必要な列だけをParquetから読み取る(self):
         source = self.recipe["sources"][0]

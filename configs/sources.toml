@@ -7,7 +7,8 @@
 #   minimum     numeric field is at least the value
 #   maximum     numeric field is at most the value
 #   any_minimum at least one listed numeric field reaches its value
-# Field names may reach into nested records with dots, such as "meta.name".
+# Field names may reach into nested records with dots, such as "meta.name", and
+# into lists by position, such as "turns.0.text".
 
 [[sources]]
 id = "ja-climblab"
@@ -145,6 +146,33 @@ revision = "dbad8ad71224482740cd9c9d353591adbf62fe04"
 prefix = "data/"
 license = "CC-BY-4.0"
 terms_url = "https://commoncrawl.org/terms-of-use"
+
+[[sources]]
+id = "en-finephrase"
+language = "en"
+repository = "HuggingFaceFW/finephrase"
+revision = "78cf4a5ed0099214979c094c963e699c19163838"
+# Every file of its four forms: tables, mathematics problems, FAQs and tutorials.
+prefix = ""
+# FineWeb-Edu's pages rewritten by SmolLM2-1.7B-Instruct, released under Apache-2.0.
+license = "ODC-By-1.0"
+terms_url = "https://huggingface.co/datasets/HuggingFaceFW/finephrase"
+# The text column holds the page; the first rollout holds its rewriting.
+text_field = "rollout_results.0.text"
+
+[[sources]]
+id = "en-stem-nemotron"
+language = "en"
+repository = "nvidia/Nemotron-Post-Training-Dataset-v1"
+revision = "74e23eb6f830fef4a9e96a92f6f6262214cbb9a8"
+prefix = "data/stem-"
+# Science questions, nearly all with lettered choices, answered after reasoning
+# by DeepSeek-R1-0528, whose license (MIT) leaves its outputs free to use.
+license = "CC-BY-4.0"
+terms_url = "https://huggingface.co/datasets/nvidia/Nemotron-Post-Training-Dataset-v1"
+template = "User: {messages.0.content}\n\nAssistant: {messages.1.content}"
+# Instruction tuning reads this file.
+exclude_files = ["data/stem-00000-of-00660.parquet"]
 
 [[sources]]
 id = "en-cosmopedia"

@@ -770,11 +770,11 @@ def template_fields(template):
 
 def source_columns(source):
     if "template" in source:
-        fields = {*template_fields(source["template"]), "id", "url"}
+        fields = {*(name.split(".")[0] for name in template_fields(source["template"])), "id", "url"}
     elif "conversation_field" in source:
         fields = {source["conversation_field"], "id", "url"}
     else:
-        fields = {source.get("text_field", "text"), "id", "url"}
+        fields = {source.get("text_field", "text").split(".")[0], "id", "url"}
     for name in FILTERS:
         fields.update(key.split(".")[0] for key in source.get(name, {}))
     return sorted(fields)
@@ -1019,11 +1019,15 @@ def iter_source(source, seed, part=None):
 
 
 def field_value(row, name):
+    """The value a field name reaches: dots step into records, and into lists by position."""
     value = row
     for part in name.split("."):
-        if not isinstance(value, dict) or part not in value:
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+            value = value[int(part)]
+        else:
             return None
-        value = value[part]
     return value
 
 
@@ -1063,10 +1067,10 @@ def source_text(row, source):
     colon before each turn. None if the row lacks what the source reads.
     """
     if "template" in source:
-        values = {name: row.get(name) for name in template_fields(source["template"])}
+        values = {name: field_value(row, name) for name in template_fields(source["template"])}
         if not all(isinstance(value, str) for value in values.values()):
             return None
-        return source["template"].format_map(values)
+        return re.sub(r"\{([^{}]+)\}", lambda field: values[field[1]], source["template"])
     if "conversation_field" in source:
         turns = row.get(source["conversation_field"])
         if not isinstance(turns, list) or not turns:
@@ -1079,7 +1083,7 @@ def source_text(row, source):
                 return None
             messages.append({"role": role, "content": content})
         return conversation_text(messages)[0]
-    text = row.get(source.get("text_field", "text"))
+    text = field_value(row, source.get("text_field", "text"))
     return text if isinstance(text, str) else None
 
 
