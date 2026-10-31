@@ -1,5 +1,24 @@
 # 深さと幅
 
-同じ計算量なら、幅を広げるより層を増やす。
+幅÷層の比は、損失については広い範囲でほとんど変わらない。最も良い比は、モデルが大きいほど上がる。下流の課題の点については、研究によって結論が違う。
 
-nanochat の LOG（2026-01-17）に、計算量を 1e18 に固定した比較で「Aspect ratio of 128 is worse than 64 … The LLM prefers to be slightly thinner and longer」とある。Smol Training Playbook の読書ノートにも、同じパラメータ数なら、埋め込みを分けるより層を増やすほうが効いたとある。
+## 損失
+
+- [CompleteP](studies/completep.md)：1パラメータ20トークンで比べると、最良の比は、埋め込みを除いて5000万で32、3億で43（1024×24）、15億で62。3億では比23〜80の差が約0.3%で、深さの補正がない µP でも約0.6%（図から読み取り）。補正がないと、深いほど計算を無駄にする。
+- [The Depth Delusion](studies/depth-delusion.md)：補正なしの AdamW で、深い形に厳しい結果を出している。約11億〜12億で 1792×24 が 2.821、1280×48 が 2.839、1024×80 が 2.978。査読前で、シードは1つ。
+- [Petty ら](studies/impact-of-depth.md)：総パラメータを固定し、FFN の幅を減らして層を増やした。層の効果はすぐ頭打ちになり、3.74億（幅1024）では24層が最良。
+- nanochat の LOG（2026-01-17）に、計算量を 1e18 に固定した比較で「Aspect ratio of 128 is worse than 64 … The LLM prefers to be slightly thinner and longer」とある。128 と 64 以外の値は書かれていない。
+
+## 下流の課題の点
+
+- [Scale Efficiently](studies/scale-efficiently.md)：T5 で、損失は大きさでほぼ決まるが、ファインチューニングした課題の点は形に強く左右されるとして、層を優先して増やす DeepNarrow を勧めている。効率の伸びは32〜36層（エンコーダとデコーダのそれぞれ）で頭打ちになる。
+- [CompleteP](studies/completep.md)：15億の 1984×32 と 832×179 を、ファインチューニングなしで6課題の平均で比べると、55.2 と 54.3（補正なしでは 54.3 と 52.0）。
+- [Petty ら](studies/impact-of-depth.md)：ファインチューニングした合成的な課題では深いほど点が上がるが、低い層数で頭打ちになる課題が多い。
+
+## そのほか
+
+Smol Training Playbook の読書ノートに、同じパラメータ数なら、埋め込みを分けるより層を増やすほうが効いたとある。幅との比較ではない。
+
+Gemstones（arXiv 2502.06857）と Levine ら（arXiv 2006.12467）も形を扱っているが、本文は読んでいない。
+
+上の4本の論文は、value embeddings も NorMuon も使っていない。ファインチューニングなしの公開ベンチマークで、比30〜60の形を比べた結果は見つけていない（2026-10-31 に調べた）。

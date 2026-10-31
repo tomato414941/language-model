@@ -1,6 +1,6 @@
 # 技術の記録
 
-調べた技術ごとに1ファイル。新しく調べる前にここを見る。
+調べた技術ごとに1ファイル。論文や研究ごとの記録は `studies/` に、1本で1ファイル。新しく調べる前にここを見る。
 
 ## モデルの形
 
@@ -83,6 +83,13 @@
 ## 結果
 
 - [jcommonsenseqa-drop.md](jcommonsenseqa-drop.md)
+
+## 論文と研究
+
+- [studies/completep.md](studies/completep.md)
+- [studies/depth-delusion.md](studies/depth-delusion.md)
+- [studies/impact-of-depth.md](studies/impact-of-depth.md)
+- [studies/scale-efficiently.md](studies/scale-efficiently.md)
 
 ## 調べていないこと
 
