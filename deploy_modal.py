@@ -21,6 +21,8 @@ MODEL_REVISION = os.environ.get(
 MODEL_ID = os.environ.get("MODEL_ID", MODEL_RUN)
 MODEL_DIRECTORY = "/opt/models"
 GPU_IDLE_SECONDS = 60
+# Billing shows the GPU up about 45 seconds past its idle window.
+GPU_SECONDS_AFTER_REPLY = 105
 GPU_SECONDS_PER_DAY = 3600
 # The containers import this file again, and need it to name the same model.
 ENVIRONMENT = {
@@ -159,7 +161,7 @@ def api():
     gpu_time = GPUTime(
         modal.Dict.from_name("language-model-api-gpu-time", create_if_missing=True),
         GPU_SECONDS_PER_DAY,
-        GPU_IDLE_SECONDS,
+        GPU_SECONDS_AFTER_REPLY,
     )
     return create_app(
         response_settings=ModelSettings(model_id=MODEL_ID, api_key=api_key),
