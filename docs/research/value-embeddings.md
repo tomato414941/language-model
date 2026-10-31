@@ -11,4 +11,4 @@ nanochat の LOG（2026-01-17）に、modded-nanogpt の U 字形（表3つ）�
 
 Marin の nano_arch_ablations（約1.5億〜2.8億パラメータ、Paloma C4 の BPB）では、VE で 1.3112 → 1.3007、ゲートを足して 1.2962 になった。
 
-1層おきが全部の層より良い理由は、どちらにも書かれていない。元の考えは ResFormer（arXiv 2410.17897）だが、本文は読んでいない。
+1層おきが全部の層より良い理由は、どちらにも書かれていない。元の考えは [ResFormer](studies/value-residual.md) で、最初の層の value を後ろの層に足すのが効くとしている。

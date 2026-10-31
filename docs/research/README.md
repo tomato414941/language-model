@@ -30,6 +30,10 @@
 - [h-net.md](h-net.md)
 - [attention-residuals.md](attention-residuals.md)
 - [screening.md](screening.md)
+- [mudd.md](mudd.md)
+- [narrow-qk.md](narrow-qk.md)
+- [virtual-attention-cap.md](virtual-attention-cap.md)
+- [completep.md](completep.md)
 
 ## 最適化と学習
 
@@ -48,6 +52,13 @@
 - [patch-level-training.md](patch-level-training.md)
 - [ema-nesterov.md](ema-nesterov.md)
 - [sampled-softmax.md](sampled-softmax.md)
+- [soap-muon.md](soap-muon.md)
+- [u-w-floor.md](u-w-floor.md)
+- [radial-brake.md](radial-brake.md)
+- [powercool.md](powercool.md)
+- [anvil.md](anvil.md)
+- [sequence-length-schedule.md](sequence-length-schedule.md)
+- [batch-size-schedule.md](batch-size-schedule.md)
 
 ## トークナイザ
 
@@ -102,6 +113,34 @@
 - [studies/attention-residuals.md](studies/attention-residuals.md)
 - [studies/multiscreen.md](studies/multiscreen.md)
 - [studies/llm-jp-4.md](studies/llm-jp-4.md)
+- [studies/imu-1.md](studies/imu-1.md)
+- [studies/nanochat-log.md](studies/nanochat-log.md)
+- [studies/marin-nano-arch-ablations.md](studies/marin-nano-arch-ablations.md)
+- [studies/smol-training-playbook.md](studies/smol-training-playbook.md)
+- [studies/scaling-laws.md](studies/scaling-laws.md)
+- [studies/chinchilla.md](studies/chinchilla.md)
+- [studies/power-lines.md](studies/power-lines.md)
+- [studies/gemstones.md](studies/gemstones.md)
+- [studies/depth-to-width-interplay.md](studies/depth-to-width-interplay.md)
+- [studies/normuon.md](studies/normuon.md)
+- [studies/cautious-weight-decay.md](studies/cautious-weight-decay.md)
+- [studies/muon-plus.md](studies/muon-plus.md)
+- [studies/muoneq.md](studies/muoneq.md)
+- [studies/polar-express.md](studies/polar-express.md)
+- [studies/soap-muon.md](studies/soap-muon.md)
+- [studies/lawa.md](studies/lawa.md)
+- [studies/straight-to-zero.md](studies/straight-to-zero.md)
+- [studies/value-residual.md](studies/value-residual.md)
+- [studies/muddformer.md](studies/muddformer.md)
+- [studies/h-net.md](studies/h-net.md)
+- [studies/from-tokens-to-bytes.md](studies/from-tokens-to-bytes.md)
+- [studies/large-vocabulary.md](studies/large-vocabulary.md)
+- [studies/climb.md](studies/climb.md)
+- [studies/datasets-documents-repetitions.md](studies/datasets-documents-repetitions.md)
+- [studies/to-repeat-or-not.md](studies/to-repeat-or-not.md)
+- [studies/minimax-01.md](studies/minimax-01.md)
+- [studies/liger-kernel.md](studies/liger-kernel.md)
+- [studies/context-language-models.md](studies/context-language-models.md)
 
 ## 調べていないこと
 
