@@ -41,17 +41,19 @@ def download_model(repo_id, revision, directory, volume):
 
 
 def check_model(directory, context_tokens):
-    """Fail unless this code can load the model on this GPU, reply, and hold a full context."""
+    """Fail unless this code can start the model on this GPU, reply, and hold a full context.
+
+    vLLM caches what it compiles here, in this layer of the image, so that the
+    containers that start from it skip compiling.
+    """
     import time
 
-    from pretrain.hf_serving import HuggingFaceModel
+    from pretrain.vllm_serving import VLLMModel
 
     started = time.monotonic()
-    model = HuggingFaceModel(directory, "cuda", context_tokens)
-    print(f"Loaded the model in {time.monotonic() - started:.0f} seconds")
-    words = model.tokenizer("word " * context_tokens, add_special_tokens=False)["input_ids"]
-    longest = model.tokenizer.decode(words[: context_tokens - 128])
-    for text, tokens in (("こんにちは。自己紹介をしてください。", 64), (longest, 4)):
+    model = VLLMModel.serve(directory, context_tokens)
+    print(f"Started the model in {time.monotonic() - started:.0f} seconds")
+    for text, tokens in (("こんにちは。自己紹介をしてください。", 64), ("word " * (context_tokens - 256), 4)):
         started = time.monotonic()
         generation = model.start([{"role": "user", "content": text}], tokens, 1.0, TOP_P)
         written = list(generation)
@@ -62,17 +64,15 @@ def check_model(directory, context_tokens):
         )
         if not written:
             raise ValueError("The model wrote no reply")
+    model.close()
 
 
 # Downloading comes before application code, so changing the code does not repeat it.
 model_image = (
     modal.Image.debian_slim(python_version="3.11")
-    .uv_sync(
-        str(ROOT),
-        extras=["train", "hub", "serve-huggingface"],
-        extra_options="--no-dev",
-        uv_version="0.13.4",
-    )
+    # torch.compile builds small helpers for its kernels with a C compiler.
+    .apt_install("gcc")
+    .pip_install_from_requirements(str(ROOT / "deploy/requirements-vllm.txt"))
     .env({"HF_XET_HIGH_PERFORMANCE": "1"})
     .run_function(
         download_model,
@@ -89,9 +89,9 @@ model_image = (
         args=(MODEL_DIRECTORY, CONTEXT_TOKENS),
         gpu=GPU,
         volumes={WEIGHTS_ROOT: weights.with_mount_options(read_only=True)},
-        cpu=4,
-        memory=16384,
-        timeout=1200,
+        cpu=8,
+        memory=32768,
+        timeout=1800,
     )
 )
 # The entrance needs only the API's own dependencies.
@@ -122,9 +122,9 @@ app = modal.App(f"{MODEL_ID}-api")
 class Sampler:
     @modal.enter()
     def load(self):
-        from pretrain.hf_serving import HuggingFaceModel
+        from pretrain.vllm_serving import VLLMModel
 
-        self.model = HuggingFaceModel(MODEL_DIRECTORY, "cuda", CONTEXT_TOKENS)
+        self.model = VLLMModel.serve(MODEL_DIRECTORY, CONTEXT_TOKENS)
 
     @modal.method()
     def sample(self, *arguments):
