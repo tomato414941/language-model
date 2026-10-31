@@ -91,6 +91,7 @@
 - [finephrase.md](topics/finephrase.md)
 - [nemotron-v2-ja-sft.md](topics/nemotron-v2-ja-sft.md)
 - [llm-jp-4-sft-data.md](topics/llm-jp-4-sft-data.md)
+- [choice-answer-data.md](topics/choice-answer-data.md)
 - [fineinstructions.md](topics/fineinstructions.md)
 - [curriculum-learning.md](topics/curriculum-learning.md)
 

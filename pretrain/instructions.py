@@ -4,6 +4,7 @@ import hashlib
 import heapq
 import json
 import os
+import random
 import re
 import shutil
 import tempfile
@@ -57,7 +58,50 @@ AYA = {
         "data/train-00000-of-00001.parquet": "51baa85043b569ba117f41516b32d1b0e4e2647fb203a08933f98a556fb1fb06",
     },
 }
+# Choice problems answered by their symbol alone, which replies in sentences and
+# reasoning do not teach. An evaluation task's own training split may be learned
+# from, though the text of any split counts as a benchmark's elsewhere; a source
+# drops the problems whose held_out_field also appears in the held_out files.
+BENCHMARK_TRAINING_SOURCES = ("kuci-ja", "jcommonsenseqa-ja")
 SOURCES = {
+    "kuci-ja": {
+        "language": "ja",
+        "url": "https://raw.githubusercontent.com/ku-nlp/KUCI/79afa1d63d1f262e6709e9be714d9ad5dae8d6f6/{path}",
+        "dataset_url": "https://github.com/ku-nlp/KUCI",
+        "license": "CC-BY-SA-4.0",
+        "origin": "KUCI's training problems of commonsense contingency, checked by crowdworkers",
+        "layout": "kuci",
+        "files": {
+            "dataset/train.jsonl": "77cd991d35cdc5cba23d0e2208cdc66e3173577449dffdf1503bf49e0624b076",
+        },
+    },
+    "jcommonsenseqa-ja": {
+        "language": "ja",
+        "repository": "sbintuitions/JCommonsenseQA",
+        "revision": "b72d3115609bed00c386701fcb40234a1fd08c7a",
+        "license": "CC-BY-SA-4.0",
+        "origin": "JGLUE's training questions of JCommonsenseQA, written by crowdworkers",
+        "layout": "jcommonsenseqa",
+        "files": {
+            "data/train-00000-of-00001.parquet": "8e1851eb5d7f9579432f2af2ff474f654977b077ef2a83da197d81518c6024ba",
+        },
+        # 17 of the questions the evaluation asks are in the training split too.
+        "held_out": {
+            "data/validation-00000-of-00001.parquet": "b72e6c05535a7ccde7b66f8a721c3b0707e67097a7f33bab626195354180994f",
+        },
+        "held_out_field": "question",
+    },
+    "jaqket-ja": {
+        "language": "ja",
+        "url": "https://jaqket.s3.ap-northeast-1.amazonaws.com/{path}",
+        "dataset_url": "https://sites.google.com/view/project-aio/dataset",
+        "license": "CC-BY-SA-4.0",
+        "origin": "JAQKET's quiz questions from the first AI King contest, with candidate answers",
+        "layout": "jaqket",
+        "files": {
+            "data/aio_01/train_questions.json": "ba30fc32c8d867b90527da09e2dd3e2d9057e5b1dd2faae25af3b3e367b6f7f1",
+        },
+    },
     "oasst2-en": {
         "language": "en",
         "repository": "llm-jp/oasst2-33k-en",
@@ -393,7 +437,64 @@ def aya_messages(record):
     return [{"role": "user", "content": prompt}, {"role": "assistant", "content": completion}]
 
 
+def choice_messages(instruction, problem, answer):
+    """A choice problem in the form of llm-jp-eval's prompts, answered by the symbol alone."""
+    return [
+        {"role": "user", "content": f"{instruction}\n\n### 入力:\n{problem}"},
+        {"role": "assistant", "content": answer},
+    ]
+
+
+def kuci_messages(record):
+    """KUCI's words are separated by spaces, and its label is a choice's letter."""
+    try:
+        choices = (record[f"choice_{name}"].replace(" ", "") for name in "abcd")
+        listed = ",".join(f"{index}.{choice}" for index, choice in enumerate(choices))
+        return choice_messages(
+            "文脈と選択肢を入力として受け取り、選択肢から文脈の後に続く文として最も適切なものを選択してください。"
+            "回答は選択肢の番号（例：0）だけにしてください。",
+            f"文脈：{record['context'].replace(' ', '')}\n選択肢：{listed}",
+            str("abcd".index(record["label"])),
+        )
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
+
+
+def lettered_question(question, choices, label):
+    listed = ",".join(f"{'ABCDE'[index]}.{choice}" for index, choice in enumerate(choices))
+    return choice_messages(
+        "質問と選択肢を入力として受け取り、選択肢から最も適切な回答を選択してください。"
+        "回答は選択肢のアルファベット（例：A）だけにしてください。",
+        f"質問：{question}\n選択肢：{listed}",
+        "ABCDE"[label],
+    )
+
+
+def jcommonsenseqa_messages(record):
+    try:
+        choices = [record[f"choice{index}"] for index in range(5)]
+        return lettered_question(record["question"], choices, record["label"])
+    except (KeyError, TypeError, IndexError):
+        return None
+
+
+def jaqket_messages(record):
+    """The first four candidates, which list the answer first, in an order fixed by the question."""
+    try:
+        choices = record["answer_candidates"][:4]
+        answer = record["answer_entity"]
+        if answer not in choices:
+            return None
+        random.Random(record["qid"]).shuffle(choices)
+        return lettered_question(record["question"], choices, choices.index(answer))
+    except (KeyError, TypeError):
+        return None
+
+
 LAYOUTS = {
+    "jaqket": jaqket_messages,
+    "jcommonsenseqa": jcommonsenseqa_messages,
+    "kuci": kuci_messages,
     "aya": aya_messages,
     "dolly": dolly_messages,
     "nemotron": nemotron_messages,
@@ -463,23 +564,34 @@ def fetch_instructions(output):
             language: (staging / f"{language}.jsonl").open("w", encoding="utf-8")
             for language in LANGUAGES
         }
+
+        def fetched(name, source, path, expected):
+            download = downloads / expected
+            if not download.exists() and (
+                download_file(source.get("url", SOURCE_URL).format(path=path, **source), download)
+                != expected
+            ):
+                raise ValueError(f"{name} source checksum does not match: {path}")
+            return download
+
         try:
             for name, source in SOURCES.items():
                 kept = malformed = unselected = too_long = 0
                 # The sample keeps the conversations with the smallest digests
                 # of their place in the pinned files, as negated keys in a heap.
                 sample = []
+                held_out = {
+                    record[source["held_out_field"]]
+                    for path, expected in source.get("held_out", {}).items()
+                    for record in read_records(fetched(name, source, path, expected), path)
+                }
                 for path, expected in source["files"].items():
-                    download = downloads / expected
-                    if not download.exists() and (
-                        download_file(SOURCE_URL.format(path=path, **source), download)
-                        != expected
-                    ):
-                        raise ValueError(
-                            f"{name} source checksum does not match: {path}"
-                        )
+                    download = fetched(name, source, path, expected)
                     for index, record in enumerate(read_records(download, path)):
-                        if any(record.get(field) not in values for field, values in source.get("select", {}).items()):
+                        if any(
+                            record.get(field) not in values
+                            for field, values in source.get("select", {}).items()
+                        ) or (held_out and record.get(source["held_out_field"]) in held_out):
                             unselected += 1
                             continue
                         messages = normalize_messages(
@@ -505,7 +617,9 @@ def fetch_instructions(output):
                     kept += 1
                 manifest["sources"][name] = {
                     **source,
-                    "dataset_url": f"https://huggingface.co/datasets/{source['repository']}",
+                    "dataset_url": source.get(
+                        "dataset_url", f"https://huggingface.co/datasets/{source.get('repository')}"
+                    ),
                     "conversations": kept,
                     "malformed": malformed,
                     "unselected": unselected,
@@ -723,11 +837,13 @@ def prepare_instructions(
                 0,
             )
             conversations = {}
+            permitted = set()
             with (source / f"{language}.jsonl").open(encoding="utf-8") as lines:
                 for line in lines:
                     if not line.strip():
                         continue
-                    messages = normalize_messages(json.loads(line).get("messages"))
+                    record = json.loads(line)
+                    messages = normalize_messages(record.get("messages"))
                     if messages is None:
                         stats["malformed"] += 1
                         continue
@@ -738,8 +854,10 @@ def prepare_instructions(
                         continue
                     seen.add(digest)
                     conversations[digest] = messages
+                    if record.get("source") in BENCHMARK_TRAINING_SOURCES:
+                        permitted.add(digest)
             # Seeded digests give a reproducible random order for the split and budget.
-            ordered = [conversations[digest] for digest in sorted(conversations)]
+            ordered = [(conversations[digest], digest in permitted) for digest in sorted(conversations)]
             del conversations
             splits = {"validation": [], "train": []}
             train_tokens = 0
@@ -752,8 +870,8 @@ def prepare_instructions(
                     break
                 chunk = [
                     messages
-                    for messages in ordered[start : start + 1024]
-                    if not contaminated(messages, questions, language)
+                    for messages, allowed in ordered[start : start + 1024]
+                    if allowed or not contaminated(messages, questions, language)
                 ]
                 stats["contaminated"] += len(ordered[start : start + 1024]) - len(chunk)
                 for example in encode_conversations(tokenizer, chunk) if chunk else []:
