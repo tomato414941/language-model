@@ -28,6 +28,8 @@
 - [orthogonal-init.md](orthogonal-init.md)
 - [xsa.md](xsa.md)
 - [h-net.md](h-net.md)
+- [attention-residuals.md](attention-residuals.md)
+- [screening.md](screening.md)
 
 ## 最適化と学習
 
@@ -43,6 +45,9 @@
 - [z-loss.md](z-loss.md)
 - [preference-optimization.md](preference-optimization.md)
 - [rlvr.md](rlvr.md)
+- [patch-level-training.md](patch-level-training.md)
+- [ema-nesterov.md](ema-nesterov.md)
+- [sampled-softmax.md](sampled-softmax.md)
 
 ## トークナイザ
 
@@ -90,6 +95,13 @@
 - [studies/depth-delusion.md](studies/depth-delusion.md)
 - [studies/impact-of-depth.md](studies/impact-of-depth.md)
 - [studies/scale-efficiently.md](studies/scale-efficiently.md)
+- [studies/patch-level-training.md](studies/patch-level-training.md)
+- [studies/ema-nesterov.md](studies/ema-nesterov.md)
+- [studies/modded-nanogpt-optimization-track.md](studies/modded-nanogpt-optimization-track.md)
+- [studies/modded-nanogpt-anvil2.md](studies/modded-nanogpt-anvil2.md)
+- [studies/attention-residuals.md](studies/attention-residuals.md)
+- [studies/multiscreen.md](studies/multiscreen.md)
+- [studies/llm-jp-4.md](studies/llm-jp-4.md)
 
 ## 調べていないこと
 
