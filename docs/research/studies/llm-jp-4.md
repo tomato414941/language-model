@@ -22,6 +22,25 @@ SentencePiece の Unigram、語彙196608。空白をまたぐトークンは圧�
 
 基準を満たしたのは、Swallow での数学のデータだけ。
 
+## 中間の学習のデータ
+
+8つの候補を、16通りの一部実施要因計画で比べた。数字は Cohen's f に効果の向きの符号をつけたもの。8B と 32B-A3B のモデルで、数字を読んだのは表のこの部分だけ。
+
+| 候補 | llm-jp-eval（SFT 前） | Swallow（SFT 前） | llm-jp-eval（SFT 後） | Swallow（SFT 後） |
+|---|---|---|---|---|
+| Cosmopedia v2 | −0.47 | 0.13 | −0.31 | 0.10 |
+| Nemotron Post-Training v1 の STEM | 0.82 | 1.90 | 0.39 | −0.15 |
+| Swallow Code v2 | −0.61 | −0.16 | 0.04 | −0.43 |
+| Synthetic Code Review | 0.04 | 0.38 | −0.04 | 0.43 |
+| Synthetic Question Answering | −0.44 | 1.01 | −0.30 | 0.51 |
+| Synthetic Rewriting | −0.23 | −0.19 | −0.55 | −0.44 |
+| Synthetic Student Teacher | 0.33 | 0.47 | −0.17 | −0.36 |
+| Synthetic Transpilation | −0.48 | 0.22 | −0.29 | 0.23 |
+
+Synthetic の5つは Nemotron Pretraining Code v2 の一部で、NVIDIA Data Access Agreement の下にある。
+
+事前学習のデータと半々に混ぜ、学習率を事前学習の半分にした。日本語の点は、学習率も中間のデータの割合も高いほうが良かったが、英語の点の差のほうが大きかったのでこう決めた。
+
 ## 学習の設定
 
 8B、400B トークンの比較で、はっきり効いたのは、バッチを 1024 → 512 → 256 と小さくすることだけ（トークンあたりの下流の点が上がった）。AdamW の β2、注意の softmax の精度、RoPE の基数、文書の境界で位置と注意を切ることは、はっきりした差がなかった。

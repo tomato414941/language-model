@@ -80,6 +80,7 @@
 - [japanese-web-data.md](japanese-web-data.md)
 - [data-repetition.md](data-repetition.md)
 - [self-rephrasing.md](self-rephrasing.md)
+- [finephrase.md](finephrase.md)
 - [nemotron-v2-ja-sft.md](nemotron-v2-ja-sft.md)
 
 ## 計算
@@ -141,6 +142,8 @@
 - [studies/minimax-01.md](studies/minimax-01.md)
 - [studies/liger-kernel.md](studies/liger-kernel.md)
 - [studies/context-language-models.md](studies/context-language-models.md)
+- [studies/finephrase.md](studies/finephrase.md)
+- [studies/local-language-models.md](studies/local-language-models.md)
 
 ## 調べていないこと
 
