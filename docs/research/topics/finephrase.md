@@ -1,6 +1,6 @@
 # FinePhrase
 
-HuggingFaceFW/finephrase（ODC-By）。FineWeb-Edu の文書を SmolLM2-1.7B-Instruct で、表、数学の問題、FAQ、チュートリアルの4つの形に書き直したもの。13.5億件、4860億トークン。英語だけ。性能は [studies/finephrase.md](studies/finephrase.md) にある。
+HuggingFaceFW/finephrase（ODC-By）。FineWeb-Edu の文書を SmolLM2-1.7B-Instruct で、表、数学の問題、FAQ、チュートリアルの4つの形に書き直したもの。13.5億件、4860億トークン。英語だけ。性能は [studies/finephrase.md](../studies/finephrase.md) にある。
 
 形ごとに `table/`、`math/`、`faq/`、`tutorial/` のフォルダがあり、それぞれ parquet が千個以上ある。書き直した文章は `rollout_results` の最初の要素の `text` にあり、`text` の列は元の文書。1ファイルは約270MB で、大半は元の文書と書き直しの文章。
 

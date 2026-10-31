@@ -9,4 +9,4 @@ Hugging Face の SmolLM3 の学習の記録（HuggingFaceTB/smol-training-playbo
 - **埋め込み：** 共有した 1.2B が、分けた 1.46B に並んだ。同じ予算なら、分けるより層を増やす。
 - **語彙：** 49K〜128K の範囲で、3B では 49152 にした。
 
-既存の記録（`preference-optimization.md`）にある APO-zero の数字は、この読書ノートでは確かめていない。
+既存の記録（`../topics/preference-optimization.md`）にある APO-zero の数字は、この読書ノートでは確かめていない。
