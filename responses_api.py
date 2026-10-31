@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from starlette.background import BackgroundTask
 
 from pretrain.conversation import chat_prompt
+from pretrain.remote import OutOfGPUTime
 
 
 class APIError(Exception):
@@ -28,12 +29,13 @@ class APIError(Exception):
         code="invalid_parameter",
         status=400,
         kind="invalid_request_error",
+        retry_after=1,
     ):
         self.message, self.param, self.code = message, param, code
-        self.status, self.kind = status, kind
+        self.status, self.kind, self.retry_after = status, kind, retry_after
 
     def response(self):
-        headers = {"Retry-After": "1"} if self.status == 429 else None
+        headers = {"Retry-After": str(self.retry_after)} if self.status == 429 else None
         return JSONResponse(
             status_code=self.status,
             content={
@@ -460,6 +462,14 @@ class ResponseService:
                 )
             except ValueError as error:
                 raise APIError(str(error), "input", "context_length_exceeded") from None
+            except OutOfGPUTime as error:
+                raise APIError(
+                    "The model has used up its GPU time for today. Try again after 00:00 UTC.",
+                    code="insufficient_quota",
+                    status=429,
+                    kind="insufficient_quota",
+                    retry_after=error.retry_after,
+                ) from None
             response = Response(
                 id="resp_" + secrets.token_hex(16),
                 created_at=int(time.time()),
@@ -639,7 +649,9 @@ class ResponseSession:
         except Exception:  # noqa: BLE001 - Finish the SSE protocol on a backend failure.
             yield event("response.failed", response=self.fail().model_dump())
         finally:
-            self.close()
+            # Closing a reply can wait on the network, which would hold up the event loop.
+            with anyio.CancelScope(shield=True):
+                await anyio.to_thread.run_sync(self.close)
 
 
 def install_routes(app: FastAPI, settings=None, backend=None):

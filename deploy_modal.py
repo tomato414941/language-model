@@ -2,7 +2,8 @@
 
 A small CPU container serves the page and the API and checks the API key.
 Only then does it ask the GPU container, which has no address of its own,
-to sample the reply, so requests without the key never start the GPU.
+to sample the reply, so requests without the key never start the GPU. Neither
+do requests with the key, once the GPU has used up its time for the day.
 """
 
 import os
@@ -19,6 +20,8 @@ MODEL_REVISION = os.environ.get(
 )
 MODEL_ID = os.environ.get("MODEL_ID", MODEL_RUN)
 MODEL_DIRECTORY = "/opt/models"
+GPU_IDLE_SECONDS = 60
+GPU_SECONDS_PER_DAY = 3600
 # The containers import this file again, and need it to name the same model.
 ENVIRONMENT = {
     "MODEL_ID": MODEL_ID,
@@ -90,7 +93,7 @@ app = modal.App("language-model-api")
     min_containers=0,
     max_containers=1,
     buffer_containers=0,
-    scaledown_window=60,
+    scaledown_window=GPU_IDLE_SECONDS,
     timeout=1800,
 )
 class Sampler:
@@ -128,7 +131,7 @@ class Sampler:
 @modal.concurrent(max_inputs=4)
 @modal.asgi_app()
 def api():
-    from pretrain.remote import RemoteTextModel
+    from pretrain.remote import GPUTime, RemoteTextModel
     from responses_api import ModelSettings
     from server import create_app
 
@@ -137,7 +140,12 @@ def api():
         raise ValueError(
             "Set LANGUAGE_MODEL_API_KEY in the language-model-api-key secret"
         )
+    gpu_time = GPUTime(
+        modal.Dict.from_name("language-model-api-gpu-time", create_if_missing=True),
+        GPU_SECONDS_PER_DAY,
+        GPU_IDLE_SECONDS,
+    )
     return create_app(
         response_settings=ModelSettings(model_id=MODEL_ID, api_key=api_key),
-        backend=RemoteTextModel(Sampler().sample.remote_gen, MODEL_REVISION),
+        backend=RemoteTextModel(Sampler().sample.remote_gen, MODEL_REVISION, gpu_time),
     )
