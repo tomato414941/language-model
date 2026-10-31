@@ -90,6 +90,9 @@
 - [self-rephrasing.md](topics/self-rephrasing.md)
 - [finephrase.md](topics/finephrase.md)
 - [nemotron-v2-ja-sft.md](topics/nemotron-v2-ja-sft.md)
+- [llm-jp-4-sft-data.md](topics/llm-jp-4-sft-data.md)
+- [fineinstructions.md](topics/fineinstructions.md)
+- [curriculum-learning.md](topics/curriculum-learning.md)
 
 ### 計算
 
@@ -148,10 +151,17 @@
 - [context-language-models.md](sources/context-language-models.md)
 - [finephrase.md](sources/finephrase.md)
 - [local-language-models.md](sources/local-language-models.md)
+- [curriculum-learning.md](sources/curriculum-learning.md)
+- [curriculum-dynamics.md](sources/curriculum-dynamics.md)
+- [fineinstructions.md](sources/fineinstructions.md)
+- [instruction-pretraining-composition.md](sources/instruction-pretraining-composition.md)
+- [smollm2.md](sources/smollm2.md)
 
 ## 実験
 
 - [jcommonsenseqa-drop.md](experiments/jcommonsenseqa-drop.md)
+- [choice-answers.md](experiments/choice-answers.md)
+- [tokens-per-character.md](experiments/tokens-per-character.md)
 
 ## 調べていないこと
 
