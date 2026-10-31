@@ -6,7 +6,7 @@
 - `sources/`：他の人が公開した1つの出典に書いてあること。1出典1ファイル。論文、記事、公開の実験記録を置く。原則として書き換えない。読書ノートなど又聞きで読んだものは、原文を読んでいないことを書く。
 - `experiments/`：自分たちの1回の調査や実験でしたことと、分かったこと。1回1ファイル。他の人のモデルでも、自分たちが測ったものはここに置く。測ったモデルは世代の名前で書く。
 
-リンクは `topics/` から他の2つへの一方向にする。データセットのカードの内容はそのデータの `topics/` のメモに書き、コードは引用するメモに出典を書く。論文の本文やデータそのものは置かない。チャットの発言は入れず、公開の論文や記録で裏を取ってから、その出典のメモに書く。
+コードやメモが出典を引用するときは、その出典のメモも同時に作り、読んだ範囲を書く。リンクは `topics/` から他の2つへの一方向にする。データセットのカードの内容はそのデータの `topics/` のメモに書き、コードは引用するメモに出典を書く。論文の本文やデータそのものは置かない。チャットの発言は入れず、公開の論文や記録で裏を取ってから、その出典のメモに書く。
 
 ## テーマ
 
@@ -55,6 +55,7 @@
 - [muon-plus.md](topics/muon-plus.md)
 - [polar-express.md](topics/polar-express.md)
 - [z-loss.md](topics/z-loss.md)
+- [block-expansion.md](topics/block-expansion.md)
 - [preference-optimization.md](topics/preference-optimization.md)
 - [rlvr.md](topics/rlvr.md)
 - [patch-level-training.md](topics/patch-level-training.md)
@@ -92,6 +93,8 @@
 - [nemotron-v2-ja-sft.md](topics/nemotron-v2-ja-sft.md)
 - [llm-jp-4-sft-data.md](topics/llm-jp-4-sft-data.md)
 - [choice-answer-data.md](topics/choice-answer-data.md)
+- [document-selection.md](topics/document-selection.md)
+- [multilingual-training.md](topics/multilingual-training.md)
 - [fineinstructions.md](topics/fineinstructions.md)
 - [curriculum-learning.md](topics/curriculum-learning.md)
 
@@ -105,6 +108,7 @@
 ### 評価
 
 - [asking-in-conversation.md](topics/asking-in-conversation.md)
+- [small-experiments.md](topics/small-experiments.md)
 - [m-ifeval-ja.md](topics/m-ifeval-ja.md)
 - [elyza-tasks-100.md](topics/elyza-tasks-100.md)
 - [japanese-mt-bench.md](topics/japanese-mt-bench.md)
@@ -159,11 +163,29 @@
 - [instruction-pretraining-composition.md](sources/instruction-pretraining-composition.md)
 - [smollm2.md](sources/smollm2.md)
 - [smollm3.md](sources/smollm3.md)
+- [llama-pro.md](sources/llama-pro.md)
+- [olmes.md](sources/olmes.md)
+- [color-filter.md](sources/color-filter.md)
+- [dclm.md](sources/dclm.md)
+- [olmoe.md](sources/olmoe.md)
+- [preselect.md](sources/preselect.md)
+- [datadecide.md](sources/datadecide.md)
+- [signal-and-noise.md](sources/signal-and-noise.md)
+- [deepseek-v3.md](sources/deepseek-v3.md)
+- [deepseek-r1.md](sources/deepseek-r1.md)
+- [instruction-tuned-vs-base.md](sources/instruction-tuned-vs-base.md)
+- [multilingual-code-switching.md](sources/multilingual-code-switching.md)
+- [multilingual-continual-pretraining.md](sources/multilingual-continual-pretraining.md)
+- [multiple-choice-scoring.md](sources/multiple-choice-scoring.md)
+- [simple-evals.md](sources/simple-evals.md)
+- [swallow-evaluation.md](sources/swallow-evaluation.md)
+- [lm-evaluation-harness-chat.md](sources/lm-evaluation-harness-chat.md)
 
 ## 実験
 
 - [jcommonsenseqa-drop.md](experiments/jcommonsenseqa-drop.md)
 - [choice-answers.md](experiments/choice-answers.md)
+- [source-number-check.md](experiments/source-number-check.md)
 - [tokens-per-character.md](experiments/tokens-per-character.md)
 
 ## 調べていないこと

@@ -1,6 +1,6 @@
 # Large Vocabulary Size Improves Large Language Models
 
-Large Vocabulary Size Improves Large Language Models（arXiv 2406.16508）。
+Large Vocabulary Size Improves Large Language Models（arXiv 2406.16508）。読んだ範囲は記録していない。
 
 英語と日本語の単一言語のモデルで、語彙を 5k、10k、50k、100k、500k と変えて比べた。語彙が大きいほど、どちらの言語でも下流の点が上がった。日本語のほうが差が大きい。
 
@@ -8,7 +8,7 @@ Large Vocabulary Size Improves Large Language Models（arXiv 2406.16508）。
 
 | 語彙 | 英語 1T トークン | 英語 1エポック | 日本語 1T トークン | 日本語 1エポック |
 |---|---|---|---|---|
-| 5k | | 47.9 | 49.4 | 49.8 |
+| 5k | 47.8 | 47.9 | 49.4 | 49.8 |
 | 10k | | 47.9 | 52.7 | 50.8 |
 | 50k | 48.6 | 48.3 | 55.4 | 54.3 |
 | 100k | 49.2 | 49.0 | 57.1 | 55.3 |

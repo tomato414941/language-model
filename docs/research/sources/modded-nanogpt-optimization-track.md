@@ -1,6 +1,6 @@
 # modded-nanogpt の最適化の部門
 
-KellerJordan/modded-nanogpt の records/track_3_optimization（2026-04 開始）。データ、バッチ、形を固定して、3.28 に届くまでのステップ数をオプティマイザだけで競う。統計的な有意性を条件にしていて、時間は問わないので、遅い手法も入っている。
+KellerJordan/modded-nanogpt の records/track_3_optimization（2026-04 開始）。データ、バッチ、形を固定して、3.28 に届くまでのステップ数をオプティマイザだけで競う。統計的な有意性を条件にしていて、時間は問わないので、遅い手法も入っている。部門の README の表と、表の各記録の説明を読んだ。
 
 | 結果 | ステップ | 内容 |
 |---|---|---|

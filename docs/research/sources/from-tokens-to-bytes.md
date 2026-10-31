@@ -1,6 +1,6 @@
 # From Tokens to Bytes
 
-Cartesia の記事 From Tokens to Bytes I・II（2026-10-28、cartesia.ai/blog/from-tokens-to-bytes-part-1、part-2）。H-Net の改良版と、BPE の Transformer を比べている。改良版は公開されていない。
+Cartesia の記事 From Tokens to Bytes I・II（2026-10-28、cartesia.ai/blog/from-tokens-to-bytes-part-1、part-2）。H-Net の改良版と、BPE の Transformer を比べている。改良版は公開されていない。2本の記事の本文を読んだ。図の数字は読んでいない。
 
 計算量をそろえて、語彙128k、1トークン約4.57バイト、2.2億〜26億パラメータの BPE の Transformer と比べた。データは英語70%、コード20%、数学5%、多言語5%（バイト数）。
 

@@ -1,6 +1,6 @@
 # Value Residual Learning
 
-Value Residual Learning（arXiv 2410.17897）。Zhou ら。v1 の題は Value Residual Learning For Alleviating Attention Concentration In Transformers。
+Value Residual Learning（arXiv 2410.17897）。Zhou ら。v1 の題は Value Residual Learning For Alleviating Attention Concentration In Transformers。読んだ範囲は記録していない。
 
 ResFormer は、普通の残差に加えて、最初の層の value と今の層の value のあいだに残差を足す。
 

@@ -1,6 +1,6 @@
 # Marin の nano_arch_ablations
 
-Marin の speedrun の結果（marin.community/speedrun、データは marin-community/speedrun の data/runs.json）。約1.5億〜2.8億パラメータで、前の行に1つずつ足していく比較。数字は Paloma C4 の BPB で、低いほど良い。
+Marin の speedrun の結果（marin.community/speedrun、データは marin-community/speedrun の data/runs.json）。約1.5億〜2.8億パラメータで、前の行に1つずつ足していく比較。数字は Paloma C4 の BPB で、低いほど良い。`data/runs.json` の値を読んだ。
 
 | 足したもの | BPB |
 |---|---|

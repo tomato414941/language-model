@@ -1,6 +1,6 @@
 # The Depth Delusion
 
-Fahim、Karim、The Depth Delusion: Why Transformers Should Be Wider, Not Deeper（arXiv 2601.20994、2026-01）。査読前。
+Fahim、Karim、The Depth Delusion: Why Transformers Should Be Wider, Not Deeper（arXiv 2601.20994、2026-01）。査読前。読んだ範囲は記録していない。
 
 幅ごとに限界の深さがあり、それを超えると、パラメータが増えても損失が上がると主張する。限界は幅の0.44乗に比例するとし、2.43·ln(幅) で近似している（幅512で15.2層、1024で16.9層、1536で17.8層）。最適な深さは計算量の0.12乗、最適な幅は0.34乗で増えるので、幅を深さの2.8倍の速さで増やすべきだとしている。理由として挙げるのは、深いほど手前の層に勾配が届かなくなること。結論では「D≈2.5·log W を超えない」ことを勧めている。
 

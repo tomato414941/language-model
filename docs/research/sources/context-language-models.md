@@ -1,6 +1,6 @@
 # Context Language Models
 
-Context Language Models（arXiv 2609.37725、2026-09）。
+Context Language Models（arXiv 2609.37725、2026-09）。読んだ範囲は記録していない。
 
 文脈をファイルとして扱い、モデルがそれを自由に書き換える。文脈の管理を、外の仕組みからモデル自身の振る舞いに移す。
 

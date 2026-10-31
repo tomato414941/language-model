@@ -1,6 +1,6 @@
 # Scale Efficiently
 
-Tay ら、Scale Efficiently: Insights from Pre-training and Fine-tuning Transformers（arXiv 2109.10686、ICLR 2022）。Google Research と DeepMind。
+Tay ら、Scale Efficiently: Insights from Pre-training and Fine-tuning Transformers（arXiv 2109.10686、ICLR 2022）。Google Research と DeepMind。読んだ範囲は記録していない。
 
 T5 の形を200以上（500万〜300億パラメータ）学習し、事前学習の損失と、ファインチューニングした下流の課題の点を比べた。T5 はエンコーダとデコーダを持ち、層の数はそれぞれの数を指す（Base は12/12）。目的はスパンを隠す言語モデリングで、C4 を 2^19 ステップ学習する。下流は GLUE、SuperGLUE、SQuAD の17課題。
 

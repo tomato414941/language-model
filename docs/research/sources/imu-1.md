@@ -1,6 +1,6 @@
 # IMU-1
 
-IMU-1: Sample-Efficient Pre-training of Small Language Models（arXiv 2602.02522）。コード、重み、データは Hugging Face の thepowerfuldeez/imu1_base にある。
+IMU-1: Sample-Efficient Pre-training of Small Language Models（arXiv 2602.02522）。コード、重み、データは Hugging Face の thepowerfuldeez/imu1_base にある。読んだ範囲は記録していない。
 
 4.3億パラメータを 72B トークンで学習し、SmolLM-360M（600B トークン）を上回り、SmolLM2-360M（4T トークン）に近づいたとしている。幅1152、30層、18ヘッド、KV 6ヘッド、語彙49152。8×H200 の1ノードで37時間未満。学習は3段階で、データの質の下限を段階ごとに上げ、最後に残した重みの EMA をとる。
 

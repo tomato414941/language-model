@@ -1,6 +1,6 @@
 # The Impact of Depth on Compositional Generalization in Transformer Language Models
 
-Petty ら（arXiv 2310.19956）。NYU、Google Research、Google DeepMind。
+Petty ら（arXiv 2310.19956）。NYU、Google Research、Google DeepMind。読んだ範囲は記録していない。結果の表は論文の付録の Table 3 にある。
 
 深いモデルのほうが合成的な一般化に強いのかを、パラメータ数と切り離して調べた。総パラメータを固定し、層を増やす分だけ FFN の幅を減らす。モデルの幅は変えないので、幅÷層をそのまま変えているわけではない。
 
