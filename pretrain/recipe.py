@@ -540,6 +540,7 @@ def inspect_recipe(path, workdir):
             "cuda",
             "--precision",
             "bfloat16",
+            *(["--compile"] if training.fp8 else []),
         ]
         return command
 

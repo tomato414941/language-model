@@ -290,6 +290,12 @@ class RecipeTests(unittest.TestCase):
             "runs/pretrain-1b/last.pt",
         )
 
+    def test_FP8で学習する事前学習の手順はコンパイルして指示学習はしない(self):
+        plan = inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6")
+        training = [command for command in plan["commands"] if command[3] == "train"]
+        self.assertTrue(plan["training"]["fp8"])
+        self.assertEqual(["--compile" in command for command in training], [True, True, False])
+
     def test_各データ源の割当を満たす日英コーパスを作成する(self):
         corpus = self.prepare()
         result = validate_corpus(self.recipe_path, self.root)

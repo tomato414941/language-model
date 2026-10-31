@@ -27,6 +27,10 @@
 # do, at about the parameters and computation of SwiGLU's three: nanochat found
 # SwiGLU worse by steps, time and computation at 12 and 24 layers, and Marin
 # found no difference.
+# The large matrices multiply in FP8, which Ada and newer GPUs have: nanochat
+# measured 1.17 times the speed at 26 layers, about 1.05 times once it matched
+# bfloat16's loss, and the speedrun's record 92 saved about a tenth of its time.
+# Instruction tuning stays in bfloat16.
 [model]
 architecture = "llama"
 width = 1024
@@ -70,3 +74,4 @@ optimizer = "normuon"
 weight_decay_schedule = "cosine"
 # Ten snapshots through the decay, the count IMU-1 averaged.
 snapshot_every = 160
+fp8 = true

@@ -8,7 +8,7 @@ import torch
 from torch._dynamo.utils import counters
 
 from .model import LanguageModel, ModelConfig
-from .training import TrainConfig, autocast, make_optimizer
+from .training import TrainConfig, autocast, check_fp8, convert_to_fp8, make_optimizer
 
 
 def measure_training(
@@ -40,6 +40,9 @@ def measure_training(
     torch.manual_seed(training.seed)
     torch.cuda.manual_seed_all(training.seed)
     model = LanguageModel(vocabulary_size, model_config).to(device).train()
+    if training.fp8:
+        check_fp8(device, "bfloat16", compiled)
+        convert_to_fp8(model)
     if compiled:
         # Each micro-batch size compiles once, and again for each padded count
         # of documents it meets. Code compiled for an earlier model would

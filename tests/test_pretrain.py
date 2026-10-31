@@ -37,6 +37,8 @@ from pretrain.training import (
     NorMuon,
     TrainConfig,
     average_snapshots,
+    check_fp8,
+    convert_to_fp8,
     evaluate,
     evaluate_windows,
     learning_rate,
@@ -1121,6 +1123,67 @@ class PretrainingTests(unittest.TestCase):
             dataclasses.replace(
                 self.llama_config(), feed_forward="relu_squared", experts=4, active_experts=2
             )
+
+    def fp8_model(self):
+        torch.manual_seed(0)
+        return LanguageModel(
+            258,
+            ModelConfig(
+                architecture="llama", width=256, heads=2, kv_heads=2, layers=2, context=32,
+                feed_forward="relu_squared", attention_gate="headwise", value_embeddings=True,
+            ),
+        )
+
+    def test_fp8_changes_only_the_large_matrices_and_keeps_the_weights(self):
+        """The large matrices multiply in FP8; the gates do not, and the weights stay as they were."""
+        model = self.fp8_model()
+        before = {name: value.clone() for name, value in model.state_dict().items()}
+        convert_to_fp8(model)
+        converted = {
+            name.rsplit(".", 1)[-1]
+            for name, module in model.named_modules()
+            if type(module).__name__ == "Float8Linear"
+        }
+        self.assertEqual(converted, {"query", "key_value", "attention_output", "up", "down"})
+        self.assertEqual(set(model.state_dict()), set(before))
+        for name, value in model.state_dict().items():
+            torch.testing.assert_close(value, before[name])
+
+    def test_fp8_stays_close_to_the_full_precision_outputs_and_trains_with_normuon(self):
+        """FP8 outputs lie near those of the same weights, and an update moves the matrices."""
+        tokens = torch.randint(2, 258, (2, 32), generator=torch.Generator().manual_seed(1))
+        with torch.no_grad():
+            expected = self.fp8_model()(tokens)
+        model = self.fp8_model()
+        convert_to_fp8(model)
+        logits = model(tokens)
+        self.assertLess(((logits - expected).abs().mean() / expected.abs().mean()).item(), 0.1)
+        config = TrainConfig(**{**self.config().__dict__, "optimizer": "normuon"})
+        optimizer = make_optimizer(model, config, torch.device("cpu"))
+        before = model.blocks[0].up.weight.detach().clone()
+        torch.nn.functional.cross_entropy(logits[:, :-1].flatten(0, 1), tokens[:, 1:].flatten()).backward()
+        optimizer.step()
+        self.assertTrue(model.blocks[0].up.weight.isfinite().all())
+        self.assertFalse(torch.equal(model.blocks[0].up.weight, before))
+
+    def test_fp8_is_refused_where_it_cannot_run_or_would_slow_training(self):
+        """FP8 needs an Ada or newer GPU, bfloat16 and torch.compile."""
+        with self.assertRaisesRegex(ValueError, "Ada"):
+            check_fp8(torch.device("cpu"), "bfloat16", True)
+        gpu = torch.device("cuda")
+        with (
+            patch("torch.cuda.get_device_capability", return_value=(8, 0)),
+            self.assertRaisesRegex(ValueError, "Ada"),
+        ):
+            check_fp8(gpu, "bfloat16", True)
+        with patch("torch.cuda.get_device_capability", return_value=(8, 9)):
+            check_fp8(gpu, "bfloat16", True)
+            with self.assertRaisesRegex(ValueError, "bfloat16"):
+                check_fp8(gpu, "float16", True)
+            with self.assertRaisesRegex(ValueError, "compile"):
+                check_fp8(gpu, "bfloat16", False)
+        with self.assertRaisesRegex(ValueError, "fp8"):
+            TrainConfig(fp8=1)
 
     def test_residual_scalars_start_from_nanochat_values_and_take_its_rates(self):
         """残差のスカラーは nanochat の初期値から始まり、バッチの平方根に比例させた nanochat の学習率で更新される。"""

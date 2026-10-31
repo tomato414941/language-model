@@ -53,6 +53,8 @@ class TrainConfig:
     # Every this many steps of a wsd decay, the model's weights are kept apart
     # from last.pt, for averaging the last of them after training; 0 keeps none.
     snapshot_every: int = 0
+    # Multiply the large matrices in FP8; the weights stay as they are.
+    fp8: bool = False
 
     def __post_init__(self):
         for field in (
@@ -112,6 +114,52 @@ class TrainConfig:
             raise ValueError("snapshot_every must be a nonnegative integer")
         if self.snapshot_every and self.schedule != "wsd":
             raise ValueError("snapshots are kept through a wsd decay")
+        if type(self.fp8) is not bool:
+            raise ValueError("fp8 must be true or false")
+
+
+# Ada, the oldest generation whose matrix products take FP8.
+FP8_CAPABILITY = (8, 9)
+
+
+def check_fp8(device, precision, compiled):
+    """Refuse FP8 where it cannot run, or where it slows training down."""
+    if device.type != "cuda" or torch.cuda.get_device_capability(device) < FP8_CAPABILITY:
+        raise ValueError("fp8 needs an Ada or newer GPU")
+    if precision != "bfloat16":
+        raise ValueError("fp8 runs alongside bfloat16")
+    if not compiled:
+        # nanochat measured FP8 four times slower than bfloat16 uncompiled.
+        raise ValueError("fp8 needs torch.compile, which fuses its scaling")
+
+
+def fp8_matrix(module, _name):
+    """Whether a module is a matrix FP8 can multiply and gains anything from.
+
+    The hardware needs sides divisible by 16, and scaling costs more than FP8
+    saves on small matrices, as nanochat found.
+    """
+    return (
+        isinstance(module, torch.nn.Linear)
+        and module.in_features % 16 == 0
+        and module.out_features % 16 == 0
+        and min(module.in_features, module.out_features) >= 128
+    )
+
+
+def convert_to_fp8(model):
+    """Multiply the model's large matrices in FP8, with one scale per tensor.
+
+    The modules keep their weights under the same names, so the optimizer and
+    the checkpoints see no difference.
+    """
+    from torchao.float8 import Float8LinearConfig, convert_to_float8_training
+
+    convert_to_float8_training(
+        model,
+        config=Float8LinearConfig.from_recipe_name("tensorwise"),
+        module_filter_fn=fp8_matrix,
+    )
 
 
 def read_config(path):
@@ -558,6 +606,8 @@ def train(
     corpus = open_corpus(data)
     corpus.validate_context(model_config.context)
     precision = select_precision(device, precision)
+    if config.fp8:
+        check_fp8(device, precision, compiled)
     output = Path(output)
     if resume is None and (output / "last.pt").exists():
         raise ValueError(
@@ -571,6 +621,8 @@ def train(
     if model_config.document_start not in (None, corpus.tokenizer.token_to_id(BOS)):
         raise ValueError("document_start must be the token that begins each document")
     model = LanguageModel(corpus.tokenizer.get_vocab_size(), model_config).to(device)
+    if config.fp8:
+        convert_to_fp8(model)
     optimizer = make_optimizer(model, config, device)
     scaler = torch.amp.GradScaler("cuda", enabled=precision == "float16")
     generator = torch.Generator().manual_seed(config.seed)
