@@ -1,6 +1,6 @@
 # ANVIL
 
-Muon と NorMuon を組み直したオプティマイザ（modded-nanogpt の[記録 #92](../studies/modded-nanogpt-anvil2.md)）。
+Muon と NorMuon を組み直したオプティマイザ（modded-nanogpt の[記録 #92](../sources/modded-nanogpt-anvil2.md)）。
 
 - 速いものと遅いものの2つのモメンタムを混ぜて、Nesterov の先読みに使う。
 - 直交化の多項式の係数を求め直す。
