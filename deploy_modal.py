@@ -13,9 +13,9 @@ import modal
 
 ROOT = Path(__file__).parent
 MODEL_REPO = os.environ.get("HF_MODEL_REPO", "tomato414941/language-model")
-MODEL_RUN = os.environ.get("HF_MODEL_RUN_ID", "instructions-v3")
+MODEL_RUN = os.environ.get("HF_MODEL_RUN_ID", "v5")
 MODEL_REVISION = os.environ.get(
-    "HF_MODEL_REVISION", "8c3d52c345cd133f4aa300949a129730b3aa8f81"
+    "HF_MODEL_REVISION", "d7bb35ca44648345cbe1eae607a1c1508b063f46"
 )
 MODEL_ID = os.environ.get("MODEL_ID", MODEL_RUN)
 MODEL_DIRECTORY = "/opt/models"
@@ -85,7 +85,8 @@ app = modal.App("language-model-api")
     env=ENVIRONMENT,
     gpu="T4",
     cpu=(1, 1),
-    memory=(2048, 3072),
+    # Loading reads the whole checkpoint, optimizer state included, beside the model.
+    memory=(2048, 6144),
     min_containers=0,
     max_containers=1,
     buffer_containers=0,
