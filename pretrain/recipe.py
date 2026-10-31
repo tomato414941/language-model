@@ -570,6 +570,11 @@ def inspect_recipe(path, workdir):
         ]
         return command
 
+    def benchmark_output(checkpoint):
+        checkpoint = Path(checkpoint)
+        suffix = "" if checkpoint.stem == "last" else f"-{checkpoint.stem}"
+        return checkpoint.parent / f"benchmarks{suffix}.json"
+
     def benchmark_command(checkpoint, selected, japanese, tuned=False):
         return [
             "python",
@@ -581,7 +586,7 @@ def inspect_recipe(path, workdir):
             "--device",
             "cuda",
             "--output",
-            str(Path(checkpoint).parent / "benchmarks.json"),
+            str(benchmark_output(checkpoint)),
             *(["--also-as-conversation"] if tuned else []),
             *(["--llm-jp-eval", *japanese] if japanese else []),
             "--tasks",
@@ -616,6 +621,24 @@ def inspect_recipe(path, workdir):
             commands.append(command)
             previous = runs[item["name"]]
         commands.append(benchmark_command(previous / "last.pt", tasks, japanese))
+        if training.snapshot_every:
+            # The weights kept through the decay, averaged, are scored beside the last.
+            averaged = previous / "averaged.pt"
+            commands += [
+                [
+                    "python",
+                    "-m",
+                    "pretrain",
+                    "average",
+                    "--run",
+                    str(previous),
+                    "--count",
+                    str(training.decay_steps // training.snapshot_every),
+                    "--output",
+                    str(averaged),
+                ],
+                benchmark_command(averaged, tasks, japanese),
+            ]
     else:
         evaluations = [
             corpora[item["name"]]

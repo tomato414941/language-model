@@ -245,7 +245,26 @@ class RecipeTests(unittest.TestCase):
     def test_指示学習の評価だけを会話形式でも問う手順にする(self):
         plan = inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6")
         benchmarks = [command for command in plan["commands"] if command[3] == "benchmark"]
-        self.assertEqual(["--also-as-conversation" in command for command in benchmarks], [False, True])
+        self.assertEqual(["--also-as-conversation" in command for command in benchmarks], [False, False, True])
+
+    def test_減衰の間に残した重みの平均も最後の重みと別に評価する手順にする(self):
+        plan = inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6")
+        commands = plan["commands"]
+        benchmarks = [command for command in commands if command[3] == "benchmark"]
+        last, averaged = (command[command.index("--output") + 1] for command in benchmarks[:2])
+        self.assertEqual(last, "runs/pretrain-v6-decay/benchmarks.json")
+        self.assertEqual(averaged, "runs/pretrain-v6-decay/benchmarks-averaged.json")
+        [average] = [command for command in commands if command[3] == "average"]
+        self.assertEqual(average[average.index("--run") + 1], "runs/pretrain-v6-decay")
+        self.assertEqual(average[average.index("--count") + 1], "10")
+        self.assertEqual(benchmarks[1][benchmarks[1].index("--checkpoint") + 1], average[average.index("--output") + 1])
+        self.assertLess(commands.index(average), commands.index(benchmarks[1]))
+        tuning = [command for command in commands if command[3] == "train" and "sft.toml" in command[command.index("--config") + 1]]
+        self.assertEqual(tuning[0][tuning[0].index("--initialize-from") + 1], "runs/pretrain-v6-decay/last.pt")
+
+    def test_重みを残さない計画は平均を作らない(self):
+        plan = inspect_recipe(ROOT / "configs/pretrain-v5.toml", "data/pretrain-v5")
+        self.assertFalse([command for command in plan["commands"] if command[3] == "average"])
 
     def test_縮小した学習計画を既定として学習量と保存先を表示する(self):
         output = io.StringIO()
