@@ -44,16 +44,16 @@ instruction_tasks = ["ifeval"]
 llm_jp_eval_tasks = ["kuci", "jmmlu"]
 llm_jp_eval_instruction_tasks = ["mif_eval_ja"]
 
-# Instruction tuning keeps pretraining's optimizer, starts from the rate the
-# decay ended at and reads every conversation once per epoch, a step as many
-# tokens as pretraining's. Replies that reason first run to a few thousand
-# tokens.
+# Instruction tuning keeps pretraining's optimizer and reads every conversation
+# once per epoch. Updates of about 262k tokens and a tenth of the peak rate that
+# pretraining's rules give that batch are the v5 model's. LLM-jp-4 tuned at 13%
+# of its peak. Replies that reason first run to a few thousand tokens.
 [sft]
 epochs = 2
-learning_rate = 0.000032
-min_learning_rate = 0.0000032
+learning_rate = 0.00016
+min_learning_rate = 0.000016
 batch_size = 4
-accumulation_steps = 32
+accumulation_steps = 8
 optimizer = "normuon"
 sampling = "sequential"
 validation_conversations_per_language = 1000
