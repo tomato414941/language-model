@@ -1,3 +1,3 @@
 # LeakyReLU(0.5)²
 
-nanochat の LOG（2026-03-24）では、ReLU² を置き換えて、ステップあたりは少し良いが遅く、時間では負けた。
+[nanochat の LOG](../sources/nanochat-log.md)（2026-03-24）では、ReLU² を置き換えて、ステップあたりは少し良いが遅く、時間では負けた。

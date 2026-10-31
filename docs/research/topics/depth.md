@@ -7,7 +7,7 @@
 - [CompleteP](../sources/completep.md)：1パラメータ20トークンで比べると、最良の比は、埋め込みを除いて5000万で32、3億で43（1024×24）、15億で62。3億では比23〜80の差が約0.3%で、深さの補正がない µP でも約0.6%（図から読み取り）。補正がないと、深いほど計算を無駄にする。
 - [The Depth Delusion](../sources/depth-delusion.md)：補正なしの AdamW で、深い形に厳しい結果を出している。約11億〜12億で 1792×24 が 2.821、1280×48 が 2.839、1024×80 が 2.978。査読前で、シードは1つ。
 - [Petty ら](../sources/impact-of-depth.md)：総パラメータを固定し、FFN の幅を減らして層を増やした。層の効果はすぐ頭打ちになり、3.74億（幅1024）では24層が最良。
-- nanochat の LOG（2026-01-17）に、計算量を 1e18 に固定した比較で「Aspect ratio of 128 is worse than 64 … The LLM prefers to be slightly thinner and longer」とある。128 と 64 以外の値は書かれていない。
+- [nanochat の LOG](../sources/nanochat-log.md)（2026-01-17）に、計算量を 1e18 に固定した比較で「Aspect ratio of 128 is worse than 64 … The LLM prefers to be slightly thinner and longer」とある。128 と 64 以外の値は書かれていない。
 
 ## 下流の課題の点
 
@@ -17,7 +17,7 @@
 
 ## そのほか
 
-Smol Training Playbook の読書ノートに、同じパラメータ数なら、埋め込みを分けるより層を増やすほうが効いたとある。幅との比較ではない。
+[Smol Training Playbook の読書ノート](../sources/smol-training-playbook.md)に、同じパラメータ数なら、埋め込みを分けるより層を増やすほうが効いたとある。幅との比較ではない。
 
 [Gemstones](../sources/gemstones.md) は、計算量で測ると深いモデルが損失もベンチマークも良く、GPU の時間で測ると広いモデルのほうが早く損失が下がるとしている。[Levine ら](../sources/depth-to-width-interplay.md)は、深さが効くかどうかは幅で切り替わると理論で予測し、6〜48層で確かめた。
 

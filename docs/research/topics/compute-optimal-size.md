@@ -1,5 +1,5 @@
 # パラメータ数と学習トークン数の配分
 
-決まった計算量を、パラメータ数と学習トークン数にどう分けるか。Chinchilla の目安は、1パラメータ約20トークン。
+決まった計算量を、パラメータ数と学習トークン数にどう分けるか。[Chinchilla](../sources/chinchilla.md) の目安は、1パラメータ約20トークン。
 
-nanochat の LOG（2026-01-17）は、value embeddings でパラメータが増えたので、最適なトークン数とパラメータの比が8から4に下がったとしている（Chinchilla の20よりずっと低い）。
+[nanochat の LOG](../sources/nanochat-log.md)（2026-01-17）は、value embeddings でパラメータが増えたので、最適なトークン数とパラメータの比が8から4に下がったとしている（Chinchilla の20よりずっと低い）。

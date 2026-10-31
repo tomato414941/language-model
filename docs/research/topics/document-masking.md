@@ -2,4 +2,4 @@
 
 1つの窓に詰めて並べた文書どうしの間では、注意を計算しない。
 
-nanochat の LOG（2026-01-13、d16）では、BPB が 0.85427 → 0.85407 とほとんど変わらず、nanochat は取り入れていない。Smol Training Playbook の読書ノートには、短い文脈では効果が小さいが、4k〜64k の長い文脈では学習の速さと安定に欠かせなかった、とある。
+[nanochat の LOG](../sources/nanochat-log.md)（2026-01-13、d16）では、BPB が 0.85427 → 0.85407 とほとんど変わらず、nanochat は取り入れていない。[Smol Training Playbook の読書ノート](../sources/smol-training-playbook.md)には、短い文脈では効果が小さいが、4k〜64k の長い文脈では学習の速さと安定に欠かせなかった、とある。

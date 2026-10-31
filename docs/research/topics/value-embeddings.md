@@ -2,13 +2,13 @@
 
 トークンごとの表を、最後の層から1層おきに置く。表の幅は key-value の幅で、その層の注意の V に、key-value のヘッドごとのゲート（3·sigmoid）を通して足す。表は引くだけなので、計算はほとんど増えない。nanochat の形。
 
-nanochat の LOG（2026-01-17）に、modded-nanogpt の U 字形（表3つ）から始めて試した結果がある。
+[nanochat の LOG](../sources/nanochat-log.md)（2026-01-17）に、modded-nanogpt の U 字形（表3つ）から始めて試した結果がある。
 
 - 全部の層、1層おき、U 字形、最初と最後を比べて、1層おきが最良だった。
 - 表を層どうしで共有する、低ランクに分解する、射影で小さくする、はどれも失敗した。
 - ゲートは効いた。
 - ステップ数、計算量、時間のどれで比べても勝った。表でパラメータが増えたので、最適なトークン数とパラメータの比は8から4に下がった。
 
-Marin の nano_arch_ablations（約1.5億〜2.8億パラメータ、Paloma C4 の BPB）では、VE で 1.3112 → 1.3007、ゲートを足して 1.2962 になった。
+Marin の [nano_arch_ablations](../sources/marin-nano-arch-ablations.md)（約1.5億〜2.8億パラメータ、Paloma C4 の BPB）では、VE で 1.3112 → 1.3007、ゲートを足して 1.2962 になった。
 
 1層おきが全部の層より良い理由は、どちらにも書かれていない。元の考えは [ResFormer](../sources/value-residual.md) で、最初の層の value を後ろの層に足すのが効くとしている。

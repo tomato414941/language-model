@@ -1,6 +1,6 @@
 # The Smol Training Playbook
 
-Hugging Face の SmolLM3 の学習の記録（HuggingFaceTB/smol-training-playbook）。原文は Hugging Face の Space で、ここからは読めなかった。読書ノート（seldondance.substack.com/p/the-smol-training-playbook）で読んだ内容なので、数字は原文で確かめていない。
+Hugging Face の SmolLM3 の学習の記録（HuggingFaceTB/smol-training-playbook）。原文は Hugging Face の Space（huggingfacetb-smol-training-playbook.hf.space）にある。以下は読書ノート（seldondance.substack.com/p/the-smol-training-playbook）で読んだ内容で、数字は原文と照らし合わせていない。
 
 - **比較の費用：** 比較とデバッグが全体の費用の半分を超えた。事前学習の比較は 192 GPU で15日。
 - **比較のやり方：** 本番と同じ 3B の形で、11T ではなく 100B トークンで比べた。小さい規模で悪いものは大きい規模でも捨ててよいが、良かったものは十分長く学習してから判断する。
@@ -9,4 +9,4 @@ Hugging Face の SmolLM3 の学習の記録（HuggingFaceTB/smol-training-playbo
 - **埋め込み：** 共有した 1.2B が、分けた 1.46B に並んだ。同じ予算なら、分けるより層を増やす。
 - **語彙：** 49K〜128K の範囲で、3B では 49152 にした。
 
-APO-zero で IFEval などが15〜20ポイント上がるという数字は、この読書ノートでは確かめていない。
+APO の話は、読書ノートにも原文にも見つからなかった（2026-10-31 に語を検索した）。
