@@ -167,6 +167,30 @@ ROWS["piqa"] = [
         "label": 0,
     }
 ]
+ROWS["openbookqa"] = [
+    {
+        "id": "7-980",
+        "question_stem": "The sun warms the",
+        "choices": {"text": ["ground", "moonlight", "shadow", "dark"], "label": ["A", "B", "C", "D"]},
+        "answerKey": "A",
+    }
+]
+ROWS["winogrande"] = [
+    {
+        "sentence": "The cake did not fit in the box because the _ was too big.",
+        "option1": "cake",
+        "option2": "box",
+        "answer": "1",
+    }
+]
+ROWS["super_glue"] = [
+    {
+        "passage": "Water boils at a lower temperature on a high mountain.",
+        "question": "does water boil at a lower temperature on a mountain",
+        "label": 1,
+        "idx": 0,
+    }
+]
 ROWS["kuci"] = [
     {
         "id": 0,
@@ -432,7 +456,7 @@ def benchmark_dataset(path, name=None, **kwargs):
             for k in (3, 5)
         ]
         return DatasetDict(train=Dataset.from_list(rows))
-    if path in ("allenai/sciq", "baber/piqa"):
+    if path in ("allenai/sciq", "baber/piqa", "allenai/openbookqa", "allenai/winogrande", "aps/super_glue"):
         rows = Dataset.from_list(ROWS[path.split("/")[1]])
         return DatasetDict(train=rows, validation=rows, test=rows)
     tested = {
@@ -832,11 +856,16 @@ class BenchmarkTests(unittest.TestCase):
             ("humaneval", 0),
             ("arc_challenge", 0),
             ("mmlu_abstract_algebra", 5),
+            ("openbookqa", 0),
+            ("winogrande", 0),
+            ("boolq", 0),
         ):
             self.assertEqual(result["n-shot"][name], shots)
         self.assertEqual(configs["ja_leaderboard_jsquad"]["validation_split"], "validation")
-        for name in ("gsm8k", "ja_leaderboard_mgsm", "mbpp", "humaneval"):
+        for name in ("gsm8k", "ja_leaderboard_mgsm", "mbpp", "humaneval", "openbookqa"):
             self.assertEqual(configs[name]["test_split"], "test")
+        for name in ("winogrande", "boolq"):
+            self.assertEqual(configs[name]["validation_split"], "validation")
         # MMLU's questions come from the test split of each of its 57 subjects,
         # asked in both forms.
         subjects = [name for name in configs if name.startswith("mmlu_")]
@@ -848,7 +877,7 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(
             {name: float(result["versions"][name]) for name in DEFAULT_TASKS},
             {
-                name: {"blimp": 2.0, "mmlu": 2.0, "mmlu_continuation": 2.0, "gsm8k": 3.0}.get(name, 1.0)
+                name: {"blimp": 2.0, "mmlu": 2.0, "mmlu_continuation": 2.0, "gsm8k": 3.0, "boolq": 2.0}.get(name, 1.0)
                 for name in DEFAULT_TASKS
             },
         )

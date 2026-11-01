@@ -70,6 +70,11 @@ STANDARD_TASKS = {
     "humaneval": ("en", "pass@1,create_test"),
     "mbpp": ("en", "pass_at_1"),
     "ja_leaderboard_jsquad": ("ja", "exact_match,whitespaces"),
+    # With HellaSwag, ARC and PIQA, the seven tasks of HobbyLM's table of small
+    # models (arXiv:2610.34582), read as it reads them, to stand beside it.
+    "openbookqa": ("en", "acc_norm"),
+    "winogrande": ("en", "acc"),
+    "boolq": ("en", "acc"),
 }
 DEFAULT_TASKS = tuple(STANDARD_TASKS)
 # The examples a task's authors give each question, which the harness leaves to

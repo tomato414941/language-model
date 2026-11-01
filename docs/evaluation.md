@@ -36,3 +36,9 @@
 ## 指示学習の2本から選ぶ
 
 学習率 0.00016 と 0.0006 の2本のうち、合格の線の2つの平均の和が高い方を v6 とする。同じ問題で選んでから v5 と比べるので、比較は少し甘くなる。
+
+## 外のモデルとの比較
+
+事前学習の後のモデルを、HobbyLM（arXiv 2610.34582）の表と同じ7課題で、例なしで測って並べる。課題は HellaSwag、OpenBookQA、WinoGrande、ARC-Challenge、ARC-Easy、BoolQ、PIQA で、指標は表と同じく WinoGrande と BoolQ が acc、他は acc_norm。並べたものは `research/topics/outside-comparison.md` にある。
+
+OpenBookQA、WinoGrande、BoolQ は v6 の合格の線と2本の選択に入れない。線は結果を見る前に決めたものだから。次の世代の線を決めるときに、入れるかを考える。この3つの問題は v5 と v6 の学習データから除いていない。除くかは次の世代のデータを作るときに決める。見直し期限：2026-11-15。

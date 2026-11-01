@@ -32,7 +32,7 @@
 ## 次にやること
 
 1. 本番の各段階の切り替わりで、機械の中を確かめる。
-2. 本番の後に別の機械で、v5 の 8k 版を会話形式で測り（重みは R2 の `stages/instructions-v5/20261028T182342Z/main/final/instructions/last.pt`）、MMLU の作者の形式を v5 の 8k 版と v6 の2本の重みで測り、M-IFEval-Ja の保存した返答を公式の採点コードで採点する。約$0.8 の見込み（未実測）。`configs/pretrain-v6.toml` の課題には入れていない。
+2. 本番の後に別の機械で、v5 の 8k 版を会話形式で測り（重みは R2 の `stages/instructions-v5/20261028T182342Z/main/final/instructions/last.pt`）、MMLU の作者の形式を v5 の 8k 版と v6 の2本の重みで測り、M-IFEval-Ja の保存した返答を公式の採点コードで採点する。外のモデルと並べるために、v5 の 8k 版（重みは R2 の `stages/pretrain-v5/20261025T152135Z/main/final/decay/last.pt`）と v6 の事前学習の後の重みを、`--tasks openbookqa winogrande boolq` で測る。全部で約$0.9 の見込み（未実測）。`configs/pretrain-v6.toml` の課題には入れていない。
 3. 2本の点を比べ、`evaluation.md` の決まりで v6 とする方を選ぶ。判定の基準は `runs/pretrain-v6-results/v5-8k.json` で、8k 版の評価の記録に llm-jp-eval の記録を `llm_jp_eval` として足したもの。会話形式の点は `as_conversation` に足す。答えの偏りの内訳は `runs/pretrain-v6-control/analysis/` のスクリプトで出す。
 4. 結果を `results.md` に書き、合格の線と比べる。差がつかない課題があれば、他の人が提供している簡単なテストを足す。
 5. 2026-11-15 より前に、見直し期限の記述を再考し、期限を延ばす。
