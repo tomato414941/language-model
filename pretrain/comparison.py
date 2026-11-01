@@ -181,6 +181,10 @@ def pass_line(base, other):
             tasks[name] = {"base": old, "other": new, "difference": new - old, "fall_limit": TASK_ERRORS * math.sqrt(spread)}
             if new - old < -tasks[name]["fall_limit"]:
                 dropped.append(name)
+        not_compared = sorted((set(first[language]) | set(second[language])) - set(names))
+        if not names:
+            languages[language] = {"rose": False, "dropped": [], "not_compared": not_compared, "tasks": {}}
+            continue
         mean = lambda kept, side: statistics.fmean(tasks[name][side] for name in kept)
         difference = mean(names, "other") - mean(names, "base")
         kept = [name for name in names if name not in FORM_TASKS.get(language, ())]
@@ -188,11 +192,11 @@ def pass_line(base, other):
             "base": mean(names, "base"),
             "other": mean(names, "other"),
             "difference": difference,
-            "difference_without_form_tasks": mean(kept, "other") - mean(kept, "base"),
+            "difference_without_form_tasks": mean(kept, "other") - mean(kept, "base") if kept else None,
             "readable": MEAN_ERRORS * math.sqrt(variance) / len(names),
             "rose": difference > MEAN_ERRORS * math.sqrt(variance) / len(names),
             "dropped": dropped,
-            "not_compared": sorted((set(first[language]) | set(second[language])) - set(names)),
+            "not_compared": not_compared,
             "tasks": tasks,
         }
     return {
