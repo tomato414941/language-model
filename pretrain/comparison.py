@@ -106,41 +106,51 @@ def compare_benchmarks(base, other):
     return comparison
 
 
-def llm_jp_scores(result):
-    """Each llm-jp-eval task's score and questions.
+def llm_jp_scores(evaluation):
+    """Each llm-jp-eval task's score, questions and form.
 
-    M-IFEval-Ja reads its authors' scoring code when it has been run on the
-    saved replies, or else the tool's score of the whole reply, or else its default.
+    KUCI and JMMLU read the conversation format when it was asked. M-IFEval-Ja,
+    always asked that way, reads its authors' scoring code when it has been run
+    on the saved replies, or else the tool's score of the whole reply, or else
+    its default.
     """
-    evaluation = result.get("llm_jp_eval")
-    if not evaluation:
-        return {}
-    scores = evaluation["evaluation"]["scores"]
+    read = {}
+    for source, form in ((evaluation, "text"), (evaluation.get("as_conversation"), "conversation")):
+        if not source:
+            continue
+        scores = source["evaluation"]["scores"]
+        questions = Counter(record["target_dataset"] for record in source["records"])
+        for name in ("kuci", "jmmlu"):
+            if f"{name}_exact_match" in scores:
+                read[name] = (scores[f"{name}_exact_match"], questions[name], form)
     questions = Counter(record["target_dataset"] for record in evaluation["records"])
-    read = {
-        name: (scores[f"{name}_exact_match"], questions[name])
-        for name in ("kuci", "jmmlu")
-        if f"{name}_exact_match" in scores
-    }
-    for source in (evaluation.get("official_scores"), evaluation.get("whole_reply_scores"), scores):
+    for source in (evaluation.get("official_scores"), evaluation.get("whole_reply_scores"), evaluation["evaluation"]["scores"]):
         if source and "mif_eval_ja_mifeval_strict" in source:
-            read["mif_eval_ja"] = (source["mif_eval_ja_mifeval_strict"], questions["mif_eval_ja"])
+            read["mif_eval_ja"] = (source["mif_eval_ja_mifeval_strict"], questions["mif_eval_ja"], "conversation")
             break
     return read
 
 
 def generation_scores(result):
-    """The score and questions of each task the pass line reads, by language."""
-    read = {"ja": dict(llm_jp_scores(result)), "en": {}}
-    for language, tasks in result["by_language"].items():
-        for name, row in tasks.items():
-            if name in STANDARD_TASKS:
-                questions = sum(result["n-samples"][task]["effective"] for task in members(result, name))
-                read[language][name] = (row["accuracy"], questions)
+    """The score, questions and form of each task the pass line reads, by language.
+
+    A task asked in the conversation format as well reads that form; the rest
+    read the form they were asked in.
+    """
+    read = {"ja": dict(llm_jp_scores(result["llm_jp_eval"])) if result.get("llm_jp_eval") else {}, "en": {}}
+    for source, form in ((result, "text"), (result.get("as_conversation"), "conversation")):
+        if not source:
+            continue
+        for language, tasks in source["by_language"].items():
+            for name, row in tasks.items():
+                if name in STANDARD_TASKS:
+                    questions = sum(source["n-samples"][task]["effective"] for task in members(source, name))
+                    read[language][name] = (row["accuracy"], questions, form)
     if "ifeval" in result["results"]:
         read["en"]["ifeval"] = (
             result["results"]["ifeval"]["prompt_level_strict_acc,none"],
             result["n-samples"]["ifeval"]["effective"],
+            "conversation",
         )
     return read
 
@@ -153,15 +163,19 @@ def score_error(score, questions):
 def pass_line(base, other):
     """Whether other passes docs/evaluation.md's pass line on scores against base.
 
-    Only tasks both evaluations read count; the rest are listed.
+    Only tasks both evaluations read in the same form count. The rest are listed,
+    and leave the line unmet: the comparison is then incomplete.
     """
     first, second = generation_scores(base), generation_scores(other)
     languages = {}
     for language in first:
-        names = [name for name in first[language] if name in second[language]]
+        names = [
+            name for name in first[language]
+            if name in second[language] and first[language][name][2] == second[language][name][2]
+        ]
         tasks, variance, dropped = {}, 0.0, []
         for name in names:
-            (old, old_questions), (new, new_questions) = first[language][name], second[language][name]
+            (old, old_questions, _), (new, new_questions, _) = first[language][name], second[language][name]
             spread = score_error(old, old_questions) ** 2 + score_error(new, new_questions) ** 2
             variance += spread
             tasks[name] = {"base": old, "other": new, "difference": new - old, "fall_limit": TASK_ERRORS * math.sqrt(spread)}
@@ -178,10 +192,10 @@ def pass_line(base, other):
             "readable": MEAN_ERRORS * math.sqrt(variance) / len(names),
             "rose": difference > MEAN_ERRORS * math.sqrt(variance) / len(names),
             "dropped": dropped,
-            "only_one_read": sorted(set(first[language]) ^ set(second[language])),
+            "not_compared": sorted((set(first[language]) | set(second[language])) - set(names)),
             "tasks": tasks,
         }
     return {
-        "passed": all(read["rose"] and not read["dropped"] for read in languages.values()),
+        "passed": all(read["rose"] and not read["dropped"] and not read["not_compared"] for read in languages.values()),
         "languages": languages,
     }

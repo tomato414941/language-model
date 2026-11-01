@@ -1271,6 +1271,34 @@ class BenchmarkTests(unittest.TestCase):
         self.assertAlmostEqual(read["difference"], 0.25 / 4)
         self.assertAlmostEqual(read["difference_without_form_tasks"], 0.0)
 
+    def test_合格の線は会話形式でも問うた課題を会話形式どうしで比べる(self):
+        """Reads the conversation format where it was asked, and never compares two forms."""
+
+        def evaluation(plain, conversation=None):
+            result = {
+                "by_language": {"en": {"hellaswag": {"accuracy": plain}, "blimp": {"accuracy": plain}}, "ja": {}},
+                "n-samples": {"hellaswag": {"effective": 10000}, "blimp": {"effective": 10000}},
+                "group_subtasks": {},
+                "results": {},
+            }
+            if conversation is not None:
+                result["as_conversation"] = {
+                    "by_language": {"en": {"hellaswag": {"accuracy": conversation}}},
+                    "n-samples": {"hellaswag": {"effective": 10000}},
+                    "group_subtasks": {},
+                }
+            return result
+
+        result = pass_line(evaluation(0.3, 0.2), evaluation(0.1, 0.5))["languages"]["en"]
+        self.assertEqual(result["tasks"]["hellaswag"]["base"], 0.2)
+        self.assertEqual(result["tasks"]["hellaswag"]["other"], 0.5)
+        # BLiMP has no question to ask in a conversation, so it stays plain text.
+        self.assertEqual(result["tasks"]["blimp"]["other"], 0.1)
+        # A base asked only as plain text is not compared with a conversation.
+        unmatched = pass_line(evaluation(0.1), evaluation(0.1, 0.9))
+        self.assertEqual(unmatched["languages"]["en"]["not_compared"], ["hellaswag"])
+        self.assertFalse(unmatched["passed"])
+
     def test_文章の最後の語を当てる課題では最後の語を正解として測る(self):
         """Measures the passage's last word, as the task's continuation."""
         result, bits = self.evaluate_skewed(["lambada_openai"])

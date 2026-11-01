@@ -14,3 +14,5 @@ llm-jp-eval の JMMLU は例なしで1トークンだけ答えさせる（[自�
 文章の単語の確率を比べる BLiMP と LAMBADA には問いがないので、会話形式では問わない。
 
 問いの形で点は大きく動く。[例なしの問いでは、指示学習で GSM8K が下がる](../sources/instruction-tuned-vs-base.md)という比較があり、[採点方法を変えるとモデルの順位が変わる](../sources/multiple-choice-scoring.md)という比較もある。
+
+v6 の合格の線は、この使い分けに合わせて、指示学習の後のモデルを会話形式で比べる。
