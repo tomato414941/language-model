@@ -334,6 +334,12 @@ def main(argv=None):
     )
     comparison.add_argument("--base", type=Path, required=True, help="比べる元の結果")
     comparison.add_argument("--other", type=Path, required=True, help="比べる先の結果")
+    passing = commands.add_parser(
+        "pass-line",
+        help="前の世代と比べて、点が合格の線を超えるかを判定する",
+    )
+    passing.add_argument("--base", type=Path, required=True, help="前の世代の評価の結果")
+    passing.add_argument("--other", type=Path, required=True, help="新しい世代の評価の結果")
     for command in (evaluation, generation, benchmark):
         command.add_argument(
             "--checkpoint", type=Path, default=Path("runs/bilingual/last.pt")
@@ -517,6 +523,14 @@ def main(argv=None):
             from .comparison import compare_benchmarks
 
             result = compare_benchmarks(
+                json.loads(args.base.read_text(encoding="utf-8")),
+                json.loads(args.other.read_text(encoding="utf-8")),
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "pass-line":
+            from .comparison import pass_line
+
+            result = pass_line(
                 json.loads(args.base.read_text(encoding="utf-8")),
                 json.loads(args.other.read_text(encoding="utf-8")),
             )

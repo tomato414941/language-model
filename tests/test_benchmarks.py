@@ -32,7 +32,7 @@ from pretrain.benchmarks import (
     load_benchmarks,
     source_url,
 )
-from pretrain.comparison import compare_benchmarks
+from pretrain.comparison import compare_benchmarks, pass_line
 from pretrain.conversation import TURN_START, chat_prompt
 from pretrain.data import file_digest, prepare_data
 from pretrain.evaluation import (
@@ -1229,6 +1229,47 @@ class BenchmarkTests(unittest.TestCase):
             comparison["ja"]["ja_leaderboard_xwinograd"], {"not_compared": "only one of the evaluations asked it"}
         )
         self.assertEqual(comparison["en"]["sciq"]["questions"], 1)
+
+    def test_合格の線は両方の言語の平均の上昇と課題の低下で判定する(self):
+        """Passes only when both languages' means rise past the noise and no task falls past its limit."""
+
+        def evaluation(hellaswag, jsquad, kuci, whole=0.2, default=0.1):
+            return {
+                "by_language": {
+                    "en": {"hellaswag": {"accuracy": hellaswag}, "kuci": {"accuracy": 0.9}},
+                    "ja": {"ja_leaderboard_jsquad": {"accuracy": jsquad}},
+                },
+                "n-samples": {"hellaswag": {"effective": 10000}, "ja_leaderboard_jsquad": {"effective": 10000}, "ifeval": {"effective": 1000}},
+                "group_subtasks": {},
+                "results": {"ifeval": {"prompt_level_strict_acc,none": hellaswag}},
+                "llm_jp_eval": {
+                    "evaluation": {"scores": {"kuci_exact_match": kuci, "jmmlu_exact_match": 0.0, "mif_eval_ja_mifeval_strict": default}},
+                    "whole_reply_scores": {"mif_eval_ja_mifeval_strict": whole},
+                    "records": [{"target_dataset": "kuci"}] * 10000 + [{"target_dataset": "jmmlu"}] * 10000 + [{"target_dataset": "mif_eval_ja"}] * 1000,
+                },
+            }
+
+        base = evaluation(0.3, 0.3, 0.3)
+        result = pass_line(base, evaluation(0.4, 0.4, 0.4))
+        self.assertTrue(result["passed"])
+        japanese = result["languages"]["ja"]
+        # The self-defined task the harness no longer holds does not count; the whole reply does.
+        self.assertEqual(set(japanese["tasks"]), {"ja_leaderboard_jsquad", "kuci", "jmmlu", "mif_eval_ja"})
+        self.assertEqual(japanese["tasks"]["mif_eval_ja"]["base"], 0.2)
+        self.assertNotIn("kuci", result["languages"]["en"]["tasks"])
+        # Both means rise too little to read.
+        self.assertFalse(pass_line(base, evaluation(0.301, 0.301, 0.301))["passed"])
+        # A mean rises but one task falls past its limit.
+        fallen = pass_line(base, evaluation(0.5, 0.5, 0.2))
+        self.assertEqual(fallen["languages"]["ja"]["dropped"], ["kuci"])
+        self.assertTrue(fallen["languages"]["ja"]["rose"])
+        self.assertFalse(fallen["passed"])
+        # The mean without the task whose form alone can raise it.
+        formed = evaluation(0.3, 0.3, 0.3)
+        formed["llm_jp_eval"]["evaluation"]["scores"]["jmmlu_exact_match"] = 0.25
+        read = pass_line(base, formed)["languages"]["ja"]
+        self.assertAlmostEqual(read["difference"], 0.25 / 4)
+        self.assertAlmostEqual(read["difference_without_form_tasks"], 0.0)
 
     def test_文章の最後の語を当てる課題では最後の語を正解として測る(self):
         """Measures the passage's last word, as the task's continuation."""

@@ -9,8 +9,19 @@ a smaller difference stands out from the noise.
 
 import math
 import statistics
+from collections import Counter
 
-from .evaluation import result_keys, task_reading
+from .evaluation import STANDARD_TASKS, result_keys, task_reading
+
+# docs/evaluation.md's pass line, in standard errors of the difference between
+# two separately trained models. A language's mean must rise by more than the
+# first. With about twenty tasks, the second keeps a task from falling past it
+# by chance alone; at two, one of them would about four times in ten.
+MEAN_ERRORS = 2
+TASK_ERRORS = 3
+# Answering in the asked form alone raises this task's score, so a language's
+# mean is also shown without it.
+FORM_TASKS = {"ja": ("jmmlu",)}
 
 
 def members(result, name):
@@ -93,3 +104,84 @@ def compare_benchmarks(base, other):
             read = {"not_compared": "only one of the evaluations asked it"}
         comparison.setdefault(language, {})[name] = read
     return comparison
+
+
+def llm_jp_scores(result):
+    """Each llm-jp-eval task's score and questions.
+
+    M-IFEval-Ja reads its authors' scoring code when it has been run on the
+    saved replies, or else the tool's score of the whole reply, or else its default.
+    """
+    evaluation = result.get("llm_jp_eval")
+    if not evaluation:
+        return {}
+    scores = evaluation["evaluation"]["scores"]
+    questions = Counter(record["target_dataset"] for record in evaluation["records"])
+    read = {
+        name: (scores[f"{name}_exact_match"], questions[name])
+        for name in ("kuci", "jmmlu")
+        if f"{name}_exact_match" in scores
+    }
+    for source in (evaluation.get("official_scores"), evaluation.get("whole_reply_scores"), scores):
+        if source and "mif_eval_ja_mifeval_strict" in source:
+            read["mif_eval_ja"] = (source["mif_eval_ja_mifeval_strict"], questions["mif_eval_ja"])
+            break
+    return read
+
+
+def generation_scores(result):
+    """The score and questions of each task the pass line reads, by language."""
+    read = {"ja": dict(llm_jp_scores(result)), "en": {}}
+    for language, tasks in result["by_language"].items():
+        for name, row in tasks.items():
+            if name in STANDARD_TASKS:
+                questions = sum(result["n-samples"][task]["effective"] for task in members(result, name))
+                read[language][name] = (row["accuracy"], questions)
+    if "ifeval" in result["results"]:
+        read["en"]["ifeval"] = (
+            result["results"]["ifeval"]["prompt_level_strict_acc,none"],
+            result["n-samples"]["ifeval"]["effective"],
+        )
+    return read
+
+
+def score_error(score, questions):
+    """A score's standard error, which a score of zero or one still has."""
+    return math.sqrt(max(score * (1 - score), 1 / questions) / questions)
+
+
+def pass_line(base, other):
+    """Whether other passes docs/evaluation.md's pass line on scores against base.
+
+    Only tasks both evaluations read count; the rest are listed.
+    """
+    first, second = generation_scores(base), generation_scores(other)
+    languages = {}
+    for language in first:
+        names = [name for name in first[language] if name in second[language]]
+        tasks, variance, dropped = {}, 0.0, []
+        for name in names:
+            (old, old_questions), (new, new_questions) = first[language][name], second[language][name]
+            spread = score_error(old, old_questions) ** 2 + score_error(new, new_questions) ** 2
+            variance += spread
+            tasks[name] = {"base": old, "other": new, "difference": new - old, "fall_limit": TASK_ERRORS * math.sqrt(spread)}
+            if new - old < -tasks[name]["fall_limit"]:
+                dropped.append(name)
+        mean = lambda kept, side: statistics.fmean(tasks[name][side] for name in kept)
+        difference = mean(names, "other") - mean(names, "base")
+        kept = [name for name in names if name not in FORM_TASKS.get(language, ())]
+        languages[language] = {
+            "base": mean(names, "base"),
+            "other": mean(names, "other"),
+            "difference": difference,
+            "difference_without_form_tasks": mean(kept, "other") - mean(kept, "base"),
+            "readable": MEAN_ERRORS * math.sqrt(variance) / len(names),
+            "rose": difference > MEAN_ERRORS * math.sqrt(variance) / len(names),
+            "dropped": dropped,
+            "only_one_read": sorted(set(first[language]) ^ set(second[language])),
+            "tasks": tasks,
+        }
+    return {
+        "passed": all(read["rose"] and not read["dropped"] for read in languages.values()),
+        "languages": languages,
+    }
