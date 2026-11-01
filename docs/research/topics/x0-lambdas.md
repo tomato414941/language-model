@@ -1,6 +1,6 @@
 # x0 lambdas
 
-各層の前で、最初の層に入った値を、層ごとに学習する割合で流れに混ぜ直す。nanochat の x0 は正規化した埋め込み。[nanochat の LOG](../sources/nanochat-log.md)（2026-01-11）の時点では0から始めていたが、今の nanochat のコードは、浅い層ほど大きな値から始める。
+各層の前で、最初の層に入った値を、層ごとに学習する割合で流れに混ぜ直す。nanochat の x0 は正規化した埋め込み。[nanochat の LOG](../sources/nanochat-log.md)（2026-01-11）の時点では0から始めていたが、2026-10-31 に読んだ nanochat のコードは、浅い層ほど大きな値から始める。
 
 - Marin の [nano_arch_ablations](../sources/marin-nano-arch-ablations.md)：resid lambdas の後に足して 1.3123 → 1.3112。
 - nanochat の LOG（2026-01-11）：どの深さでも下がった（d8 で −0.0103、d20 で −0.0039）。
