@@ -62,6 +62,8 @@ STANDARD_TASKS = {
     # Knowledge, reasoning, mathematics, programming and reading, which a
     # general model needs in both languages.
     "mmlu_continuation": ("en", "acc_norm"),
+    # MMLU as its authors ask it: a letter, after examples from the subject.
+    "mmlu": ("en", "acc"),
     "arc_challenge": ("en", "acc_norm"),
     "gsm8k": ("en", "exact_match,strict-match"),
     "ja_leaderboard_mgsm": ("ja", "acc"),
@@ -70,6 +72,9 @@ STANDARD_TASKS = {
     "ja_leaderboard_jsquad": ("ja", "exact_match,whitespaces"),
 }
 DEFAULT_TASKS = tuple(STANDARD_TASKS)
+# The examples a task's authors give each question, which the harness leaves to
+# its caller.
+AUTHORS_EXAMPLES = {"mmlu": 5}
 # The continuation that answers each generation task's question correctly,
 # from its reference answer. MGSM publishes no reference solutions for its
 # test questions.
@@ -567,6 +572,10 @@ def run_benchmarks(backend, tasks=None, limit=None, conversation_tasks=CONVERSAT
         name: loaded["groups"][name] if name in loaded["groups"] else loaded["tasks"][name]
         for name in selected
     }
+    for name, count in AUTHORS_EXAMPLES.items():
+        if name in chosen:
+            for task in chosen[name].get_all_tasks():
+                task.set_config(key="num_fewshot", value=count)
     result, items = None, {}
     for conversation in (False, True):
         group = [

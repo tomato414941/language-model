@@ -408,7 +408,7 @@ def benchmark_dataset(path, name=None, **kwargs):
 
     if path == "cais/mmlu":
         rows = Dataset.from_list(ROWS["mmlu"])
-        return DatasetDict(test=rows, validation=rows, dev=rows)
+        return DatasetDict(test=rows, validation=rows, dev=examples(ROWS["mmlu"]))
     if path in ("openai/gsm8k", "juletxara/mgsm"):
         rows = ROWS["gsm8k" if path == "openai/gsm8k" else "mgsm_ja"]
         return DatasetDict(train=examples(rows), test=Dataset.from_list(rows))
@@ -831,14 +831,16 @@ class BenchmarkTests(unittest.TestCase):
             ("ja_leaderboard_jsquad", 2),
             ("humaneval", 0),
             ("arc_challenge", 0),
+            ("mmlu_abstract_algebra", 5),
         ):
             self.assertEqual(result["n-shot"][name], shots)
         self.assertEqual(configs["ja_leaderboard_jsquad"]["validation_split"], "validation")
         for name in ("gsm8k", "ja_leaderboard_mgsm", "mbpp", "humaneval"):
             self.assertEqual(configs[name]["test_split"], "test")
-        # MMLU's questions come from the test split of each of its 57 subjects.
+        # MMLU's questions come from the test split of each of its 57 subjects,
+        # asked in both forms.
         subjects = [name for name in configs if name.startswith("mmlu_")]
-        self.assertEqual(len(subjects), 57)
+        self.assertEqual(len(subjects), 2 * 57)
         self.assertTrue(all(configs[name]["test_split"] == "test" for name in subjects))
         for name in DEFAULT_TASKS:
             self.assertIn(result_keys(STANDARD_TASKS[name][1])[0], result["results"][name])
@@ -846,7 +848,7 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(
             {name: float(result["versions"][name]) for name in DEFAULT_TASKS},
             {
-                name: {"blimp": 2.0, "mmlu_continuation": 2.0, "gsm8k": 3.0}.get(name, 1.0)
+                name: {"blimp": 2.0, "mmlu": 2.0, "mmlu_continuation": 2.0, "gsm8k": 3.0}.get(name, 1.0)
                 for name in DEFAULT_TASKS
             },
         )
