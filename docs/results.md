@@ -38,6 +38,8 @@ v6 の見込みと試しの費用は `plan.md` にある。
 | 日本語 | JHumanEval | pass@1 | .061 | .079 |
 | 日本語 | MGSM | acc | .000 | .000 |
 
+KUCI（確率）と JMMLU（確率）は自前の定義で、JHumanEval は llm-jp-eval で問えないので、v6 では測らない。
+
 ## v5 の llm-jp-eval の点
 
 v2.1.5 で全問を問うた、指示学習の後のモデルの点。同じ重みを2回評価した。
