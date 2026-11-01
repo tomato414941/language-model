@@ -58,10 +58,11 @@ document_start = 0
 
 [training]
 # 128 windows of 8,192 tokens per update: 1,048,576 tokens; these 2,667 updates
-# read 2.80B tokens, after the 5.59B of the patches, for 8.39B in all.
+# read 2.80B tokens, after the 5.59B of the patches, for 8.39B in all. A 24GB
+# GPU is estimated to hold one window's gradients at a time.
 steps = 2667
-batch_size = 4
-accumulation_steps = 32
+batch_size = 1
+accumulation_steps = 128
 learning_rate = 0.0032
 min_learning_rate = 0.000032
 warmup_steps = 60
@@ -70,7 +71,7 @@ weight_decay = 0.28
 gradient_clip = 1.0
 eval_every = 200
 save_every = 25
-eval_batches = 16
+eval_batches = 64
 log_every = 5
 seed = 42
 schedule = "wsd"

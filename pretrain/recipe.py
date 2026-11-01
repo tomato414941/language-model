@@ -1972,7 +1972,7 @@ def write_sft_config(recipe_path, data, tokenizer_directory, output):
         warmup_steps=min(steps - 1, max(1, steps // 20)),
         eval_every=max(1, steps // 10),
         save_every=max(1, steps // 10),
-        eval_batches=16,
+        eval_batches=sft.get("eval_batches", 16),
         log_every=max(1, steps // 100),
         seed=recipe["seed"],
         # The recipe may tune with pretraining's optimizer, and read every

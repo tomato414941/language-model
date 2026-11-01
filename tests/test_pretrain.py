@@ -913,6 +913,18 @@ class PretrainingTests(unittest.TestCase):
         for name, parameter in first["model"].items():
             torch.testing.assert_close(parameter, second["model"][name], rtol=0, atol=0)
 
+    def test_窓を1つずつ読んでも1回の更新で学ぶ内容は同じになる(self):
+        self.run_training("together", self.wsd_config(steps=4))
+        self.run_training(
+            "one-at-a-time", self.wsd_config(steps=4, batch_size=1, accumulation_steps=8)
+        )
+        together, apart = (
+            load_checkpoint(self.root / name / "last.pt")
+            for name in ("together", "one-at-a-time")
+        )
+        for name, parameter in together["model"].items():
+            torch.testing.assert_close(parameter, apart["model"][name], rtol=1e-4, atol=1e-5)
+
     def test_同じデータで学習を続けると前の学習が読み終えたところから読む(self):
         """Continuing on the saved run's data reads on from where it stopped, as one run would."""
         self.run_training("continuous", self.wsd_config())
