@@ -14,6 +14,9 @@ training_config = "model-v6.toml"
 patch_config = "model-v6-patch.toml"
 sources = "sources.toml"
 seed = 42
+# Every stage of training compiles: uncompiled, one window's gradients ran an RTX
+# 4090 out of memory at 22.3GiB; compiled, they took 17.4GiB.
+compile = true
 
 [tokenizer]
 vocabulary_size = 32768

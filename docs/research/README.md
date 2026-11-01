@@ -187,6 +187,7 @@
 - [choice-answers.md](experiments/choice-answers.md)
 - [source-number-check.md](experiments/source-number-check.md)
 - [tokens-per-character.md](experiments/tokens-per-character.md)
+- [v6-throughput.md](experiments/v6-throughput.md)
 
 ## 調べていないこと
 

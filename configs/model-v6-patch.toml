@@ -21,8 +21,8 @@ document_start = 0
 [training]
 # 32 windows of 32,768 tokens (8,192 patches) per update: 1,048,576 tokens, as
 # in the rest of training, at a quarter of the computation. 5,333 updates read
-# 5.59B tokens, two thirds of the 8.39B. A 24GB GPU is estimated to hold one
-# window's gradients at a time.
+# 5.59B tokens, two thirds of the 8.39B. An RTX 4090 holds one window's gradients
+# at a time, at 18.4GiB.
 steps = 5333
 batch_size = 1
 accumulation_steps = 32
@@ -45,4 +45,3 @@ decay_shape = "1-sqrt"
 sampling = "sequential"
 optimizer = "normuon"
 weight_decay_schedule = "cosine"
-fp8 = true

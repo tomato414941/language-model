@@ -470,6 +470,7 @@ def run_paths(recipe_path, recipe):
 TRAINING_SETTINGS = (
     "training_config",
     "patch_config",
+    "compile",
     "evaluation",
     "sft",
     "initialize_from",
@@ -550,7 +551,9 @@ def inspect_recipe(path, workdir):
         ],
     ]
 
-    def train_command(name, settings=config, fp8=training.fp8):
+    compiled = ["--compile"] if recipe.get("compile") else []
+
+    def train_command(name, settings=config):
         command = [
             "python",
             "-m",
@@ -566,7 +569,7 @@ def inspect_recipe(path, workdir):
             "cuda",
             "--precision",
             "bfloat16",
-            *(["--compile"] if fp8 else []),
+            *compiled,
         ]
         return command
 
@@ -601,7 +604,7 @@ def inspect_recipe(path, workdir):
     if patches:
         patch_path = Path(path).parent / recipe["patch_config"]
         commands.append(
-            train_command(patches[0]["name"], str(patch_path), read_config(patch_path)[1].fp8)
+            train_command(patches[0]["name"], str(patch_path))
         )
         patch_run = runs[patches[0]["name"]]
     if phases:
@@ -734,6 +737,7 @@ def inspect_recipe(path, workdir):
                 "cuda",
                 "--precision",
                 "bfloat16",
+                *compiled,
             ],
             benchmark_command(
                 instruction_output / "last.pt",

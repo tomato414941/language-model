@@ -316,11 +316,14 @@ class RecipeTests(unittest.TestCase):
             "runs/pretrain-1b/last.pt",
         )
 
-    def test_FP8で学習する事前学習の手順はコンパイルして指示学習はしない(self):
+    def test_コンパイルする計画は指示学習を含むすべての学習をコンパイルする(self):
         plan = inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6")
         training = [command for command in plan["commands"] if command[3] == "train"]
-        self.assertTrue(plan["training"]["fp8"])
-        self.assertEqual(["--compile" in command for command in training], [True, True, True, False])
+        self.assertEqual(["--compile" in command for command in training], [True, True, True, True])
+
+    def test_コンパイルを指定しない計画はコンパイルしない(self):
+        plan = inspect_recipe(ROOT / "configs/pretrain-v5.toml", "data/pretrain-v5")
+        self.assertFalse(any("--compile" in command for command in plan["commands"]))
 
     def test_パッチで読む段階の重みから次の段階を始める(self):
         plan = inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6")
