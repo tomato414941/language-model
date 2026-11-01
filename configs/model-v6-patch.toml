@@ -35,7 +35,9 @@ warmup_steps = 120
 weight_decay = 0.28
 gradient_clip = 1.0
 eval_every = 200
-save_every = 25
+# Updates here take about seven seconds and a checkpoint holds 6.2GB, so one
+# every twelve minutes or so keeps saving from taking a share of the run.
+save_every = 100
 eval_batches = 64
 log_every = 5
 seed = 42
