@@ -23,6 +23,8 @@ v5 からの変更は3つ。
 - 減衰期の Cosmopedia を Nemotron の STEM の問いに替えた。
 - トークナイザが数字を1桁ずつに分ける。
 
+コーパスのファイルは出典ごとに並ぶ。学習は窓の順番をランダムにするので出典の順には読まないが、1つの窓の中はほぼ同じ出典になる（`research/experiments/v6-data-reading.md`）。
+
 ## v6 の指示学習
 
 `pretrain/instructions.py` に出典がある。日本語38.9万会話、英語12.9万会話。v5 からの変更は、KUCI、JCommonsenseQA、JAQKET の学習用の問題を、選択肢の記号だけで答える形で足したこと。答えのトークンは日本語の学習対象の約0.3%。
