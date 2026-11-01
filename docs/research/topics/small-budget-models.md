@@ -7,6 +7,9 @@ v6 は 520M、8.4B トークン（パラメータあたり16トークン）、�
 | [HobbyLM-500M](../sources/hobbylm.md) | 501M（活性 169M） | 40B | 8×H100 で約13時間 | モデルの一族で数百〜数千ドル |
 | [IMU-1](../sources/imu-1.md) | 430M | 72B | 8×H200 で37時間未満 | |
 | [Puro-2B](../sources/puro-2b.md) | 2B | 最大 1.4T | RTX 5090 | $4.4K、$6.9K |
+| [Arkios](../sources/arkios.md) | 1.04B | 150B | 8×H100 で約79時間 | 約$2,500 |
+| [Agaram](../sources/agaram.md) | 2.53B | 50B | 8×H100 で約6日 | 約$4,765 |
+| [Metis-1.6](../sources/metis-1-6.md) | 2.94B、10.23B | 1.02T | | |
 
 v6 より数倍以上多く読んでいて、同じ費用の比較はできない。HobbyLM は順位がパラメータ数よりトークン数に沿うとしている。
 

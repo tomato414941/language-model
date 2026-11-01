@@ -7,3 +7,7 @@
 - [nanochat の LOG](../sources/nanochat-log.md)（2026-03-24）には、EMA と SWA は試して効かなかったとある。
 - [LAWA](../sources/lawa.md)（arXiv 2306.03241）は、OpenWebText で 125M の検証損失が 2.963 → 2.917（EMA 2.949、SWA 2.952）、355M で 2.855 → 2.819 になった。学習率が高いほど、残す間隔が広いほど効く、としている。
 - [Signal and Noise](../sources/signal-and-noise.md) は、途中のチェックポイントの出力を平均すると評価の雑音が減り、判断の信頼性が上がるとしている。重みの平均ではなく出力の平均の話。
+
+[Terminal Shrinkage Averaging](../sources/terminal-shrinkage-averaging.md) は、最後の8個（学習の約7.5%）の平均をそのまま使うと最後の重みより悪く、最後の重みと係数 0.40〜0.55 で混ぜると良いとした。下限の学習率を上げるほど混ぜる効果が増える。
+
+v6 は減衰の間に160更新おきに残した10個を一様に平均する（`average_snapshots`）。期間は減衰の全体で学習率の高い時期を含むので、この研究の条件より不利な可能性がある。10個の重みは R2 に残るので、混ぜた重みの評価は学習なしでできる。
