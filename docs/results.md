@@ -30,15 +30,10 @@ v6 の見込みと試しの費用は `plan.md` にある。
 | 英語 | MBPP | pass@1 | .012 | .028 |
 | 英語 | IFEval | strict | - | .209 |
 | 日本語 | JCommonsenseQA | acc | .373 | .336 |
-| 日本語 | KUCI（確率） | acc_norm | .425 | .417 |
 | 日本語 | xWinograd | acc | .557 | .553 |
 | 日本語 | JNLI | acc | .505 | .322 |
-| 日本語 | JMMLU（確率） | acc_norm | .287 | .290 |
 | 日本語 | JSQuAD | exact match | .161 | .232 |
-| 日本語 | JHumanEval | pass@1 | .061 | .079 |
 | 日本語 | MGSM | acc | .000 | .000 |
-
-KUCI（確率）と JMMLU（確率）は自前の定義で、JHumanEval は llm-jp-eval で問えないので、v6 では測らない。
 
 ## v5 の llm-jp-eval の点
 
