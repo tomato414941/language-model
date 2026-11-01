@@ -2,6 +2,8 @@
 
 HuggingFaceFW/finephrase（ODC-By）。FineWeb-Edu の文書を [SmolLM2](../sources/smollm2.md)-1.7B-Instruct で、表、数学の問題、FAQ、チュートリアルの4つの形に書き直したもの。13.5億件、4860億トークン。英語だけ。性能は [sources/finephrase.md](../sources/finephrase.md) にある。
 
+[書き直しのスケーリング則](../sources/rewriting-scaling-laws.md)は、書き直す費用も計算に入れて、FineWeb-Edu に混ぜる最適な割合を Paloma で 3×10¹⁸ FLOPs に10%未満、10²² FLOPs に32%とした。数学とコードではもっと高い。v6 は全体の15%（英語の Web の半分）で、6ND で数えて 2.6×10¹⁹ FLOPs（パッチ段階の節約は入れない）。書き直しは公開データなので v6 は作る費用を払っていない。
+
 形ごとに `table/`、`math/`、`faq/`、`tutorial/` のフォルダがあり、それぞれ parquet が千個以上ある。書き直した文章は `rollout_results` の最初の要素の `text` にあり、`text` の列は元の文書。1ファイルは約270MB で、大半は元の文書と書き直しの文章。
 
 2026-10-31 に、形ごとに1ファイルの1,000行を読んだ結果：
