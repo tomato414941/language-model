@@ -26,6 +26,9 @@
 
 操作の一式は `runs/pretrain-v6-control/` にあり、git には入っていない。転送の URL を含むファイルは表示しない。
 
+公開する点を決めるコードは `pretrain/` に入れる。操作の一式は機械の借り方と転送の手順で、点を変えず、接続の ID、アカウント ID、鍵の場所を直書きしているので git に入れない。次の世代でも同じ道具を使うと決め、これらの値を外に出せたら、1つにまとめて `scripts/` に入れるかを判断する。見直し期限：2026-11-15。
+
+
 - `vast_job.py status` は機械の状態と工程の記録を、`balance` は残高を出す。`ssh` は機械の中でコマンドを実行する。どれも Vast の鍵を環境変数で渡す。
 - `vast_job.py watch --seconds 300 --max-run 22 --keep-hours 4` が監視として動いている。結果が R2 にそろうと機械を消す。失敗か沈黙なら4時間残してから消す。host が死ぬと借り直し、新しい機械が R2 の記録から続ける。
 - 結果は R2 の `stages/pretrain-v6/20261101T053916Z/main/` に置かれる。`final/` が完成品、`logs/` が記録、`checkpoints/` が途中の重み。転送の URL の期限は 2026-11-08 の 12:12 UTC。
@@ -38,7 +41,7 @@
    - v5 の 8k 版の指示学習の後（重みは R2 の `stages/instructions-v5/20261028T182342Z/main/final/instructions/last.pt`）を、v6 の指示学習の後と同じコマンドに MMLU の作者の形式を足して測る。
    - v6 の2本を MMLU の作者の形式で測る。
    - 外のモデルと並べるために、v5 の 8k 版の事前学習の後（重みは R2 の `stages/pretrain-v5/20261025T152135Z/main/final/decay/last.pt`）と v6 の事前学習の後（SFT の出発点の `last.pt`）を、`--tasks openbookqa winogrande boolq` で測る。
-   - 3つのモデルの M-IFEval-Ja の返答を、公式の採点コードで採点する。
+   - 3つのモデルの M-IFEval-Ja の返答を、公式の採点コードで採点する（`python -m pretrain score-m-ifeval`）。
 3. 両方の `fetch_results.py` で結果を取り、`runs/measure-v6-control/merge_results.py` で判定の記録を `runs/measure-v6-results/judged/` に作る。`python -m pretrain pass-line` で比べ、`evaluation.md` の決まりで v6 とする方を選ぶ。答えの偏りの内訳は `runs/pretrain-v6-control/analysis/` のスクリプトで出す。
 4. 結果を `results.md` に書き、合格の線と比べる。差がつかない課題があれば、他の人が提供している簡単なテストを足す。
 5. 2026-11-15 より前に、見直し期限の記述を再考し、期限を延ばす。

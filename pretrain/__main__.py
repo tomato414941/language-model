@@ -340,6 +340,13 @@ def main(argv=None):
     )
     passing.add_argument("--base", type=Path, required=True, help="前の世代の評価の結果")
     passing.add_argument("--other", type=Path, required=True, help="新しい世代の評価の結果")
+    official = commands.add_parser(
+        "score-m-ifeval",
+        help="保存した M-IFEval-Ja の返答を、作者の採点コードで採点する",
+    )
+    official.add_argument("--output", type=Path, required=True, help="点を書き出す先")
+    official.add_argument("--work", type=Path, required=True, help="作者のコードと環境を置く場所")
+    official.add_argument("records", nargs="+", help="モデルの名前=評価の結果")
     for command in (evaluation, generation, benchmark):
         command.add_argument(
             "--checkpoint", type=Path, default=Path("runs/bilingual/last.pt")
@@ -535,6 +542,14 @@ def main(argv=None):
                 json.loads(args.other.read_text(encoding="utf-8")),
             )
             print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "score-m-ifeval":
+            from .m_ifeval import official_scores, require_repeated
+
+            result = official_scores(dict(item.split("=", 1) for item in args.records), args.work)
+            written = json.dumps(result, ensure_ascii=False, indent=2)
+            args.output.write_text(written + "\n", encoding="utf-8")
+            print(written)
+            require_repeated(result)
         elif args.command == "fetch-instructions":
             from .instructions import fetch_instructions
 
