@@ -37,11 +37,12 @@
 ## 次にやること
 
 1. 本番の各段階の切り替わりで、機械の中を確かめる。
-2. 本番の結果が R2 にそろったら、別の機械で測る。操作の一式は `runs/measure-v6-control/` にあり、git には入っていない。`prepare_snapshot.sh`、`runs/storage-control/r2.py` の下で `build_manifest.py`、`vast_job.py launch-cheapest --max-run 2` の順に動かし、機械の中を確かめてから `vast_job.py watch --relaunches 1` を動かす。測るのは次の4つで、2時間、約$0.9 の見込み（未実測）。`configs/pretrain-v6.toml` の課題には入れていない。
+2. 本番の結果が R2 にそろったら、別の機械で測る。操作の一式は `runs/measure-v6-control/` にあり、git には入っていない。`prepare_snapshot.sh`、`runs/storage-control/r2.py` の下で `build_manifest.py`、`vast_job.py launch-cheapest --max-run 2` の順に動かし、機械の中を確かめてから `vast_job.py watch --relaunches 1` を動かす。測るのは次の5つで、2時間、約$0.9 の見込み（未実測）。`configs/pretrain-v6.toml` の課題には入れていない。
    - v5 の 8k 版の指示学習の後（重みは R2 の `stages/instructions-v5/20261028T182342Z/main/final/instructions/last.pt`）を、v6 の指示学習の後と同じコマンドに MMLU の作者の形式を足して測る。
    - v6 の2本を MMLU の作者の形式で測る。
    - 外のモデルと並べるために、v5 の 8k 版の事前学習の後（重みは R2 の `stages/pretrain-v5/20261025T152135Z/main/final/decay/last.pt`）と v6 の事前学習の後（SFT の出発点の `last.pt`）を、`--tasks openbookqa winogrande boolq` で測る。
    - 3つのモデルの M-IFEval-Ja の返答を、公式の採点コードで採点する（`python -m pretrain score-m-ifeval`）。
+   - v6 の事前学習の後を検証データ全体で測り（`--every-window`）、v5 の日本語 .524、英語 .639 と比べる。同じ文書は6割ほどなので、小さな差は読めない。
 3. 両方の `fetch_results.py` で結果を取り、`runs/measure-v6-control/merge_results.py` で判定の記録を `runs/measure-v6-results/judged/` に作る。`python -m pretrain pass-line` で比べ、`evaluation.md` の決まりで v6 とする方を選ぶ。答えの偏りの内訳は `runs/pretrain-v6-control/analysis/` のスクリプトで出す。
 4. 結果を `results.md` に書き、合格の線と比べる。差がつかない課題があれば、他の人が提供している簡単なテストを足す。
 5. 2026-11-15 より前に、見直し期限の記述を再考し、期限を延ばす。
