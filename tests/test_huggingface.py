@@ -8,6 +8,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from pretrain.conversation import TURN_END, chat_prompt
+from pretrain.count import CountTable, history_keys
 from pretrain.data import BOS, EOS
 from pretrain.evaluation import evaluate_benchmarks, evaluate_hub_benchmarks
 from pretrain.huggingface import export_huggingface
@@ -15,12 +16,34 @@ from pretrain.model import LanguageModel, ModelConfig
 from tests.test_benchmarks import benchmark_dataset, byte_tokenizer
 
 # The checks run on a model without and with value embeddings and residual
-# scalars, and with a squared ReLU in place of SwiGLU.
+# scalars, with a squared ReLU in place of SwiGLU, and reading a count table.
 PARTS = (
     {},
     {"value_embeddings": True, "residual_scalars": True},
     {"feed_forward": "relu_squared"},
+    {"count_table": True},
 )
+
+
+def every_history_table(vocabulary, start):
+    """A count table with two random candidates for every history of one or two tokens.
+
+    Every position then finds rows, so a step that loses the tokens before it
+    reads other rows.
+    """
+    generator = torch.Generator().manual_seed(1)
+    tensors = {
+        "candidates_0": torch.tensor([70, 71], dtype=torch.int16),
+        "shares_0": torch.tensor([0.3, 0.2], dtype=torch.float16),
+    }
+    for length in (1, 2):
+        histories = torch.cartesian_prod(*[torch.arange(vocabulary)] * length).view(-1, length)
+        keys = history_keys(histories, length + 1)[-1][:, -1]
+        tensors[f"keys_{length}"] = keys.sort().values
+        tensors[f"candidates_{length}"] = torch.randint(vocabulary, (len(keys), 2), generator=generator).to(torch.int16)
+        tensors[f"shares_{length}"] = torch.rand(len(keys), 2, generator=generator).half()
+    manifest = {"version": 1, "orders": 3, "candidates": 2, "document_start": start, "vocabulary_size": vocabulary}
+    return CountTable(manifest, tensors)
 
 
 class HuggingFaceTest(unittest.TestCase):
@@ -39,7 +62,9 @@ class HuggingFaceTest(unittest.TestCase):
             **changes,
         )
         torch.manual_seed(0)
-        native = LanguageModel(self.tokenizer.get_vocab_size(), config).eval()
+        vocabulary = self.tokenizer.get_vocab_size()
+        table = every_history_table(vocabulary, self.bos) if config.count_table else None
+        native = LanguageModel(vocabulary, config, count_table=table).eval()
         # Away from their starting values, so that every weight shows in the outputs.
         with torch.no_grad():
             for parameter in native.parameters():
@@ -47,7 +72,8 @@ class HuggingFaceTest(unittest.TestCase):
         checkpoint = self.root / "last.pt"
         torch.save(
             {"version": 1, "model": native.state_dict(), "model_config": dataclasses.asdict(config),
-             "tokenizer": self.tokenizer.to_str(), "step": 3, "tokens_seen": 10},
+             "tokenizer": self.tokenizer.to_str(), "step": 3, "tokens_seen": 10,
+             "count_table": None if table is None else table.checkpoint()},
             checkpoint,
         )
         export_huggingface(checkpoint, self.root / "hf")

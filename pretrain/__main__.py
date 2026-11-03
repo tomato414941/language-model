@@ -188,6 +188,11 @@ def main(argv=None):
     )
     training.add_argument("--threads", type=int, default=4)
     training.add_argument(
+        "--count-table",
+        type=Path,
+        help="count-tableで作った表（表を読むモデルを最初から学習するとき）",
+    )
+    training.add_argument(
         "--compile",
         action="store_true",
         help="torch.compileで小さな演算をまとめて速くする（チェックポイントは同じ形）",
@@ -200,6 +205,22 @@ def main(argv=None):
     training.add_argument(
         "--hub-run-id", help="HFに保存する学習段階の名前（既定は出力ディレクトリ名）"
     )
+    counting = commands.add_parser(
+        "count-table",
+        help="準備したコーパスの学習用の文章でn-gramを数え、モデルが読む表を作る（COUNT）",
+    )
+    counting.add_argument("--data", type=Path, nargs="+", required=True, help="数えるコーパス")
+    counting.add_argument("--output", type=Path, required=True)
+    counting.add_argument("--orders", type=int, default=6, help="数えるn-gramの長さの上限")
+    counting.add_argument("--candidates", type=int, default=8, help="履歴ごとに残す続きの数")
+    counting.add_argument(
+        "--min-history", type=int, required=True, help="表に残す履歴が出てくる回数の下限"
+    )
+    counting.add_argument(
+        "--min-count", type=int, required=True, help="候補に残す続きが出てくる回数の下限"
+    )
+    counting.add_argument("--memory-gb", type=float, default=16, help="数えるときに使うメモリ")
+    counting.add_argument("--threads", type=int, default=os.cpu_count())
     throughput = commands.add_parser(
         "throughput", help="学習設定の更新を合成データで流し、GPUでの学習速度を測る"
     )
@@ -216,6 +237,7 @@ def main(argv=None):
         "--compile", action="store_true", help="torch.compileでまとめた計算で測る"
     )
     throughput.add_argument("--output", type=Path, help="結果を保存するJSONファイル")
+    throughput.add_argument("--count-table", type=Path, help="表を読むモデルが引く表")
     evaluation = commands.add_parser(
         "evaluate", help="保存したモデルの検証損失を言語ごとに測る"
     )
@@ -627,17 +649,39 @@ def main(argv=None):
 
             from .throughput import measure_training
 
+            from .count import CountTable
+
             with args.config.open("rb") as source:
                 settings = tomllib.load(source)
             result = measure_training(
-                settings, args.vocabulary_size, args.batches, args.compile
+                settings,
+                args.vocabulary_size,
+                args.batches,
+                args.compile,
+                count_table=None if args.count_table is None else CountTable.load(args.count_table),
             )
             text = json.dumps(result, indent=2)
             if args.output is not None:
                 args.output.parent.mkdir(parents=True, exist_ok=True)
                 args.output.write_text(text + "\n", encoding="utf-8")
             print(text)
+        elif args.command == "count-table":
+            from .count import build_table
+
+            result = build_table(
+                args.data,
+                args.output,
+                args.orders,
+                args.candidates,
+                args.min_history,
+                args.min_count,
+                args.memory_gb,
+                args.threads,
+            )
+            print(json.dumps(result, ensure_ascii=False))
         elif args.command == "train":
+            from .count import CountTable
+
             if args.threads <= 0:
                 raise ValueError("threads must be positive")
             torch.set_num_threads(args.threads)
@@ -670,6 +714,7 @@ def main(argv=None):
                     args.initialize_from,
                     args.continue_from,
                     args.compile,
+                    None if args.count_table is None else CountTable.load(args.count_table),
                 )
             finally:
                 for s, handler in previous.items():

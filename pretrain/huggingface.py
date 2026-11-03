@@ -14,7 +14,7 @@ from tokenizers import Tokenizer, processors
 from .conversation import MARKERS, THINK_END, THINK_START, TURN_END, TURN_START
 from .data import BOS, EOS
 from .model import ModelConfig
-from .training import load_checkpoint
+from .training import load_checkpoint, saved_count_table
 
 # The settings of pretrain.model that the Hugging Face model reproduces, with
 # the two that shape only training: multi-token prediction, which the export
@@ -24,7 +24,7 @@ from .training import load_checkpoint
 SUPPORTED = {
     "width", "heads", "layers", "context", "architecture", "kv_heads", "intermediate_size",
     "rope_theta", "qk_norm", "attention_gate", "document_start", "value_embeddings",
-    "residual_scalars", "prediction_depth", "zero_output_init", "feed_forward",
+    "residual_scalars", "prediction_depth", "zero_output_init", "feed_forward", "count_table",
 }
 CHAT_TEMPLATE = (
     "{%- for message in messages -%}"
@@ -36,11 +36,14 @@ CHAT_TEMPLATE = (
 )
 
 
-def native_config(config, tokenizer):
+def native_config(config, tokenizer, table=None):
+    """The Hugging Face configuration of a model, and of the count table it reads, if any."""
     from .hf.configuration_native import NativeConfig
 
     if config.architecture != "llama":
         raise ValueError("only rotary (llama) models have a Hugging Face form")
+    if config.count_table and table is None:
+        raise ValueError("the model reads a count table, which the checkpoint does not carry")
     unsupported = [
         field.name
         for field in dataclasses.fields(config)
@@ -67,6 +70,16 @@ def native_config(config, tokenizer):
         value_embeddings=config.value_embeddings,
         residual_scalars=config.residual_scalars,
         feed_forward=config.feed_forward,
+        count_table=None
+        if not config.count_table
+        else {
+            "orders": table.manifest["orders"],
+            "candidates": table.manifest["candidates"],
+            "rows": [len(table.tensors[f"keys_{length}"]) for length in range(1, table.manifest["orders"])],
+            "document_start": table.manifest["document_start"],
+            "candidates_dtype": str(table.tensors["candidates_0"].dtype).removeprefix("torch."),
+            "digest": table.digest,
+        },
         bos_token_id=tokenizer.token_to_id(BOS),
         eos_token_id=ends,
         pad_token_id=tokenizer.token_to_id(EOS),
@@ -82,14 +95,17 @@ def export_huggingface(checkpoint, output):
 
     payload = load_checkpoint(checkpoint)
     tokenizer = Tokenizer.from_str(payload["tokenizer"])
-    config = native_config(ModelConfig(**payload["model_config"]), tokenizer)
+    model_config = ModelConfig(**payload["model_config"])
+    table = saved_count_table(payload) if model_config.count_table else None
+    config = native_config(model_config, tokenizer, table)
     NativeConfig.register_for_auto_class()
     NativeForCausalLM.register_for_auto_class("AutoModelForCausalLM")
     model = NativeForCausalLM(config)
     # Multi-token prediction only trains; the logits come from the main layers.
-    model.load_state_dict(
-        {name: value for name, value in payload["model"].items() if not name.startswith("predictors.")}
-    )
+    weights = {name: value for name, value in payload["model"].items() if not name.startswith("predictors.")}
+    if table is not None:
+        weights.update({f"count_{name}": tensor for name, tensor in table.tensors.items()})
+    model.load_state_dict(weights)
     output = Path(output)
     model.save_pretrained(output)
     bos = tokenizer.token_to_id(BOS)

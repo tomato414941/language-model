@@ -26,6 +26,7 @@ def measure_training(
     compiled=False,
     document_length=None,
     warmup_steps=2,
+    count_table=None,
 ):
     """Time optimizer steps of the configured size at each micro-batch size.
 
@@ -34,7 +35,8 @@ def measure_training(
     With document_length, a document starts at each position with one chance
     in that many, so attention within documents meets the varying bounds of
     real text; compiled code then compiles once per shape it meets, during
-    the warmup_steps if they are enough.
+    the warmup_steps if they are enough. A model that reads a count table
+    looks its synthetic tokens up in count_table.
     """
     model_config = ModelConfig(**config["model"])
     if document_length is not None and model_config.document_start is None:
@@ -47,7 +49,9 @@ def measure_training(
     torch.set_num_threads(2)
     torch.manual_seed(training.seed)
     torch.cuda.manual_seed_all(training.seed)
-    model = LanguageModel(vocabulary_size, model_config, patch_size=training.patch_size).to(device).train()
+    model = LanguageModel(
+        vocabulary_size, model_config, patch_size=training.patch_size, count_table=count_table
+    ).to(device).train()
     if training.fp8:
         check_fp8(device, "bfloat16", compiled)
         convert_to_fp8(model)

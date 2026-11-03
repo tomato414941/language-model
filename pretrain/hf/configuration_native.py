@@ -22,10 +22,15 @@ class NativeConfig(PretrainedConfig):
         value_embeddings=False,
         residual_scalars=False,
         feed_forward="swiglu",
+        count_table=None,
         tie_word_embeddings=True,
         use_cache=True,
         **kwargs,
     ):
+        # The shape of the count table the model reads (COUNT), whose arrays
+        # are kept with the weights: orders, candidates, the rows of each
+        # history length, document_start and candidates_dtype.
+        self.count_table = count_table
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
         self.num_attention_heads = num_attention_heads

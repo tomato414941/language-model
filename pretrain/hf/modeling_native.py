@@ -8,7 +8,10 @@ weights. Optional value embeddings in every other layer add to the attention's
 values through a gate per key-value head, and optional learned scalars scale
 the stream and mix the first layer's input back in before each layer.
 Attention stays within the documents of a sequence, which begin at
-document_start, as in training.
+document_start, as in training. A model that reads a count table (COUNT,
+Magnusson et al., arXiv 2610.20456) adds to each token's embedding the
+share-weighted embeddings of the tokens counted most often after its last few
+tokens; the table's arrays are kept with the weights.
 """
 
 import math
@@ -23,6 +26,25 @@ from .configuration_native import NativeConfig
 
 # The channels of a block's normalized input that set its value embedding's gate.
 VALUE_GATE_CHANNELS = 12
+# How a count table keys a history, as pretrain.count does: two polynomial
+# hashes modulo primes below 2**31, of which the top 48 bits are kept.
+COUNT_PRIMES = (2_147_483_647, 2_147_483_629)
+COUNT_BASES = (1_000_003, 998_244_353)
+COUNT_KEY_SHIFT = 14
+# The most tokens before a position that its lookups read.
+COUNT_HISTORY = 8
+
+
+def history_keys(tokens, orders):
+    """The key of the history of each length from 1 to orders - 1 ending at each position."""
+    following = tokens + 1
+    first = second = following * 0
+    keys = []
+    for _ in range(1, orders):
+        first = (F.pad(first[..., :-1], (1, 0)) * COUNT_BASES[0] + following) % COUNT_PRIMES[0]
+        second = (F.pad(second[..., :-1], (1, 0)) * COUNT_BASES[1] + following) % COUNT_PRIMES[1]
+        keys.append(((first << 31) | second) >> COUNT_KEY_SHIFT)
+    return keys
 
 
 def rotated(value, cosine, sine):
@@ -121,8 +143,56 @@ class NativeForCausalLM(PreTrainedModel, GenerationMixin):
         if config.residual_scalars:
             self.residual_scales = nn.Parameter(torch.ones(config.num_hidden_layers))
             self.input_scales = nn.Parameter(torch.zeros(config.num_hidden_layers))
+        if config.count_table:
+            table = config.count_table
+            token = getattr(torch, table["candidates_dtype"])
+            width = table["candidates"]
+            self.register_buffer("count_candidates_0", torch.zeros(width, dtype=token))
+            self.register_buffer("count_shares_0", torch.zeros(width, dtype=torch.float16))
+            for length, rows in enumerate(table["rows"], 1):
+                self.register_buffer(f"count_keys_{length}", torch.zeros(rows, dtype=torch.long))
+                self.register_buffer(f"count_candidates_{length}", torch.zeros(rows, width, dtype=token))
+                self.register_buffer(f"count_shares_{length}", torch.zeros(rows, width, dtype=torch.float16))
         self.norm = nn.RMSNorm(config.hidden_size, eps=1e-5)
         self.post_init()
+
+    def counted(self, input_ids, history=None):
+        """The share-weighted embeddings of each position's counted continuations.
+
+        history holds the tokens before input_ids that the lookups read, as a
+        cached generation step's input lacks them.
+        """
+        table = self.config.count_table
+        read = input_ids if history is None else torch.cat([history, input_ids], 1)
+        positions = torch.arange(read.shape[1], device=read.device)
+        begins = torch.cummax(torch.where(read == table["document_start"], positions, -1), dim=-1).values
+        shape = (*read.shape, table["candidates"])
+        ids, shares = [self.count_candidates_0.expand(shape)], [self.count_shares_0.expand(shape)]
+        for length, key in enumerate(history_keys(read, table["orders"]), 1):
+            keys = getattr(self, f"count_keys_{length}")
+            if not len(keys):
+                continue
+            row = torch.searchsorted(keys, key).clamp_(max=len(keys) - 1)
+            earliest = positions - length + 1
+            found = (earliest >= 0) & (begins <= earliest) & (keys[row] == key)
+            ids.append(getattr(self, f"count_candidates_{length}")[row])
+            shares.append(getattr(self, f"count_shares_{length}")[row] * found.unsqueeze(-1))
+        new = input_ids.shape[1]
+        ids = torch.cat(ids, -1)[:, -new:]
+        # Each order's row counts once, an order without a row as nothing.
+        shares = torch.cat(shares, -1)[:, -new:] / table["orders"]
+        weight = self.embedding.weight
+        gathered = F.embedding_bag(
+            ids.flatten(0, 1).long(), weight, per_sample_weights=shares.flatten(0, 1).to(weight.dtype), mode="sum"
+        )
+        return gathered.view(*input_ids.shape, -1)
+
+    def prepare_inputs_for_generation(self, input_ids, **kwargs):
+        inputs = super().prepare_inputs_for_generation(input_ids, **kwargs)
+        cached = input_ids.shape[1] - inputs["input_ids"].shape[1]
+        if self.config.count_table and cached:
+            inputs["count_history"] = input_ids[:, max(cached - COUNT_HISTORY, 0) : cached]
+        return inputs
 
     def _init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
@@ -160,6 +230,7 @@ class NativeForCausalLM(PreTrainedModel, GenerationMixin):
         use_cache=None,
         labels=None,
         logits_to_keep=0,
+        count_history=None,
         **kwargs,
     ):
         use_cache = self.config.use_cache if use_cache is None else use_cache
@@ -181,6 +252,8 @@ class NativeForCausalLM(PreTrainedModel, GenerationMixin):
         angles = position_ids.float()[..., None] * frequencies
         angles = torch.cat((angles, angles), dim=-1)[:, None]
         hidden = self.embedding(input_ids)
+        if self.config.count_table:
+            hidden = hidden + self.counted(input_ids, count_history)
         cosine, sine = angles.cos().to(hidden.dtype), angles.sin().to(hidden.dtype)
         mask = self.mask(input_ids, attention_mask, past, length)
         first = hidden

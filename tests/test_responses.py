@@ -232,7 +232,7 @@ class ResponsesTests(unittest.TestCase):
             ]
         )
 
-        def scripted_logits(window, start, caches):
+        def scripted_logits(window, start, caches, history=()):
             logits = torch.full((self.tokenizer.get_vocab_size(),), -torch.inf)
             logits[next(tokens)] = 1
             return logits
@@ -379,7 +379,7 @@ class ResponsesTests(unittest.TestCase):
             ]
         )
 
-        def scripted_logits(window, start, caches):
+        def scripted_logits(window, start, caches, history=()):
             logits = torch.full((self.tokenizer.get_vocab_size(),), -torch.inf)
             logits[next(tokens)] = 1
             return logits
@@ -832,7 +832,7 @@ class ResponsesTests(unittest.TestCase):
             [*self.tokenizer.encode("aaaa").ids, self.tokenizer.token_to_id("<|eos|>")]
         )
 
-        def scripted_logits(window, start, caches):
+        def scripted_logits(window, start, caches, history=()):
             logits = torch.full((self.tokenizer.get_vocab_size(),), -torch.inf)
             logits[next(tokens)] = 1
             return logits

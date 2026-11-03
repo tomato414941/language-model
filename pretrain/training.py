@@ -12,6 +12,7 @@ import torch
 from tokenizers import Tokenizer
 from torch.optim._muon import _adjust_lr, _zeropower_via_newtonschulz
 
+from .count import CountTable
 from .data import BOS, LANGUAGES, file_digest, open_corpus, to_device, token_bytes
 from .model import LanguageModel, ModelConfig
 
@@ -546,11 +547,19 @@ def load_checkpoint(path):
     return payload
 
 
+def saved_count_table(payload):
+    """The count table a checkpoint carries, or None."""
+    saved = payload.get("count_table")
+    return None if saved is None else CountTable.from_checkpoint(saved)
+
+
 def load_model(path, device):
     payload = load_checkpoint(path)
     tokenizer = Tokenizer.from_str(payload["tokenizer"])
     model = LanguageModel(
-        tokenizer.get_vocab_size(), ModelConfig(**payload["model_config"])
+        tokenizer.get_vocab_size(),
+        ModelConfig(**payload["model_config"]),
+        count_table=saved_count_table(payload),
     )
     model.load_state_dict(payload["model"])
     return model.to(device), tokenizer, payload
@@ -608,6 +617,7 @@ def train(
     initialize_from=None,
     continue_from=None,
     compiled=False,
+    count_table=None,
 ):
     """Train from scratch, or start from an earlier checkpoint.
 
@@ -616,6 +626,8 @@ def train(
     step into a new phase on other data, as long as the learning rate schedule
     continues without a jump. compiled runs the model through torch.compile,
     which fuses its small operations; checkpoints are the same either way.
+    A model that reads a count table takes it from the checkpoint it starts
+    from, or else from count_table, and keeps it in every checkpoint.
     """
     if sum(item is not None for item in (resume, initialize_from, continue_from)) > 1:
         raise ValueError(
@@ -638,8 +650,24 @@ def train(
         torch.cuda.manual_seed_all(config.seed)
     if model_config.document_start not in (None, corpus.tokenizer.token_to_id(BOS)):
         raise ValueError("document_start must be the token that begins each document")
+    source = next((path for path in (resume, initialize_from, continue_from) if path), None)
+    saved = None if source is None else load_checkpoint(source)
+    table = count_table
+    if model_config.count_table:
+        kept = None if saved is None else saved_count_table(saved)
+        if kept is not None and table is not None and kept.digest != table.digest:
+            raise ValueError("the count table differs from the one the checkpoint carries")
+        table = kept or table
+        if table is None:
+            raise ValueError("the model reads a count table; build one with count-table and give it")
+        table.check_tokenizer(corpus.tokenizer)
+    elif table is not None:
+        raise ValueError("the model's configuration reads no count table")
     model = LanguageModel(
-        corpus.tokenizer.get_vocab_size(), model_config, patch_size=config.patch_size
+        corpus.tokenizer.get_vocab_size(),
+        model_config,
+        patch_size=config.patch_size,
+        count_table=table,
     ).to(device)
     if config.fp8:
         convert_to_fp8(model)
@@ -652,7 +680,6 @@ def train(
     phase_start, phase_row = 0, 0
     initialization = None
     if initialize_from is not None:
-        saved = load_checkpoint(initialize_from)
         if not same_weights(saved["model_config"], model_config):
             raise ValueError("initialization requires the same model configuration")
         if Tokenizer.from_str(saved["tokenizer"]).to_str() != corpus.tokenizer.to_str():
@@ -665,7 +692,6 @@ def train(
             "source_dataset_fingerprint": saved["dataset_fingerprint"],
         }
     if continue_from is not None:
-        saved = load_checkpoint(continue_from)
         if not same_weights(saved["model_config"], model_config):
             raise ValueError("continuation requires the same model configuration")
         if Tokenizer.from_str(saved["tokenizer"]).to_str() != corpus.tokenizer.to_str():
@@ -721,7 +747,6 @@ def train(
             "earlier": saved.get("initialization"),
         }
     if resume:
-        saved = load_checkpoint(resume)
         if saved["dataset_fingerprint"] != corpus.fingerprint:
             raise ValueError("resume requires the same prepared dataset")
         if (
@@ -790,6 +815,7 @@ def train(
             "initialization": initialization,
             "phase_start_step": phase_start,
             "phase_start_row": phase_row,
+            "count_table": None if table is None else table.checkpoint(),
         }
 
     atomic_save(checkpoint(), output / "last.pt")

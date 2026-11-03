@@ -8,6 +8,8 @@ from torch.nn import functional as F
 from torch.nn.attention.varlen import varlen_attn
 from torch.utils.checkpoint import checkpoint
 
+from .count import COUNT_HISTORY, CountInput
+
 try:
     # Gated DeltaNet's GPU kernels, which the training extra installs.
     from fla.ops.gated_delta_rule import chunk_gated_delta_rule
@@ -66,6 +68,11 @@ class ModelConfig:
     # The feed-forward network: SwiGLU, or "relu_squared", which squares a ReLU
     # between two matrices rather than gating across three, as nanochat does.
     feed_forward: str = "swiglu"
+    # Each token's embedding gains the embeddings of the tokens counted most
+    # often after its last few tokens in a corpus, weighted by how often each
+    # followed (COUNT, Magnusson et al., arXiv 2610.20456). The counts are a
+    # table that is read, not learned; checkpoints carry it with the weights.
+    count_table: bool = False
 
     def __post_init__(self):
         if any(
@@ -125,6 +132,8 @@ class ModelConfig:
             raise ValueError("residual_scalars and zero_output_init must be true or false")
         if self.feed_forward not in ("swiglu", "relu_squared"):
             raise ValueError("feed_forward must be swiglu or relu_squared")
+        if type(self.count_table) is not bool:
+            raise ValueError("count_table must be true or false")
         if self.feed_forward != "swiglu" and self.experts is not None:
             raise ValueError("experts are SwiGLU networks, so feed_forward must be swiglu")
         if self.value_embeddings and self.full_attention_every is not None:
@@ -144,11 +153,13 @@ class ModelConfig:
             or self.residual_scalars
             or self.zero_output_init
             or self.feed_forward != "swiglu"
+            or self.count_table
         ):
             raise ValueError(
                 "kv_heads, intermediate_size, qk_norm, attention_gate, document_start, "
                 "full_attention_every, experts, prediction_depth, value_embeddings, "
-                "residual_scalars, zero_output_init and feed_forward require llama architecture"
+                "residual_scalars, zero_output_init, feed_forward and count_table "
+                "require llama architecture"
             )
 
     def has_value_embedding(self, layer):
@@ -697,20 +708,28 @@ class RecurrentCache:
 
 
 class LanguageModel(nn.Module):
-    def __init__(self, vocabulary_size, config=None, patch_size=1):
+    def __init__(self, vocabulary_size, config=None, patch_size=1, count_table=None):
         """A model that reads tokens, or in training, patches of patch_size tokens.
 
         A patch is the mean of its tokens' embeddings, and one prediction from
         it covers every token of the next patch (Shao et al., arXiv 2407.12665).
         Patches change nothing in the weights, which go on to read tokens.
+        A model whose configuration reads a count table predicts only once it
+        is given the table; without it, it still holds and loads its weights.
         """
         super().__init__()
         self.config = config or ModelConfig()
         if patch_size != 1 and (self.config.architecture != "llama" or self.config.prediction_depth):
             raise ValueError("patches need a rotary model that predicts one step ahead")
+        if count_table is not None and not self.config.count_table:
+            raise ValueError("the model's configuration reads no count table")
+        if count_table is not None and count_table.manifest["vocabulary_size"] != vocabulary_size:
+            raise ValueError("the count table was counted with another vocabulary")
         self.patch_size = patch_size
         self.vocabulary_size = vocabulary_size
         self.embedding = nn.Embedding(vocabulary_size, self.config.width)
+        self.count = None if count_table is None else CountInput(count_table)
+        self.count_digest = None if count_table is None else count_table.digest
         modern = self.config.architecture == "llama"
         self.position = (
             None if modern else nn.Embedding(self.config.context, self.config.width)
@@ -774,6 +793,23 @@ class LanguageModel(nn.Module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
             nn.init.normal_(module.weight, std=0.02)
 
+    def embed(self, tokens, history=None):
+        """The tokens' embeddings, with their counted continuations where the model reads them.
+
+        history holds the tokens just before these, which a continuation's
+        lookup reads; without it the tokens begin the window.
+        """
+        embedded = self.embedding(tokens)
+        if not self.config.count_table:
+            return embedded
+        if self.count is None:
+            raise RuntimeError("the model reads a count table; load the table with the model")
+        read = tokens if history is None else torch.cat([history, tokens], -1)
+        # The continuations are gathered from the table the model predicts
+        # with, so they need no weights of their own.
+        counted = self.count(read, self.embedding.weight)
+        return embedded + counted[..., read.shape[-1] - tokens.shape[-1] :, :]
+
     def embedded_values(self, index, tokens):
         """The layer's value embedding of the tokens, or None where it has none."""
         table = self.value_embeddings[str(index)] if str(index) in self.value_embeddings else None
@@ -819,7 +855,7 @@ class LanguageModel(nn.Module):
             raise ValueError("input must be a nonempty batch within the context length")
         if tokens.shape[1] % self.patch_size:
             raise ValueError("input must be whole patches")
-        hidden = self.patch_means(self.embedding(tokens))
+        hidden = self.patch_means(self.embed(tokens))
         if self.position is not None:
             positions = torch.arange(tokens.shape[1], device=tokens.device)
             hidden = hidden + self.position(positions)
@@ -942,7 +978,9 @@ class LanguageModel(nn.Module):
                         cached = 0
                     else:
                         window = tokens[cached:]
-                    logits = self.cached_logits(window, cached, caches).float()
+                    logits = self.cached_logits(
+                        window, cached, caches, tokens[max(cached - COUNT_HISTORY, 0) : cached]
+                    ).float()
                     cached += len(window)
                     logits[banned] = -torch.inf
                     if temperature == 0:
@@ -968,10 +1006,11 @@ class LanguageModel(nn.Module):
         finally:
             self.train(was_training)
 
-    def cached_logits(self, tokens, start, caches):
+    def cached_logits(self, tokens, start, caches, history=()):
         """The next-token logits after `tokens`, which follow `start` cached positions.
 
-        The first call, at position 0, begins a document.
+        The first call, at position 0, begins a document. history is the
+        last of the cached tokens, which the count table's lookups read.
         """
         device = self.embedding.weight.device
         steps = torch.arange(start + len(tokens), device=device)
@@ -980,7 +1019,8 @@ class LanguageModel(nn.Module):
         # keeps a long prompt's attention on the memory-efficient kernels.
         mask = None if start == 0 else (steps <= queries[:, None])[None, None]
         tokens = torch.tensor([tokens], device=device)
-        hidden = self.embedding(tokens)
+        history = torch.tensor([list(history)], device=device) if history and self.config.count_table else None
+        hidden = self.embed(tokens, history)
         if self.position is not None:
             hidden = hidden + self.position(queries[None])
         starts = (queries == 0)[None] if start == 0 else None
@@ -1050,6 +1090,7 @@ class LanguageModel(nn.Module):
         continuations = [[] for _ in sequences]
         active = [True] * len(sequences)
         start = 0
+        history = None
         was_training = self.training
         self.eval()
         try:
@@ -1065,7 +1106,7 @@ class LanguageModel(nn.Module):
                         ((keys <= queries[:, None]) & real[:, None, :stop]) | (keys == queries[:, None])
                     )[:, None]
                 positions = (queries - padding[:, None]).clamp(min=0)
-                hidden = self.embedding(tokens)
+                hidden = self.embed(tokens, history)
                 if self.position is not None:
                     hidden = hidden + self.position(positions)
                 first = hidden
@@ -1094,6 +1135,9 @@ class LanguageModel(nn.Module):
                                 active[row] = False
                 if not any(active) or step == max_new_tokens - 1:
                     break
+                if self.config.count_table:
+                    read = tokens if history is None else torch.cat([history, tokens], 1)
+                    history = read[:, -COUNT_HISTORY:]
                 tokens, start = chosen[:, None], stop
         finally:
             self.train(was_training)
