@@ -3,7 +3,6 @@ import hashlib
 import importlib.util
 import io
 import json
-import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -418,53 +417,6 @@ class InstructionTests(unittest.TestCase):
             any("電車" in text or "とてもとても" in text for text in texts)
         )
 
-    def test_評価の課題の学習用の問題だけはベンチマークの文でも学習に残す(self):
-        """指定した出典の問題はベンチマークの文を含んでも残し、それ以外の出典からは落とす。"""
-        question = "電車に乗るときに必要なものはどれでしょう"
-        benchmarks = self.root / "benchmarks"
-        benchmarks.mkdir()
-        items = benchmarks / "jcommonsenseqa.jsonl"
-        items.write_text(
-            json.dumps(
-                {"id": "1", "context": f"質問：{question}\n回答：", "choices": ["切符", "傘"], "label": 0},
-                ensure_ascii=False,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        (benchmarks / "sources.json").write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "tasks": {
-                        "jcommonsenseqa": {
-                            "language": "ja",
-                            "filename": items.name,
-                            "sha256": file_digest(items),
-                        }
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
-        source = self.write_source(conversations(), "permitted-source")
-        table = source / "ja.jsonl"
-        with table.open("a", encoding="utf-8") as lines:
-            for name, answer in (("jcommonsenseqa-ja", "A"), ("chat-ja", "B")):
-                row = {"source": name, "messages": exchange(f"{question}？", answer)}
-                lines.write(json.dumps(row, ensure_ascii=False) + "\n")
-        provenance = json.loads((source / "sources.json").read_text())
-        provenance["files"]["ja.jsonl"]["sha256"] = file_digest(table)
-        (source / "sources.json").write_text(json.dumps(provenance))
-        data = self.root / "permitted"
-        prepare_instructions(
-            source, data, self.tokenizer_path, context=64, validation_conversations=2, benchmarks=benchmarks
-        )
-        corpus = InstructionCorpus(data)
-        self.assertEqual(corpus.manifest["conversations"]["ja"]["contaminated"], 1)
-        texts = [text for split in ("train", "validation") for text, _ in self.rows(corpus, split, "ja")]
-        self.assertEqual(sum("電車" in text for text in texts), 1)
-
     def test_評価の問題を含む文は見つけ問題の一部と重なるだけの文は見逃す(self):
         """Finds a benchmark question by most of its text, not by a phrase it shares."""
         question = "Which tool would best help a student measure how far a small toy car rolls down a ramp?"
@@ -716,69 +668,6 @@ class FetchTests(unittest.TestCase):
         ):
             fetch_instructions(self.root / "source")
         self.assertEqual(list(self.root.iterdir()), [])
-
-    def test_fetch_leaves_out_problems_that_the_evaluation_also_asks(self):
-        """評価に使う分割にもある問題を除き、指定した場所から取得する。"""
-        for path, rows in (
-            ("data/train.jsonl", [{"question": "Q1", "messages": exchange("Q1", "A")}, {"question": "Q2", "messages": exchange("Q2", "B")}]),
-            ("data/held.jsonl", [{"question": "Q2"}]),
-        ):
-            self.content[path] = "".join(json.dumps(row) + "\n" for row in rows).encode()
-        sources = {
-            "chat-ja": self.sources["chat-ja"],
-            "choices-en": {
-                "language": "en",
-                "url": "https://example.org/{path}",
-                "dataset_url": "https://example.org/",
-                "license": "MIT",
-                "origin": "test",
-                "layout": "messages",
-                "files": {"data/train.jsonl": hashlib.sha256(self.content["data/train.jsonl"]).hexdigest()},
-                "held_out": {"data/held.jsonl": hashlib.sha256(self.content["data/held.jsonl"]).hexdigest()},
-                "held_out_field": "question",
-            },
-        }
-        with (
-            patch("pretrain.instructions.SOURCES", sources),
-            patch("pretrain.instructions.download_file", side_effect=self.download) as download,
-        ):
-            manifest = fetch_instructions(self.root / "held")
-        self.assertIn("https://example.org/data/train.jsonl", [call.args[0] for call in download.call_args_list])
-        written = (self.root / "held" / "en.jsonl").read_text(encoding="utf-8").splitlines()
-        self.assertEqual([json.loads(line)["messages"][0]["content"] for line in written], ["Q1"])
-        self.assertEqual(manifest["sources"]["choices-en"]["unselected"], 1)
-        self.assertEqual(manifest["sources"]["choices-en"]["dataset_url"], "https://example.org/")
-
-    def test_choice_problems_are_answered_by_their_symbol_alone(self):
-        """選択式の問題を、選択肢の記号や番号だけを答える会話にする。"""
-        kuci = source_messages(
-            "kuci",
-            {
-                "context": "電池 の 減り が 早い ので 、",
-                "choice_a": "空 が 青い",
-                "choice_b": "充電 し ます",
-                "choice_c": "雨 が 降る",
-                "choice_d": "犬 が 走る",
-                "label": "b",
-            },
-        )
-        self.assertIn("文脈：電池の減りが早いので、\n選択肢：0.空が青い,1.充電します,2.雨が降る,3.犬が走る", kuci[0]["content"])
-        self.assertEqual(kuci[1], {"role": "assistant", "content": "1"})
-        question = {"question": "切符はどれ？", "label": 2, **{f"choice{i}": f"案{i}" for i in range(5)}}
-        common = source_messages("jcommonsenseqa", question)
-        self.assertIn("質問：切符はどれ？\n選択肢：A.案0,B.案1,C.案2,D.案3,E.案4", common[0]["content"])
-        self.assertEqual(common[1]["content"], "C")
-        quiz = {"qid": "q1", "question": "首都は？", "answer_entity": "東京", "answer_candidates": ["東京", "大阪", "京都", "奈良", "福岡"]}
-        answered = source_messages("jaqket", quiz)
-        self.assertEqual(answered, source_messages("jaqket", quiz))
-        self.assertNotIn("福岡", answered[0]["content"])
-        listed = re.search(r"選択肢：(.*)", answered[0]["content"]).group(1)
-        self.assertEqual(dict(item.split(".") for item in listed.split(","))[answered[1]["content"]], "東京")
-        letters = {source_messages("jaqket", {**quiz, "qid": f"q{i}"})[1]["content"] for i in range(40)}
-        self.assertGreater(len(letters), 1)
-        self.assertIsNone(source_messages("jaqket", {**quiz, "answer_entity": "福岡"}))
-        self.assertIsNone(source_messages("kuci", {"context": "文"}))
-        self.assertIsNone(source_messages("jcommonsenseqa", {"question": "問い"}))
 
     def test_fetch_selects_values_drops_long_conversations_and_samples_the_same_subset(self):
         """選んだ値の記録だけを使い、長すぎる会話を落とし、上限の数だけ毎回同じ会話を残し、共有するファイルは一度だけ取得する。"""

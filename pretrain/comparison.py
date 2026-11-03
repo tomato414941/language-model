@@ -19,9 +19,11 @@ from .evaluation import STANDARD_TASKS, result_keys, task_reading
 # by chance alone; at two, one of them would about four times in ten.
 MEAN_ERRORS = 2
 TASK_ERRORS = 3
-# Answering in the asked form alone raises this task's score, so a language's
-# mean is also shown without it.
-FORM_TASKS = {"ja": ("jmmlu",)}
+# These tasks score a reply only when it is a choice's symbol alone: a model
+# that answers in sentences scores near zero, and one that answers with a symbol
+# reaches a guess's quarter without knowing more. A language's mean is also
+# shown without them.
+FORM_TASKS = {"ja": ("jmmlu", "kuci")}
 
 
 def members(result, name):

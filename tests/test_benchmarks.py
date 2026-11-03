@@ -1293,11 +1293,11 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(fallen["languages"]["ja"]["dropped"], ["kuci"])
         self.assertTrue(fallen["languages"]["ja"]["rose"])
         self.assertFalse(fallen["passed"])
-        # The mean without the task whose form alone can raise it.
-        formed = evaluation(0.3, 0.3, 0.3)
+        # The mean without the tasks whose answer form alone can raise them.
+        formed = evaluation(0.3, 0.3, 0.55)
         formed["llm_jp_eval"]["evaluation"]["scores"]["jmmlu_exact_match"] = 0.25
         read = pass_line(base, formed)["languages"]["ja"]
-        self.assertAlmostEqual(read["difference"], 0.25 / 4)
+        self.assertAlmostEqual(read["difference"], 0.5 / 4)
         self.assertAlmostEqual(read["difference_without_form_tasks"], 0.0)
 
     def test_合格の線は会話形式でも問うた課題を会話形式どうしで比べる(self):
