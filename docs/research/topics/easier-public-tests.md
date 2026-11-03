@@ -17,7 +17,7 @@ JBLiMP は GPT-2 や n-gram でも約75%で、小さなモデルでも差を読�
 
 [Arkios](../sources/arkios.md) では、小さなモデルが記号の形式だけで、言語によらず偶然の水準に落ちた。記号で答える課題は、形式を身につけるまで簡単にはならない。v6 は記号で答える学習をしたので、効くかは v6 の点で分かる。
 
-harness の OpenBookQA、WinoGrande、BoolQ は続きの形で答える。[外のモデルの表](outside-comparison.md)と並べるために、v6 の本番の後に事前学習の後の重みで測るので（`plan.md`）、指示学習の後の比較にも足すかはその点で判断できる。
+harness の OpenBookQA、WinoGrande、BoolQ は続きの形で答える。[外のモデルの表](outside-comparison.md)と並べるために、v6 の本番の後に事前学習の後の重みで測るので、指示学習の後の比較にも足すかはその点で判断できる。
 
 コードの簡単な公開テストは見つけていない。
 
