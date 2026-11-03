@@ -43,21 +43,3 @@ v6 について、結果を見る前に決めた。費用の線は v6 の改善�
 事前学習の後のモデルを、HobbyLM（arXiv 2610.34582）の表と同じ7課題で、例なしで測って並べる。課題は HellaSwag、OpenBookQA、WinoGrande、ARC-Challenge、ARC-Easy、BoolQ、PIQA で、指標は表と同じく WinoGrande と BoolQ が acc、他は acc_norm。並べたものは `research/topics/outside-comparison.md` にある。
 
 OpenBookQA、WinoGrande、BoolQ は v6 の合格の線と2本の選択に入れない。線は結果を見る前に決めたものだから。次の世代の線を決めるときに、入れるかを考える。この3つの問題は v5 と v6 の学習データから除いていない。除くかは次の世代のデータを作るときに決める。見直し期限：2026-11-15。
-
-## 小さいモデルを伸ばす線
-
-Qwen3-1.7B を強化学習などで伸ばす線の評価。測る前に決めた。
-
-- **形式：** 上の決まりのとおり、作者が手順を定めている課題は作者のコードと設定で問う。Swallow の評価（swallow-evaluation-instruct）は思考するモデル向けに形式を作り直しているので、作者の手順がある課題には使わない。課題ごとの照合と使う道具は `research/experiments/test-forms.md` にある。点は Swallow の表と比べられない。
-- **比べ方：** 元のモデルと伸ばしたモデルを、同じ環境と設定で測る。思考ありと思考なしの両方で測る。答えの長さ（トークン数）も比べる。
-- **合格の線：** 思考ありで、日本語の課題の平均が +0.05 以上上がる。かつ、思考ありと思考なしのどちらでも、下のどの課題も2つのモデルの差の標準誤差の3倍を超えて下がらない。
-- **日本語の課題（平均に入れる）：** JamC-QA、WMT20 英日、WMT20 日英、M-IFEval-Ja、MMLU-ProX（日本語）、BenchMAX Science（日本語）、PolyMath（日本語）、JHumanEval。
-- **英語の課題：** HellaSwag、IFBench、MMLU-Pro、GPQA Diamond、MATH-500、AIME 2024–2025、LiveCodeBench。
-- **他の言語：** MMLU-ProX の軽量版（日英以外の27言語）、MGSM（日英以外の9言語）、PolyMath（日英以外の16言語）。PolyMath の作者の採点は、問いと同じ言語で答えたかも数える。
-- **安全性：** AnswerCarefully の v2.0 と borderline-v1.0、XSTest。
-- **道具の呼び出し：** BFCL。
-- **長い文脈：** RULER。日本語の文章で追加の事前学習をしたときだけ測る。
-- **測る時期：** 日本語と英語の課題は毎回測る。ほかは、日本語の平均が +0.05 に届いたときに、元のモデルと並べて測る。
-- **測れないもの：** MT-Bench。作者が採点に使った GPT-4（gpt-4-0613）は 2026-10-23 に提供を終えた。
-- **確かめていないこと：** XSTest と HellaSwag の作者の手順。
-- **決めていないこと：** AnswerCarefully の採点に、OpenAI の有料 API を使うか。
