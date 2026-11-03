@@ -20,6 +20,7 @@ if any(
 import numpy as np
 import torch
 
+from pretrain.__main__ import main
 from pretrain.data import Corpus, interleaved, prepare_data, token_bytes
 from pretrain.growth import grow_checkpoint
 from pretrain.model import (
@@ -802,6 +803,27 @@ class PretrainingTests(unittest.TestCase):
             model, corpus, torch.device("cpu"), batch_size=3, limit=1
         )
         self.assertEqual(first["ja"]["evaluated_tokens"], context)
+
+    def test_every_window_command_reads_as_many_windows_at_once_as_training_did(self):
+        """全窓の検証は、指定がなければ学習で一度に読んだ窓の数ずつ読み、その数を記録する。"""
+        self.run_training("measured", self.config(steps=4))
+        checkpoint = self.root / "measured/last.pt"
+        model, _, _ = load_model(checkpoint, torch.device("cpu"))
+        expected = evaluate_windows(model, self.corpus, torch.device("cpu"), batch_size=1)
+
+        def measure(*extra):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                main(
+                    ["evaluate", "--checkpoint", str(checkpoint), "--data", str(self.data),
+                     "--every-window", "--device", "cpu", *extra]
+                )
+            return json.loads(output.getvalue())
+
+        for extra, batch_size in (((), self.config().batch_size), (("--batch-size", "2"), 2)):
+            result = measure(*extra)
+            self.assertEqual(result["data"]["batch_size"], batch_size)
+            self.assertAlmostEqual(result["loss"], expected["loss"], places=5)
 
     def test_token_bytes_count_the_text_each_token_stands_for(self):
         """各トークンが表す文章のバイト数を数え、特別なトークンは0バイトとする。"""

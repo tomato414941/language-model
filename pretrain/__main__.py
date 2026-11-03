@@ -256,7 +256,11 @@ def main(argv=None):
         action="store_true",
         help="学習に使ったものとは別の、同じ語彙のデータで測る",
     )
-    evaluation.add_argument("--batch-size", type=int, default=8)
+    evaluation.add_argument(
+        "--batch-size",
+        type=int,
+        help="一度に読む窓の数。既定は8、--every-windowでは学習で一度に読んだ数",
+    )
     generation = commands.add_parser(
         "generate", help="保存したモデルから文章を生成する"
     )
@@ -814,17 +818,28 @@ def main(argv=None):
                 if args.every_window:
                     if not hasattr(corpus, "streams"):
                         raise ValueError("--every-window needs a pretraining corpus")
+                    # The batch changes only the memory the windows take; training's
+                    # batch fit, gradients and all, on the GPU that trained it.
+                    batch_size = args.batch_size
+                    if batch_size is None:
+                        if "train_config" not in payload:
+                            raise ValueError(
+                                "the checkpoint records no training batch; give --batch-size"
+                            )
+                        batch_size = payload["train_config"]["batch_size"]
                     result = evaluate_windows(
                         model,
                         corpus,
                         device,
                         precision,
-                        args.batch_size,
+                        batch_size,
                         args.max_windows,
                     )
                 else:
+                    # Here the batch sets how many windows are sampled.
+                    batch_size = 8 if args.batch_size is None else args.batch_size
                     result = evaluate(
-                        model, corpus, device, precision, args.batches, args.batch_size
+                        model, corpus, device, precision, args.batches, batch_size
                     )
                 result["checkpoint"] = {
                     "checkpoint": str(args.checkpoint),
@@ -836,6 +851,7 @@ def main(argv=None):
                     "path": str(args.data),
                     "fingerprint": corpus.fingerprint,
                     "every_window": args.every_window,
+                    "batch_size": batch_size,
                 }
                 print(json.dumps(result, indent=2))
             else:
