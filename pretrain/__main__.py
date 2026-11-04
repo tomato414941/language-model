@@ -373,7 +373,27 @@ def main(argv=None):
     official.add_argument("--output", type=Path, required=True, help="点を書き出す先")
     official.add_argument("--work", type=Path, required=True, help="作者のコードと環境を置く場所")
     official.add_argument("records", nargs="+", help="モデルの名前=評価の結果")
-    for command in (evaluation, generation, benchmark):
+    core = commands.add_parser(
+        "core", help="保存したモデルを、nanochat と同じ測り方で DCLM の CORE の22課題で評価する"
+    )
+    core_hub = commands.add_parser(
+        "core-hub", help="Hugging Face Hub のモデルを、core と同じ測り方で評価する"
+    )
+    core_hub.add_argument("--model", required=True, help="Hub のリポジトリ")
+    core_hub.add_argument("--revision", required=True, help="Hub のコミット")
+    for command in (core, core_hub):
+        command.add_argument(
+            "--bundle", type=Path, default=Path("data/core"), help="nanochat の評価の束を置く場所（なければ取ってくる）"
+        )
+        command.add_argument(
+            "--limit", type=int, help="動作確認で各課題に使う問題数（正式な評価は全問）"
+        )
+        command.add_argument("--batch-tokens", type=int, default=16384)
+        command.add_argument(
+            "--output", type=Path, required=True, help="問題ごとの正誤を含む結果のJSONファイル"
+        )
+    core_hub.add_argument("--device", choices=("cpu", "cuda", "auto"), default="auto")
+    for command in (evaluation, generation, benchmark, core):
         command.add_argument(
             "--checkpoint", type=Path, default=Path("runs/bilingual/last.pt")
         )
@@ -452,6 +472,24 @@ def main(argv=None):
 
             result = fetch_benchmarks(args.output)
             print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "core-hub":
+            from .core import evaluate_core, fetch_bundle, load_hub_model
+
+            device = select_device(args.device)
+            model, tokenizer, bos = load_hub_model(args.model, args.revision, device)
+            precision = select_precision(device)
+            result = evaluate_core(
+                model, tokenizer, device, precision, fetch_bundle(args.bundle), args.batch_tokens, args.limit, bos
+            )
+            result["model"] = {
+                "repository": args.model,
+                "revision": args.revision,
+                "parameters": sum(p.numel() for p in model.parameters()),
+                "precision": precision,
+            }
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+            print(json.dumps({"core": result["core"]}))
         elif args.command == "benchmark-hub":
             from lm_eval.utils import setup_logging
 
@@ -854,6 +892,30 @@ def main(argv=None):
                     "batch_size": batch_size,
                 }
                 print(json.dumps(result, indent=2))
+            elif args.command == "core":
+                from .core import evaluate_core, fetch_bundle
+
+                result = evaluate_core(
+                    model,
+                    tokenizer,
+                    device,
+                    select_precision(device),
+                    fetch_bundle(args.bundle),
+                    args.batch_tokens,
+                    args.limit,
+                )
+                result["checkpoint"] = {
+                    "checkpoint": str(args.checkpoint),
+                    "sha256": file_digest(args.checkpoint),
+                    "step": payload["step"],
+                    "tokens_seen": payload["tokens_seen"],
+                    "parameters": sum(p.numel() for p in model.parameters()),
+                    "precision": select_precision(device),
+                }
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+                print(json.dumps({"core": result["core"], **{
+                    label: round(task["centered"], 4) for label, task in result["tasks"].items()}}, indent=2))
             else:
                 print(
                     model.generate(
