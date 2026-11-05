@@ -297,6 +297,31 @@ TASKS = {
             "datasets/jsquad-v1.2/valid-v1.2.json": "fb0a57a35281ff03bbe7f0e878cff5b577985fbe6fcb242e7e8ddb63d1c0ab11",
         },
     },
+    # RULER's question answering asks SQuAD 2.0's and HotpotQA's development
+    # questions, from the files lm-evaluation-harness downloads; like every
+    # other question here, they are kept out of the training data.
+    "squad": {
+        "language": "en",
+        "host": "github",
+        "repository": "rajpurkar/SQuAD-explorer",
+        "revision": "240e165ab706d95bd4323653bb92421f446208cf",
+        "license": "CC-BY-SA-4.0",
+        "format": "squad",
+        "files": {
+            "dataset/dev-v2.0.json": "80a5225e94905956a6446d296ca1093975c4d3b3260f1d6c8f68bc2ab77182d8",
+        },
+    },
+    "hotpotqa": {
+        "language": "en",
+        "repository": "namlh2004/hotpotqa",
+        "revision": "7e54db4656209750ff487f6fdf8e39a66dba136b",
+        "license": "CC-BY-SA-4.0",
+        # One JSON array of questions rather than a question per line.
+        "format": "json",
+        "files": {
+            "hotpot_dev_distractor_v1.json": "e3da074df24e8369009918aa5cdbdd254dadcde4c63f7569d36afd6f2268caa8",
+        },
+    },
     "mt_bench": {
         "language": "en",
         "repository": "HuggingFaceH4/mt_bench_prompts",
@@ -534,6 +559,8 @@ CONVERTERS = {
     "mgsm_ja": mgsm_item,
     "jhumaneval": program_item,
     "jsquad": jsquad_item,
+    "squad": question_item,
+    "hotpotqa": question_item,
     "mt_bench": turn_items("prompt", "question_id"),
     "ja_mt_bench": turn_items("turns", "question_id"),
     "elyza_tasks_100": elyza_item,
@@ -573,6 +600,8 @@ def read_rows(task, path, data):
             for paragraph in article["paragraphs"]
             for question in paragraph["qas"]
         ]
+    if task.get("format") == "json":
+        return json.loads(data)
     if path.endswith(".csv"):
         return list(csv.DictReader(io.StringIO(data.decode("utf-8-sig"))))
     if path.endswith((".json", ".jsonl")):

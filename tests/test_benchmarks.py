@@ -307,6 +307,29 @@ ROWS["jsquad"] = [
     },
 ]
 ID_FIELDS["jsquad"] = "id"
+ROWS["squad"] = [
+    {
+        "id": "56ddde6b9a695914005b9628",
+        "title": "Normans",
+        "context": "The Normans were the people who in the 10th and 11th centuries gave their name to Normandy.",
+        "question": "In what country is Normandy located in the north of the continent?",
+        "answers": [{"text": "France", "answer_start": 0}],
+        "is_impossible": False,
+    },
+]
+ID_FIELDS["squad"] = "id"
+ROWS["hotpotqa"] = [
+    {
+        "_id": "5a8b57f25542995d1e6f1371",
+        "answer": "yes",
+        "question": "Were Scott Derrickson and Ed Wood of the same nationality as film directors?",
+        "context": [["Scott Derrickson", ["Scott Derrickson is an American director."]]],
+        "supporting_facts": [["Scott Derrickson", 0]],
+        "type": "comparison",
+        "level": "hard",
+    },
+]
+ID_FIELDS["hotpotqa"] = "_id"
 ROWS["mt_bench"] = [
     {
         "question_id": 81,
@@ -584,6 +607,8 @@ class BenchmarkTests(unittest.TestCase):
                     buffer.write(jmmlu_archive(rows))
                 elif task.get("format") == "squad":
                     buffer.write(json.dumps({"data": squad_articles(rows)}).encode())
+                elif task.get("format") == "json":
+                    buffer.write(json.dumps(rows, indent=1).encode())
                 elif path.endswith(".csv"):
                     text = io.StringIO()
                     writer = csv.DictWriter(text, fieldnames=list(rows[0]))
@@ -676,6 +701,15 @@ class BenchmarkTests(unittest.TestCase):
         # JSQuAD's questions are read one by one from SQuAD's articles.
         self.assertEqual(
             benchmarks["jsquad"][1]["context"], "質問：梅雨がみられるのはどこか。\n回答："
+        )
+        # RULER's SQuAD and HotpotQA questions, from SQuAD's articles and from one JSON array.
+        self.assertEqual(
+            benchmarks["squad"][0]["context"],
+            "Question: In what country is Normandy located in the north of the continent?\nAnswer:",
+        )
+        self.assertEqual(
+            benchmarks["hotpotqa"][0]["context"],
+            "Question: Were Scott Derrickson and Ed Wood of the same nationality as film directors?\nAnswer:",
         )
         self.assertEqual(
             benchmarks["mgsm_ja"][0]["context"], "りんごが3個あり、2個買いました。全部で何個ですか？"
