@@ -117,7 +117,10 @@ class NativeExperts(nn.Module):
         scores = scores / scores.sum(-1, keepdim=True)
         assigned = chosen.flatten()
         order = assigned.argsort(stable=True)
-        counts = torch.bincount(assigned, minlength=probabilities.shape[-1])
+        # Counted into a fixed number of experts: bincount sizes its output by
+        # the largest index, so it waits for the device and breaks compiled code.
+        counts = torch.zeros(probabilities.shape[-1], dtype=torch.long, device=assigned.device)
+        counts = counts.scatter_add(0, assigned, torch.ones_like(assigned))
         sources = order // self.active
         selected = tokens[sources]
         grouped = getattr(F, "grouped_mm", None)
