@@ -342,12 +342,14 @@ class NativeLM(TemplateLM):
         return "native-conversation"
 
     def apply_chat_template(self, chat_history, add_generation_prompt=True):
-        if not add_generation_prompt:
-            raise ValueError(
-                "the conversation format does not continue a started reply"
-            )
         require_markers(self.tokenizer)
-        return chat_prompt(chat_history)
+        if add_generation_prompt:
+            return chat_prompt(chat_history)
+        # A task with an answer prefix begins the assistant's reply with it, and
+        # the harness then asks for its continuation.
+        if not chat_history or chat_history[-1]["role"] != "assistant":
+            raise ValueError("the conversation format continues only a reply the assistant has begun")
+        return chat_prompt(chat_history[:-1]) + chat_history[-1]["content"]
 
     def tok_encode(self, string, add_special_tokens=None, **kwargs):
         tokens = self.tokenizer.encode(string, add_special_tokens=False).ids

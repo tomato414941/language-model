@@ -368,12 +368,13 @@ def main(argv=None):
     passing.add_argument("--other", type=Path, required=True, help="新しい世代の評価の結果")
     passing.add_argument("--ruler-base", type=Path, help="前の世代の RULER の結果（--ruler-other と一緒に渡す）")
     passing.add_argument("--ruler-other", type=Path, help="新しい世代の RULER の結果（--ruler-base と一緒に渡す）")
-    ruler_record = commands.add_parser(
-        "ruler-record", help="NeMo-Skills で問うた RULER の返答を、長さと課題ごとの点の記録にまとめる"
+    ruler = commands.add_parser(
+        "ruler", help="保存したモデルに、lm-evaluation-harness の RULER を 8k と 16k の長さで問う"
     )
-    ruler_record.add_argument("--results", type=Path, required=True, help="ns eval の出力の場所")
-    ruler_record.add_argument("--name", required=True, help="データを作ったときのモデルの名前")
-    ruler_record.add_argument("--output", type=Path, required=True, help="記録を書き出すJSONファイル")
+    ruler.add_argument("--output", type=Path, required=True, help="問題ごとの点を含む記録のJSONファイル")
+    ruler.add_argument("--batch-tokens", type=int, default=65536, help="一度に読むトークン数の上限")
+    ruler.add_argument("--limit", type=int, help="動作確認で各課題に使う問題数（正式な評価は全問）")
+    ruler.add_argument("--plain", action="store_true", help="会話形式ではなく印のない文章で問う（事前学習の後のモデル）")
     official = commands.add_parser(
         "score-m-ifeval",
         help="保存した M-IFEval-Ja の返答を、作者の採点コードで採点する",
@@ -401,7 +402,7 @@ def main(argv=None):
             "--output", type=Path, required=True, help="問題ごとの正誤を含む結果のJSONファイル"
         )
     core_hub.add_argument("--device", choices=("cpu", "cuda", "auto"), default="auto")
-    for command in (evaluation, generation, benchmark, core):
+    for command in (evaluation, generation, benchmark, core, ruler):
         command.add_argument(
             "--checkpoint", type=Path, default=Path("runs/bilingual/last.pt")
         )
@@ -623,14 +624,6 @@ def main(argv=None):
                 ruler,
             )
             print(json.dumps(result, ensure_ascii=False, indent=2))
-        elif args.command == "ruler-record":
-            from .ruler import read_results
-
-            record = read_results(args.results, args.name)
-            args.output.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            print(json.dumps({"accuracy": record["accuracy"], "lengths": {
-                length: read["accuracy"] for length, read in record["lengths"].items()
-            }}, ensure_ascii=False, indent=2))
         elif args.command == "score-m-ifeval":
             from .m_ifeval import official_scores, require_repeated
 
@@ -917,6 +910,27 @@ def main(argv=None):
                     "batch_size": batch_size,
                 }
                 print(json.dumps(result, indent=2))
+            elif args.command == "ruler":
+                from .ruler import evaluate_ruler
+
+                precision = select_precision(device)
+                # The harness prints notes; they join its log on stderr.
+                with contextlib.redirect_stdout(sys.stderr):
+                    record = evaluate_ruler(
+                        model, tokenizer, device, precision, args.batch_tokens, not args.plain, args.limit
+                    )
+                record["checkpoint"] = {
+                    "checkpoint": str(args.checkpoint),
+                    "sha256": file_digest(args.checkpoint),
+                    "step": payload["step"],
+                    "tokens_seen": payload["tokens_seen"],
+                    "parameters": sum(p.numel() for p in model.parameters()),
+                    "precision": precision,
+                }
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+                print(json.dumps({"accuracy": record["accuracy"], "lengths": {
+                    length: read["accuracy"] for length, read in record["lengths"].items()}}, indent=2))
             elif args.command == "core":
                 from .core import evaluate_core, fetch_bundle
 

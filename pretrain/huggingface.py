@@ -90,10 +90,38 @@ def native_config(config, tokenizer, table=None):
     )
 
 
-def export_huggingface(checkpoint, output):
-    """Write the checkpoint's model, tokenizer and loading code to `output`."""
+def write_tokenizer(tokenizer, output):
+    """Write `tokenizer` in Hugging Face's form to `output`, putting BOS before each text and with the chat template."""
     from transformers import PreTrainedTokenizerFast
 
+    # A copy, so that the caller's tokenizer keeps encoding as it did.
+    tokenizer = Tokenizer.from_str(tokenizer.to_str())
+    bos = tokenizer.token_to_id(BOS)
+    tokenizer.post_processor = processors.TemplateProcessing(
+        single=f"{BOS} $A", pair=f"{BOS} $A $B:1", special_tokens=[(BOS, bos)]
+    )
+    markers = all(tokenizer.token_to_id(marker) is not None for marker in MARKERS)
+    output = Path(output)
+    PreTrainedTokenizerFast(
+        tokenizer_object=tokenizer,
+        bos_token=BOS,
+        eos_token=EOS,
+        pad_token=EOS,
+        chat_template=CHAT_TEMPLATE if markers else None,
+    ).save_pretrained(output)
+    # Transformers 5 records the class as TokenizersBackend, which Transformers 4, as vLLM installs it, does not
+    # know; both load the older name.
+    settings = output / "tokenizer_config.json"
+    settings.write_text(
+        json.dumps({**json.loads(settings.read_text(encoding="utf-8")), "tokenizer_class": "PreTrainedTokenizerFast"},
+                   ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return output
+
+
+def export_huggingface(checkpoint, output):
+    """Write the checkpoint's model, tokenizer and loading code to `output`."""
     from .hf.configuration_native import NativeConfig
     from .hf.modeling_native import NativeForCausalLM
 
@@ -114,24 +142,5 @@ def export_huggingface(checkpoint, output):
     model.model.load_state_dict(weights)
     output = Path(output)
     model.save_pretrained(output)
-    bos = tokenizer.token_to_id(BOS)
-    tokenizer.post_processor = processors.TemplateProcessing(
-        single=f"{BOS} $A", pair=f"{BOS} $A $B:1", special_tokens=[(BOS, bos)]
-    )
-    markers = all(tokenizer.token_to_id(marker) is not None for marker in MARKERS)
-    PreTrainedTokenizerFast(
-        tokenizer_object=tokenizer,
-        bos_token=BOS,
-        eos_token=EOS,
-        pad_token=EOS,
-        chat_template=CHAT_TEMPLATE if markers else None,
-    ).save_pretrained(output)
-    # Transformers 5 records the class as TokenizersBackend, which Transformers 4, as vLLM installs it, does not
-    # know; both load the older name.
-    settings = output / "tokenizer_config.json"
-    settings.write_text(
-        json.dumps({**json.loads(settings.read_text(encoding="utf-8")), "tokenizer_class": "PreTrainedTokenizerFast"},
-                   ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    write_tokenizer(tokenizer, output)
     return {"output": str(output), "step": payload["step"], "parameters": model.num_parameters()}

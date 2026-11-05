@@ -954,6 +954,21 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(result["conversation_format_tasks"], ["ja_leaderboard_jcommonsenseqa"])
         self.assertTrue(0 <= result["results"]["ja_leaderboard_jcommonsenseqa"]["acc,none"] <= 1)
 
+    def test_会話形式では始まった返答の続きを書かせ始まっていなければ断る(self):
+        """Renders a reply the assistant has begun, as tasks with an answer prefix ask, and refuses any other."""
+        backend = NativeLM(
+            LanguageModel(258 + 8, ModelConfig(width=8, heads=2, layers=1, context=64)),
+            byte_tokenizer(reserved_tokens=8),
+            torch.device("cpu"),
+        )
+        question = [{"role": "user", "content": "What is the number?"}]
+        begun = [*question, {"role": "assistant", "content": "The number is"}]
+        self.assertEqual(
+            backend.apply_chat_template(begun, add_generation_prompt=False), chat_prompt(question) + "The number is"
+        )
+        with self.assertRaises(ValueError):
+            backend.apply_chat_template(question, add_generation_prompt=False)
+
     def test_tuned_models_are_asked_as_conversations_only_where_there_is_a_question(self):
         """Leaves out the tasks that score a text's words and those already asked as conversations."""
         self.assertEqual(

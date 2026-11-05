@@ -1244,7 +1244,7 @@ deploy = [
 eval = [
     { name = "ja-sentence-segmenter" },
     { name = "janome" },
-    { name = "lm-eval", extra = ["hf", "ifeval"] },
+    { name = "lm-eval", extra = ["hf", "ifeval", "ruler"] },
 ]
 hub = [
     { name = "huggingface-hub" },
@@ -1285,7 +1285,7 @@ requires-dist = [
     { name = "huggingface-hub", marker = "extra == 'hub'", specifier = ">=0.35,<2" },
     { name = "ja-sentence-segmenter", marker = "extra == 'eval'", specifier = "==0.0.2" },
     { name = "janome", marker = "extra == 'eval'", specifier = "==0.5.0" },
-    { name = "lm-eval", extras = ["hf", "ifeval"], marker = "extra == 'eval'", specifier = "==0.4.13" },
+    { name = "lm-eval", extras = ["hf", "ifeval", "ruler"], marker = "extra == 'eval'", specifier = "==0.4.13" },
     { name = "modal", marker = "extra == 'deploy'", specifier = ">=1.6.1,<2" },
     { name = "numpy", marker = "extra == 'train'", specifier = ">=2.2,<3" },
     { name = "numpy", marker = "extra == 'train-cpu'", specifier = ">=2.2,<3" },
@@ -1349,6 +1349,12 @@ ifeval = [
     { name = "immutabledict" },
     { name = "langdetect" },
     { name = "nltk" },
+]
+ruler = [
+    { name = "nltk" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "wonderwords" },
 ]
 
 [[package]]
@@ -3875,6 +3881,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/92/cc/a3c3f557992a20a5bb24607f0da44d39cf6d6ba3f8f6ed7cb31f6c73371a/watchfiles-1.3.0-pp311-pypy311_pp73-macosx_11_0_arm64.whl", hash = "sha256:6398d250994baff581147ccba846223076fe6492ca93c0d1b3588fcf5355eb5c", size = 394852, upload-time = "2026-09-21T09:08:51.412Z" },
     { url = "https://files.pythonhosted.org/packages/55/65/d45763a5e1108a65af85a217af2930ebf1081c73fd8169d3f75e586992bb/watchfiles-1.3.0-pp311-pypy311_pp73-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:591de392458bca26f6130fea4e667c06b657e873ad334ea06fad5a79f5086cef", size = 451789, upload-time = "2026-09-21T09:08:53.144Z" },
     { url = "https://files.pythonhosted.org/packages/02/96/165c6e540bf765ca1115062017adf861d0816525f02464ba71313fe7cf92/watchfiles-1.3.0-pp311-pypy311_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:5ec46a1ff4c1d81405a5fc645abdbff5e4e9388f7c9a6cdb392316a7c29b884f", size = 456919, upload-time = "2026-09-21T09:08:54.372Z" },
+]
+
+[[package]]
+name = "wonderwords"
+version = "3.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ff/23/e144fc3dfabb845dc1d94c45315d97b308cf75a664e3db3a89aeb1cb505d/wonderwords-3.0.1.tar.gz", hash = "sha256:5ee43ab6f13823a857a7c3d58c7b4db6a1350bd3aa5f914ed379ad49042a1c36", size = 73339, upload-time = "2025-10-30T17:30:44.231Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a4/75/855c2062d28b8e9247939f8262fb2f4ff3b12a49e4bab9fd1ba16cc5df82/wonderwords-3.0.1-py3-none-any.whl", hash = "sha256:4dd66deb6a76ca9e0b0422d1d3e111f9b910d7c16922d42de733ee8def98f8d0", size = 51658, upload-time = "2025-10-30T17:30:42.785Z" },
 ]
 
 [[package]]

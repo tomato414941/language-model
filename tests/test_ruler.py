@@ -1,67 +1,74 @@
-import json
-import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from pretrain.ruler import (
-    LENGTHS,
-    QUESTIONS_PER_TASK,
-    TASKS,
-    eval_command,
-    prepare_command,
-    read_results,
-)
+from transformers import AutoTokenizer
+
+from pretrain.ruler import LENGTHS, QUESTIONS_PER_TASK, TASKS, evaluate_ruler, ruler_record
+from tests.test_benchmarks import byte_tokenizer
 
 
-def write_outputs(root, name, score):
-    """NeMo-Skills' layout of evaluated replies, each task's replies scored score(length, task, index)."""
-    for length in LENGTHS:
-        for task in TASKS:
-            folder = Path(root) / "eval-results" / f"ruler.{name}-{length}" / f"ruler.{name}-{length}.{task}"
-            folder.mkdir(parents=True)
-            lines = [json.dumps({"is_correct": score(length, task, index)}) for index in range(QUESTIONS_PER_TASK)]
-            (folder / "output.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
-            # The marker NeMo-Skills leaves beside a finished file.
-            (folder / "output.jsonl.done").write_text("", encoding="utf-8")
+def logged_samples(score, questions=QUESTIONS_PER_TASK):
+    """The harness's logged samples of every task, each question's score at its length given by score(task, length, index)."""
+    return {
+        task: [
+            {"doc": {"max_length": length}, str(length): score(task, length, index), "4096": -1.0}
+            for length in LENGTHS
+            for index in range(questions)
+        ]
+        for task in TASKS
+    }
 
 
 class RulerTests(unittest.TestCase):
-    def test_各長さのデータを作り作者の例と同じ設定で問うコマンドを組む(self):
-        for length in LENGTHS:
-            prepared = prepare_command("v5", "models/v5", length, "data", "configs", "ruler")
-            asked = eval_command("v5", "models/v5", length, "data", "results", "configs")
-            self.assertIn(f"--setup=v5-{length}", prepared)
-            self.assertIn(f"--max_seq_length={length}", prepared)
-            self.assertIn(f"--benchmarks=ruler.v5-{length}", asked)
-            self.assertIn("--server_type=vllm", asked)
-            for setting in ("++inference.tokens_to_generate=4096", "++inference.top_p=1.0", "++inference.temperature=0.0"):
-                self.assertIn(setting, asked)
-            # The server holds the longest question with the longest reply, in the precision of training.
-            server = next(part for part in asked if part.startswith("--server_args="))
-            self.assertIn(f"--max-model-len {max(LENGTHS) + 4096}", server)
-            self.assertIn("--dtype bfloat16", server)
-            self.assertIn("--trust-remote-code", server)
-
     def test_長さごとに13課題の点を平均し長さの平均を点にする(self):
-        with tempfile.TemporaryDirectory() as root:
-            # At each length, half the tasks score every reply 1 and the rest 0, except a part-scored reply.
-            write_outputs(root, "v5", lambda length, task, index: float(TASKS.index(task) % 2 == 0) * (0.5 if index == 0 else 1.0))
-            record = read_results(root, "v5")
-        task = record["lengths"][str(LENGTHS[0])]["tasks"]["niah_single_1"]
-        self.assertEqual(task["questions"], QUESTIONS_PER_TASK)
-        self.assertAlmostEqual(task["accuracy"], 0.995)
-        self.assertAlmostEqual(record["lengths"][str(LENGTHS[-1])]["accuracy"], 7 * 0.995 / 13)
-        self.assertAlmostEqual(record["accuracy"], 7 * 0.995 / 13)
+        # Every other task scores each reply 1, except one part-scored reply; the second length halves every score.
+        def score(task, length, index):
+            whole = float(TASKS.index(task) % 2 == 0) * (0.5 if index == 0 else 1.0)
+            return whole if length == LENGTHS[0] else whole / 2
+
+        record = ruler_record(logged_samples(score), conversation=True)
+        first, second = (record["lengths"][str(length)] for length in LENGTHS)
+        self.assertEqual(first["tasks"]["niah_single_1"]["questions"], QUESTIONS_PER_TASK)
+        self.assertAlmostEqual(first["tasks"]["niah_single_1"]["accuracy"], (QUESTIONS_PER_TASK - 0.5) / QUESTIONS_PER_TASK)
+        per_task = (QUESTIONS_PER_TASK - 0.5) / QUESTIONS_PER_TASK
+        self.assertAlmostEqual(first["accuracy"], 7 * per_task / 13)
+        self.assertAlmostEqual(second["accuracy"], 7 * per_task / 13 / 2)
+        self.assertAlmostEqual(record["accuracy"], (7 * per_task / 13) * 0.75)
         self.assertEqual(record["questions"], len(LENGTHS) * len(TASKS) * QUESTIONS_PER_TASK)
+        self.assertEqual(record["procedure"]["form"], "conversation")
 
     def test_返答が足りない課題があれば記録を作らない(self):
-        with tempfile.TemporaryDirectory() as root:
-            write_outputs(root, "v5", lambda length, task, index: 1.0)
-            setup = f"ruler.v5-{LENGTHS[-1]}"
-            short = Path(root) / "eval-results" / setup / f"{setup}.qa_2" / "output.jsonl"
-            short.write_text(json.dumps({"is_correct": 1.0}) + "\n", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "replies"):
-                read_results(root, "v5")
+        samples = logged_samples(lambda task, length, index: 1.0)
+        samples["ruler_qa_hotpot"] = samples["ruler_qa_hotpot"][:-1]
+        with self.assertRaisesRegex(ValueError, "replies"):
+            ruler_record(samples, conversation=True)
+
+    def test_長さとモデル自身のトークナイザを渡し会話形式かどうかを選んで問う(self):
+        tokenizer = byte_tokenizer(reserved_tokens=8)
+        seen = {}
+
+        class Manager:
+            def __init__(self, metadata):
+                seen["metadata"] = metadata
+                # The harness reads the tokenizer while the evaluation runs.
+                loaded = AutoTokenizer.from_pretrained(metadata["tokenizer"])
+                seen["encoded"] = loaded("abc")["input_ids"]
+
+        def evaluate(model, tasks, task_manager, limit, log_samples, apply_chat_template):
+            seen.update(tasks=tasks, conversation=apply_chat_template, limit=limit)
+            return {"samples": logged_samples(lambda task, length, index: 1.0, questions=limit)}
+
+        for conversation in (True, False):
+            with patch("lm_eval.tasks.TaskManager", Manager), patch("lm_eval.evaluator.simple_evaluate", evaluate):
+                record = evaluate_ruler(object(), tokenizer, "cpu", "float32", conversation=conversation, limit=2)
+            self.assertEqual(seen["metadata"]["max_seq_lengths"], list(LENGTHS))
+            self.assertEqual(seen["encoded"], [tokenizer.token_to_id("<|bos|>"), *tokenizer.encode("abc").ids])
+            self.assertEqual(seen["tasks"], list(TASKS))
+            self.assertEqual(seen["conversation"], conversation)
+            self.assertEqual(record["procedure"]["scope"], "smoke")
+            self.assertEqual(record["accuracy"], 1.0)
+            self.assertFalse(Path(seen["metadata"]["tokenizer"]).exists())
 
 
 if __name__ == "__main__":
