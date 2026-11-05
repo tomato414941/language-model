@@ -12,10 +12,5 @@ bash scripts/setup_environment.sh   # install uv and the training dependencies
 
 ## How we work
 
-- Write each generation's settings with that generation's values and reasons, not relative to another generation. Compare generations by scores and costs. Write the amount read as a ratio to the model's size (tokens or bytes per parameter).
-- Name a time by its generation or date, never as "now".
-- When writing what does not apply or what is left out, add the condition under which it would apply and a review date, and reconsider it before that date.
 - Put in docs only decisions and findings needed later. Keeping writing up to date is a cost too, so leave out states and plans that soon go stale, and anything written elsewhere.
-- After renting a machine, log in and check that it is working.
-- Send finished parts to R2 as they are done.
 - Serve with vLLM. A model that uses a technique vLLM does not run (such as COUNT, which reads the preceding tokens) also needs its vLLM integration.
