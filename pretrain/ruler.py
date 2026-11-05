@@ -22,8 +22,14 @@ RULER_COMMIT = "db43f92ff634bbce1c33d1fb15858aec4bba509a"
 NEMO_SKILLS_REPOSITORY = "https://github.com/NVIDIA-NeMo/Skills"
 NEMO_SKILLS_BRANCH = "chsieh/ruler-remove-prefix"
 NEMO_SKILLS_COMMIT = "f4a3fd8e524acd9abd1fea4387e8f179f6d51cf3"
-# The vLLM of the authors' example cluster configuration.
+# The vLLM of the authors' example cluster configuration, with the Transformers of its time.
 VLLM_VERSION = "0.10.1.1"
+TRANSFORMERS_VERSION = "4.55.4"
+# Everything else in the environment as it stood on the day of the authors' NeMo-Skills commit: later releases of
+# NeMo-Run's dependencies dropped modules it imports. The environment has pip, which the preparation calls, and
+# the packages RULER's data code imports, which the authors' containers hold.
+DEPENDENCIES_AS_OF = "2025-12-13T00:00:00Z"
+DATA_PACKAGES = ("wonderwords", "html2text", "tenacity", "beautifulsoup4", "tqdm", "nltk", "scipy", "pyyaml")
 TASKS = (
     "niah_single_1", "niah_single_2", "niah_single_3", "niah_multikey_1", "niah_multikey_2",
     "niah_multikey_3", "niah_multivalue", "niah_multiquery", "vt", "cwe", "fwe", "qa_1", "qa_2",
@@ -33,8 +39,10 @@ QUESTIONS_PER_TASK = 100
 # The authors' example: greedy replies of up to 4,096 tokens.
 GENERATION = ("++inference.tokens_to_generate=4096", "++inference.top_p=1.0", "++inference.temperature=0.0")
 REPLY_TOKENS = 4096
-# NeMo-Skills runs each step in this machine's environment, without containers.
-CLUSTER_CONFIG = "executor: none\ncontainers: {}\n"
+# NeMo-Skills runs each step in this machine's environment, without containers; it still looks up the names of
+# the containers of the authors' example configuration.
+CONTAINERS = ("trtllm", "vllm", "sglang", "megatron", "sandbox", "nemo-skills", "verl", "nemo-rl")
+CLUSTER_CONFIG = "executor: none\ncontainers:\n" + "".join(f'  {name}: ""\n' for name in CONTAINERS)
 CLUSTER = "local"
 
 
@@ -74,7 +82,9 @@ def read_results(output_dir, name):
     for length in LENGTHS:
         tasks = {}
         for task in TASKS:
-            folder = Path(output_dir) / "eval-results" / f"ruler.{setup_name(name, length)}.{task}"
+            # NeMo-Skills writes each length's tasks within a folder of that length.
+            setup = setup_name(name, length)
+            folder = Path(output_dir) / "eval-results" / f"ruler.{setup}" / f"ruler.{setup}.{task}"
             files = sorted(folder.glob("output*.jsonl"))
             if len(files) != 1:
                 raise ValueError(f"expected one output file in {folder}, found {len(files)}")

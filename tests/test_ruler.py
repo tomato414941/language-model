@@ -17,10 +17,12 @@ def write_outputs(root, name, score):
     """NeMo-Skills' layout of evaluated replies, each task's replies scored score(length, task, index)."""
     for length in LENGTHS:
         for task in TASKS:
-            folder = Path(root) / "eval-results" / f"ruler.{name}-{length}.{task}"
+            folder = Path(root) / "eval-results" / f"ruler.{name}-{length}" / f"ruler.{name}-{length}.{task}"
             folder.mkdir(parents=True)
             lines = [json.dumps({"is_correct": score(length, task, index)}) for index in range(QUESTIONS_PER_TASK)]
             (folder / "output.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+            # The marker NeMo-Skills leaves beside a finished file.
+            (folder / "output.jsonl.done").write_text("", encoding="utf-8")
 
 
 class RulerTests(unittest.TestCase):
@@ -55,7 +57,8 @@ class RulerTests(unittest.TestCase):
     def test_返答が足りない課題があれば記録を作らない(self):
         with tempfile.TemporaryDirectory() as root:
             write_outputs(root, "v5", lambda length, task, index: 1.0)
-            short = Path(root) / "eval-results" / f"ruler.v5-{LENGTHS[-1]}.qa_2" / "output.jsonl"
+            setup = f"ruler.v5-{LENGTHS[-1]}"
+            short = Path(root) / "eval-results" / setup / f"{setup}.qa_2" / "output.jsonl"
             short.write_text(json.dumps({"is_correct": 1.0}) + "\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "replies"):
                 read_results(root, "v5")
