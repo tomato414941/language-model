@@ -1,21 +1,21 @@
 # language-model
 
-日本語と英語の言語モデルをゼロから学習する。目標は、今より少ない予算で、今より良いモデルを作ること。少ない予算は世代を上げる要件ではなく、改善を評価する点の1つで、次の世代が前の世代より安くなくてもよい。費用には試しの分を入れない。
+Train Japanese and English language models from scratch. The goal is a better model than the current one on a smaller budget. A smaller budget is not a requirement for a new generation but one of the points by which an improvement is judged, so the next generation need not be cheaper than the previous one. Costs exclude trials.
 
-モデルの作り方について分かっていることは `docs/ideal-model.md` に、結果は `docs/results.md` にある。
+What is known about how to build the model is in `docs/ideal-model.md`, and the results are in `docs/results.md`.
 
 ```bash
-bash scripts/setup_environment.sh   # uv と学習の依存関係を入れる
+bash scripts/setup_environment.sh   # install uv and the training dependencies
 .tools/uv run --no-sync python -m pretrain --help
 .tools/uv run --no-sync python -m unittest discover -s tests
 ```
 
-## 進め方
+## How we work
 
-- 設定は、その世代の値と根拠で書き、ほかの世代を基準にしない。ほかの世代とは点と費用を比べる。読む量は、そのモデルの大きさとの比（1パラメータあたりのトークン数かバイト数）で書く。
-- 時期は「今」と書かず、世代の名前か日付で書く。
-- 当てはまらないことや入れないことを書くときは、当てはまるようになる条件と見直し期限を添え、期限の前に考え直す。
-- docs には、後で要る決めたことと分かったことだけを書く。書いたものを保つ手間も費用と考え、すぐ古くなる状態や予定、ほかに書いてあることは書かない。
-- 機械は借りたら中に入って動いていることを確かめる。止まったら機械を残し、中を調べて続きから直す。
-- できた部分から順に R2 に送る。
-- 配信は vLLM で行う。vLLM で動かない技術（COUNT など、直前の語を使うもの）をモデルに入れるときは、vLLM への組み込みも一緒に用意する。
+- Write each generation's settings with that generation's values and reasons, not relative to another generation. Compare generations by scores and costs. Write the amount read as a ratio to the model's size (tokens or bytes per parameter).
+- Name a time by its generation or date, never as "now".
+- When writing what does not apply or what is left out, add the condition under which it would apply and a review date, and reconsider it before that date.
+- Put in docs only decisions and findings needed later. Keeping writing up to date is a cost too, so leave out states and plans that soon go stale, and anything written elsewhere.
+- After renting a machine, log in and check that it is working. If it stops, keep the machine, look inside, and resume from where it stopped.
+- Send finished parts to R2 as they are done.
+- Serve with vLLM. A model that uses a technique vLLM does not run (such as COUNT, which reads the preceding tokens) also needs its vLLM integration.
