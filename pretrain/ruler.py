@@ -18,7 +18,7 @@ TASKS = (
     "niah_single_1", "niah_single_2", "niah_single_3", "niah_multikey_1", "niah_multikey_2", "niah_multikey_3",
     "niah_multivalue", "niah_multiquery", "ruler_vt", "ruler_cwe", "ruler_fwe", "ruler_qa_squad", "ruler_qa_hotpot",
 )
-# For now, and fixed for v7's pass line; later generations' lines may choose other lengths.
+# For now: v7 is measured at these lengths for reference, and v8's line compares v8 with v7 at the same ones.
 LENGTHS = (8192, 16384)
 QUESTIONS_PER_TASK = 500
 
