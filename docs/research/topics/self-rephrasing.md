@@ -5,3 +5,5 @@
 [FinePhrase の論文](../sources/finephrase.md)では、小さな書き手でも元の Web だけより良かった。1.2B のモデルで、FineWeb-HQ だけが 11.82 のところ、書き手が [SmolLM2](../sources/smollm2.md) の 135M で 12.69、360M で 14.45、Gemma 3 の 270M で 13.80。ただし著者らは 270M を足りないと見ており、1B の 15.31 より低い。書き手は既存の公開モデルで、1億〜4億パラメータの自作モデルで書いた報告は見つけていない。日本語では、公開モデル（Qwen3-14B）で言い換えたデータが効いたという[報告](../sources/data-constrained-synthetic-ja.md)がある。
 
 [計算とデータのスケーリング則](../sources/compute-data-scaling.md)でも、約 600M 以下で 1× Chinchilla 未満では書き直しが繰り返しより良かった。
+
+[合成データの規模則](../sources/synthetic-data-scaling.md)では、言い換えだけでは Web より速く学べず、言い換え約3割と Web の組み合わせが同じ損失に5〜10倍早く届いた。約8B より大きな書き手は要らなかった。v7 の案は、日本語の Web の半分を LLM-jp の言い換えにする（全体の21%）。

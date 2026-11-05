@@ -10,3 +10,5 @@
 どれも読む量が桁違いに多いか、英語だけの結果で、日英を混ぜた学習の結果ではない。
 
 [Repetition Mismatch](../sources/repetition-mismatch.md)：質の高いデータを繰り返す場合、小さな実験と本番で繰り返しの回数を揃えないと、混ぜ方の予想が外れる。揃えると16分の1のトークンで当てられた。
+
+[小さなモデル群で予測する研究](../sources/model-ladders.md)は、本番の1%の計算で、7B と 13B の正解率を絶対値で2点以内で当てた。[途中の点の揺れの研究](../sources/checkpoint-score-instability.md)は、近い重みの平均で点が安定するとした。[3500万の MoE の比較](../sources/moe-below-measurement-floor.md)は、課題が当てずっぽうの水準のままでは差を測れないことの例。

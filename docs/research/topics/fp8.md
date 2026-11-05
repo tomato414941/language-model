@@ -9,3 +9,7 @@
 - [Puro-2B](../sources/puro-2b.md)：RTX 5090 で、テンソルごとではなく128個ずつのブロックごとにスケールを持つ FP8 を使い、1.7B で速さ1.36倍、検証損失の悪化は 0.0031〜0.0039。テンソルごとのスケールは、外れ値で全体の精度が落ちると説明している。v6 の失敗と同じ原因かは確かめていない。
 
 [Delta-Matching](../sources/delta-matching.md)：FP8 の注意で順伝播と逆伝播の値がずれると、569M では差が小さく、1.67B 以上で損失と下流の点が大きく悪化する。修正するとブロックごとの FP8 で BF16/FP32 と同じになるとしている。v6 の RTX 4090 の非有限の勾配と同じ原因かは確かめていない。FP8 を使わない v6 には関係しない。FP8 を使う世代で読み直す。見直し期限：2026-11-15。
+
+2026-11-05 の RTX 5090 の測定（[v7 の速さ](../experiments/v7-throughput.md)）：注意の入力（query と key_value）を bf16 に残す tensorwise は、v6 の形で bf16 より 22%、約7.2億の形で 24% 速く、合成データで500回更新しても止まらなかった。rowwise は bf16 とほぼ同じ速さで、得にならない。
+
+長い学習では、[1兆トークンの FP8](../sources/fp8-trillion-tokens.md) で、2T トークンまでに SwiGLU が外れ値を増やして不安定になり、Smooth-SwiGLU で直した。v7 の FFN は二乗 ReLU で、同じことが起きるかは分からない。[MXFP8 の手順](../sources/mxfp8-recipes.md)は 8B・15T トークンで bf16 と同じ学習になったが、RTX 5090 では MXFP8 の逆伝播が使えない（[TransformerEngine の issue](../sources/transformer-engine-sm120.md)）。
