@@ -3,8 +3,8 @@
 The layers and parameter names follow pretrain.model's llama blocks: grouped
 keys and values, rotary positions, optional per-head normalization of
 queries and keys, an optional sigmoid gate on the attention output, SwiGLU or
-a squared ReLU, RMSNorm and input and output embeddings that share their
-weights. Optional value embeddings in every other layer add to the attention's
+a squared ReLU, or a mixture of such networks as experts, RMSNorm and input
+and output embeddings that share their weights. Optional value embeddings in every other layer add to the attention's
 values through a gate per key-value head, and optional learned scalars scale
 the stream and mix the first layer's input back in before each layer.
 Attention stays within the documents of a sequence, which begin at
@@ -66,6 +66,82 @@ def has_value_embedding(config, index):
     return config.value_embeddings and index % 2 == (config.num_hidden_layers - 1) % 2
 
 
+class NativeExperts(nn.Module):
+    """A mixture of experts in place of a feed-forward network, as pretrain.model's Experts.
+
+    Each token goes to its highest-scoring experts, with each expert's bias
+    added to the scores when the model learned one, and mixes their outputs by
+    its scores; a shared expert adds its output for every token. On a GPU in
+    bfloat16 the experts multiply in grouped products, without waiting for the
+    device, so that vLLM can capture the layer; elsewhere one by one.
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        width, count, size = config.hidden_size, config.experts, config.expert_size
+        self.active = config.active_experts
+        self.router = nn.Linear(width, count, bias=False)
+        squared = config.feed_forward == "relu_squared"
+        if squared:
+            self.register_parameter("gate", None)
+        else:
+            self.gate = nn.Parameter(torch.zeros(count, width, size))
+        self.up = nn.Parameter(torch.zeros(count, width, size))
+        self.down = nn.Parameter(torch.zeros(count, size, width))
+        self.shared = None
+        if config.shared_expert_size:
+            shared = config.shared_expert_size
+            self.shared = nn.ModuleDict({
+                **({} if squared else {"gate": nn.Linear(width, shared, bias=False)}),
+                "up": nn.Linear(width, shared, bias=False),
+                "down": nn.Linear(shared, width, bias=False),
+            })
+        self.balanced_by_bias = config.expert_balance == "bias"
+        if self.balanced_by_bias:
+            self.register_buffer("bias", torch.zeros(count))
+
+    @staticmethod
+    def network(inputs, gate, up, down, product):
+        units = product(inputs, up)
+        units = F.silu(product(inputs, gate)) * units if gate is not None else F.relu(units).square()
+        return product(units, down)
+
+    def forward(self, hidden):
+        tokens = hidden.reshape(-1, hidden.shape[-1])
+        probabilities = self.router(tokens).float().softmax(-1)
+        if self.balanced_by_bias:
+            chosen = (probabilities + self.bias).topk(self.active, dim=-1).indices
+            scores = probabilities.gather(-1, chosen)
+        else:
+            scores, chosen = probabilities.topk(self.active, dim=-1)
+        scores = scores / scores.sum(-1, keepdim=True)
+        assigned = chosen.flatten()
+        order = assigned.argsort(stable=True)
+        counts = torch.bincount(assigned, minlength=probabilities.shape[-1])
+        sources = order // self.active
+        selected = tokens[sources]
+        grouped = getattr(F, "grouped_mm", None)
+        if tokens.is_cuda and tokens.dtype == torch.bfloat16 and grouped is not None:
+            ends = counts.cumsum(0, dtype=torch.int32)
+            outputs = self.network(selected, self.gate, self.up, self.down, lambda a, b: grouped(a, b, offs=ends))
+        else:
+            outputs = torch.cat([
+                self.network(part, None if self.gate is None else self.gate[index],
+                             self.up[index], self.down[index], torch.matmul)
+                for index, part in enumerate(selected.split(counts.tolist()))
+            ])
+        mixed = tokens.new_zeros(tokens.shape).index_add_(
+            0, sources, (outputs * scores.flatten()[order, None]).to(tokens.dtype)
+        )
+        if self.shared is not None:
+            shared = self.shared
+            mixed = mixed + self.network(
+                tokens, shared["gate"] if "gate" in shared else None, shared["up"], shared["down"],
+                lambda inputs, linear: linear(inputs),
+            )
+        return mixed.view(hidden.shape)
+
+
 class NativeBlock(nn.Module):
     def __init__(self, config, layer_idx, value_embedding=False):
         super().__init__()
@@ -97,9 +173,11 @@ class NativeBlock(nn.Module):
         self.value_gate = (
             nn.Linear(VALUE_GATE_CHANNELS, self.kv_heads, bias=False) if value_embedding else None
         )
-        self.gate = None if squared else nn.Linear(width, intermediate, bias=False)
-        self.up = nn.Linear(width, intermediate, bias=False)
-        self.down = nn.Linear(intermediate, width, bias=False)
+        self.experts = NativeExperts(config) if config.experts else None
+        if self.experts is None:
+            self.gate = None if squared else nn.Linear(width, intermediate, bias=False)
+            self.up = nn.Linear(width, intermediate, bias=False)
+            self.down = nn.Linear(intermediate, width, bias=False)
 
     def forward(self, hidden, cosine, sine, mask, cache, values=None, **kwargs):
         normalized = self.norm_attention(hidden)
@@ -137,6 +215,8 @@ class NativeBlock(nn.Module):
             attended = attended * gate.view(batch, length, self.heads, -1)
         hidden = hidden + self.attention_output(attended.reshape(batch, length, width))
         normalized = self.norm_mlp(hidden)
+        if self.experts is not None:
+            return hidden + self.experts(normalized)
         if self.gate is None:
             return hidden + self.down(F.relu(self.up(normalized)).square())
         return hidden + self.down(F.silu(self.gate(normalized)) * self.up(normalized))

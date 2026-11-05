@@ -28,6 +28,7 @@ SUPPORTED = {
     "width", "heads", "layers", "context", "architecture", "kv_heads", "intermediate_size",
     "rope_theta", "qk_norm", "attention_gate", "document_start", "value_embeddings",
     "residual_scalars", "prediction_depth", "zero_output_init", "feed_forward", "count_table",
+    "experts", "active_experts", "expert_size", "shared_expert_size", "expert_balance",
 }
 CHAT_TEMPLATE = (
     f"{BOS}"
@@ -74,6 +75,13 @@ def native_config(config, tokenizer, table=None):
         value_embeddings=config.value_embeddings,
         residual_scalars=config.residual_scalars,
         feed_forward=config.feed_forward,
+        experts=config.experts,
+        active_experts=config.active_experts,
+        expert_size=None if config.experts is None else (
+            config.expert_size or max(1, config.feed_forward_units() // config.active_experts)
+        ),
+        shared_expert_size=config.shared_expert_size,
+        expert_balance=config.expert_balance,
         count_table=None
         if not config.count_table
         else {
