@@ -535,3 +535,27 @@ license = "Openly licensed code only, as the Common Pile v0.1 selected it"
 terms_url = "https://huggingface.co/datasets/common-pile/stackv2_edu_filtered"
 minimum_characters = 32000
 maximum_characters = 520000
+
+# Japanese web pages from FineWeb2 rewritten by Qwen3-14B in four styles (easy, Wikipedia-like, difficult and
+# conversational question and answer). Kiyomaru et al. found such rewriting matched or beat adding the same amount
+# of real Japanese web text, at 1.8B to 7.2B parameters where Japanese web text ran short.
+[[sources]]
+id = "ja-paraphrase-llmjp"
+language = "ja"
+repository = "llm-jp/scaling-data-constrained-llms"
+revision = "ea7f7e0eb67ea0f6e54f49e48d1436739b8d8910"
+prefix = "data/ja_paraphrase_63b/"
+format = "jsonl.gz"
+license = "CC-BY-4.0; written by Qwen3-14B (Apache-2.0) from FineWeb2 (ODC-By-1.0)"
+terms_url = "https://huggingface.co/datasets/llm-jp/scaling-data-constrained-llms"
+
+# FineWeb's English pages as Ultra-FineWeb's classifier selected them, the main web data of MiniCPM4 and MiniCPM5.
+[[sources]]
+id = "en-ultrafineweb"
+language = "en"
+repository = "openbmb/Ultra-FineWeb"
+revision = "02c85641e3d19a854be2e09139c25adaa9518063"
+prefix = "data/ultrafineweb_en/"
+license = "Apache-2.0; source texts from FineWeb (ODC-By-1.0)"
+terms_url = "https://huggingface.co/datasets/openbmb/Ultra-FineWeb"
+text_field = "content"
