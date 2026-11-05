@@ -18,4 +18,5 @@ bash scripts/setup_environment.sh   # install uv and the training dependencies
 - Put in docs only decisions and findings needed later. Keeping writing up to date is a cost too, so leave out states and plans that soon go stale, and anything written elsewhere.
 - After renting a machine, log in and check that it is working. If it stops, keep the machine, look inside, and resume from where it stopped.
 - Send finished parts to R2 as they are done.
+- Never re-measure an earlier generation when the evaluation changes. Compare generations only on the evaluations both were measured with; an evaluation counts from the generation after the first one measured on it.
 - Serve with vLLM. A model that uses a technique vLLM does not run (such as COUNT, which reads the preceding tokens) also needs its vLLM integration.
