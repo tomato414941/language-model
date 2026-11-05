@@ -123,7 +123,9 @@ class NativeExperts(nn.Module):
         grouped = getattr(F, "grouped_mm", None)
         if tokens.is_cuda and tokens.dtype == torch.bfloat16 and grouped is not None:
             ends = counts.cumsum(0, dtype=torch.int32)
-            outputs = self.network(selected, self.gate, self.up, self.down, lambda a, b: grouped(a, b, offs=ends))
+            outputs = self.network(
+                selected, self.gate, self.up, self.down, lambda a, b: grouped(a.to(b.dtype), b, offs=ends)
+            )
         else:
             outputs = torch.cat([
                 self.network(part, None if self.gate is None else self.gate[index],

@@ -421,11 +421,13 @@ class Experts(nn.Module):
         sources = order // self.active
         selected = tokens[sources]
         if half_precision(tokens.device, tokens.dtype) == torch.bfloat16:
-            # Each grouped product multiplies every expert's tokens at once.
+            # Each grouped product multiplies every expert's tokens at once. Its
+            # inputs come back to bfloat16 first: autocast squares in float32,
+            # and the grouped product takes no mixed types.
             ends = counts.cumsum(0, dtype=torch.int32)
             weights = [None if w is None else w.to(torch.bfloat16) for w in (self.gate, self.up, self.down)]
             outputs = self.feed_forward(
-                selected.to(torch.bfloat16), *weights, lambda a, b: F.grouped_mm(a, b, offs=ends)
+                selected, *weights, lambda a, b: F.grouped_mm(a.to(torch.bfloat16), b, offs=ends)
             )
         else:
             outputs = torch.cat([
