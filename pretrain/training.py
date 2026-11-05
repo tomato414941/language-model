@@ -51,6 +51,14 @@ class TrainConfig:
     # NorMuon updates from weight_decay down to zero over the run, as nanochat
     # does, so the weights settle unpulled by the end.
     weight_decay_schedule: str = "constant"
+    # Above zero, NorMuon holds the matrices of the attention layers and
+    # feed-forward networks at the Frobenius norms they start with (Hyperball,
+    # arxiv.org/abs/2606.16899), as Puro-2B trained them: each step moves a
+    # matrix along its normalized update by this multiple of the learning rate
+    # times its norm, then scales it back to that norm, without weight decay.
+    # The attention's sigmoid gates, whose scale sets how open they are, go to
+    # AdamW with the embedding. Puro-2B used 10.
+    hyperball_rate: float = 0.0
     # Every this many steps of a wsd decay, the model's weights are kept apart
     # from last.pt, for averaging the last of them after training; 0 keeps none.
     snapshot_every: int = 0
@@ -89,6 +97,7 @@ class TrainConfig:
             "weight_decay",
             "gradient_clip",
             "scalar_rate",
+            "hyperball_rate",
         ):
             value = getattr(self, field)
             if type(value) not in (float, int) or not math.isfinite(value) or value < 0:
@@ -117,6 +126,10 @@ class TrainConfig:
             raise ValueError("weight_decay_schedule must be constant or cosine")
         if self.weight_decay_schedule == "cosine" and self.optimizer != "normuon":
             raise ValueError("a cosine weight decay schedule applies to normuon")
+        if self.hyperball_rate and self.optimizer != "normuon":
+            raise ValueError("hyperball_rate applies to normuon")
+        if self.hyperball_rate and self.weight_decay_schedule != "constant":
+            raise ValueError("the matrices hyperball holds take no weight decay to schedule")
         if type(self.snapshot_every) is not int or self.snapshot_every < 0:
             raise ValueError("snapshot_every must be a nonnegative integer")
         if self.snapshot_every and self.schedule != "wsd":
@@ -266,12 +279,18 @@ class NorMuon(torch.optim.Muon):
     weights the update already moves toward zero. Both follow nanochat's
     implementation; the update keeps Muon's size, so match_rms_adamw scales it
     as it scales Muon's.
+
+    A group with hyperball set instead keeps each matrix at the Frobenius norm
+    it had when this optimizer first moved it (arxiv.org/abs/2606.16899): the
+    update, scaled to the learning rate times that norm, moves the matrix,
+    which is then scaled back to that norm, without weight decay.
     """
 
-    def __init__(self, params, beta2=0.9, **options):
+    def __init__(self, params, beta2=0.9, hyperball=False, **options):
         super().__init__(params, **options)
         for group in self.param_groups:
             group.setdefault("beta2", beta2)
+            group.setdefault("hyperball", hyperball)
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -291,6 +310,8 @@ class NorMuon(torch.optim.Muon):
                     state["second_moment"] = grad.new_zeros(
                         (rows, 1) if rows >= columns else (1, columns), dtype=torch.float32
                     )
+                    if group.get("hyperball"):
+                        state["radius"] = torch.linalg.vector_norm(parameter)
                 buffer = state["momentum_buffer"]
                 buffer.lerp_(grad, 1 - group["momentum"])
                 update = grad.lerp(buffer, group["momentum"]) if group["nesterov"] else buffer
@@ -303,6 +324,13 @@ class NorMuon(torch.optim.Muon):
                 evened = update * state["second_moment"].clamp_min(1e-10).rsqrt()
                 update = evened * (update.norm() / evened.norm().clamp_min(1e-10))
                 update = update.to(parameter.dtype)
+                if group.get("hyperball"):
+                    radius = state["radius"]
+                    parameter.sub_(
+                        update * (group["lr"] * radius / torch.linalg.vector_norm(update).clamp_min(1e-10))
+                    )
+                    parameter.mul_(radius / torch.linalg.vector_norm(parameter).clamp_min(1e-10))
+                    continue
                 decay = group["lr"] * group["weight_decay"]
                 parameter.sub_(decay * parameter * (update * parameter >= 0))
                 parameter.add_(
@@ -327,6 +355,10 @@ SCALAR_SETTINGS = {
     "input_scales": {"lr": 0.5, "betas": (0.96, 0.95)},
 }
 
+# The matrices of the attention layers and the feed-forward networks, which
+# Puro-2B held with Hyperball as weights nearly free of scale.
+HYPERBALL_MATRICES = ("query", "key_value", "attention_output", "gate", "up", "down")
+
 
 def make_optimizer(model, config, device):
     """Build the configured optimizer; weight decay applies to matrices only.
@@ -336,7 +368,9 @@ def make_optimizer(model, config, device):
     AdamW's would have, so both follow the same learning rate. The residual
     scalars take nanochat's rates instead, grown with the square root of the
     batch as its rates are, times the config's scalar_rate, and follow the
-    schedule in proportion through each group's lr_scale.
+    schedule in proportion through each group's lr_scale. With hyperball_rate,
+    NorMuon takes only HYPERBALL_MATRICES, at that multiple of the rate, and
+    AdamW the rest.
     """
     scalars = {
         id(parameter): name
@@ -381,17 +415,31 @@ def make_optimizer(model, config, device):
     if config.optimizer == "adamw":
         return adamw(list(model.parameters()))
     named = list(model.named_parameters())
-    matrices = [p for name, p in named if p.ndim == 2 and name.startswith("blocks.")]
-    chosen = {id(p) for p in matrices}
-    return Optimizers(
-        (NorMuon if config.optimizer == "normuon" else torch.optim.Muon)(
+    if config.hyperball_rate:
+        shape = model.config
+        if shape.architecture != "llama" or shape.full_attention_every is not None or shape.experts is not None:
+            raise ValueError("hyperball holds the matrices of attention layers and dense feed-forward networks")
+        if shape.zero_output_init:
+            raise ValueError("hyperball keeps each matrix at the norm it starts with, so none may start at zero")
+        matrices = [
+            p for name, p in named if name.startswith("blocks.") and name.split(".")[-2] in HYPERBALL_MATRICES
+        ]
+        first = NorMuon(
+            [{"params": matrices, "lr_scale": config.hyperball_rate}],
+            lr=config.learning_rate,
+            weight_decay=0.0,
+            hyperball=True,
+        )
+    else:
+        matrices = [p for name, p in named if p.ndim == 2 and name.startswith("blocks.")]
+        first = (NorMuon if config.optimizer == "normuon" else torch.optim.Muon)(
             matrices,
             lr=config.learning_rate,
             weight_decay=config.weight_decay,
             adjust_lr_fn="match_rms_adamw",
-        ),
-        adamw([p for _, p in named if id(p) not in chosen]),
-    )
+        )
+    chosen = {id(p) for p in matrices}
+    return Optimizers(first, adamw([p for _, p in named if id(p) not in chosen]))
 
 
 @torch.inference_mode()
@@ -699,7 +747,7 @@ def train(
         # The new schedule must agree with the rate of the last saved update, so
         # a decay phase or a longer stable phase picks up without a jump.
         previous = TrainConfig(**saved["train_config"])
-        if previous.optimizer != config.optimizer:
+        if (previous.optimizer, previous.hyperball_rate) != (config.optimizer, config.hyperball_rate):
             raise ValueError(
                 "continuation keeps the optimizer and its state; "
                 "use initialize_from to change the optimizer"
@@ -850,7 +898,7 @@ def train(
             rate = learning_rate(config, step)
             for group in optimizer.param_groups:
                 group["lr"] = rate * group.get("lr_scale", 1.0)
-            if config.optimizer == "normuon":
+            if config.optimizer == "normuon" and not config.hyperball_rate:
                 for group in optimizer.optimizers[0].param_groups:
                     group["weight_decay"] = weight_decay(config, step)
             total_loss = 0.0

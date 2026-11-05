@@ -781,7 +781,10 @@ class RecipeTests(unittest.TestCase):
         self.recipe_path.write_text(
             self.recipe_path.read_text()
             .replace("vocabulary_size = 258", "vocabulary_size = 266\nreserved_tokens = 8")
-            .replace("[sft]\n", '[sft]\noptimizer = "muon"\nsampling = "sequential"\neval_batches = 3\n')
+            .replace(
+                "[sft]\n",
+                '[sft]\noptimizer = "normuon"\nhyperball_rate = 10.0\nsampling = "sequential"\neval_batches = 3\n',
+            )
         )
         self.prepare()
         source = self.root / "instruction-source"
@@ -818,7 +821,9 @@ class RecipeTests(unittest.TestCase):
         model, config = read_config(self.root / "sft.toml")
         self.assertEqual(model, read_config(self.root / "training.toml")[0])
         self.assertEqual(config.learning_rate, 0.00002)
-        self.assertEqual((config.optimizer, config.sampling), ("muon", "sequential"))
+        self.assertEqual(
+            (config.optimizer, config.hyperball_rate, config.sampling), ("normuon", 10.0, "sequential")
+        )
         self.assertEqual(config.eval_batches, 3)
         # The residual scalars fall by the share that this rate is of pretraining's
         # peak at this batch.

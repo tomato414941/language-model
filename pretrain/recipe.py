@@ -1979,9 +1979,10 @@ def write_sft_config(recipe_path, data, tokenizer_directory, output):
         eval_batches=sft.get("eval_batches", 16),
         log_every=max(1, steps // 100),
         seed=recipe["seed"],
-        # The recipe may tune with pretraining's optimizer, and read every
-        # conversation once per epoch instead of drawing them at random.
-        **{key: sft[key] for key in ("optimizer", "sampling") if key in sft},
+        # The recipe may tune with pretraining's optimizer, Hyperball included,
+        # and read every conversation once per epoch instead of drawing them
+        # at random.
+        **{key: sft[key] for key in ("optimizer", "hyperball_rate", "sampling") if key in sft},
     )
     text = ""
     for section, values in (("model", asdict(model)), ("training", asdict(config))):

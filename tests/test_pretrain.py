@@ -1417,6 +1417,110 @@ class PretrainingTests(unittest.TestCase):
         self.assertTrue(toward_zero.any() and not toward_zero.all())
         torch.testing.assert_close(decayed, update + 0.1 * 0.5 * start * toward_zero)
 
+    def test_hyperball_moves_along_normuons_update_by_the_rate_times_the_starting_norm_and_keeps_that_norm(self):
+        """Hyperball は NorMuon の更新の向きへ学習率×最初のノルムだけ動かし、行列を最初のノルムに戻す。"""
+        torch.manual_seed(0)
+        start = torch.randn(8, 4)
+        grads = [torch.randn(8, 4) for _ in range(3)]
+
+        def stepped(hyperball):
+            weight = torch.nn.Parameter(start.clone())
+            optimizer = (
+                NorMuon([weight], lr=0.05, weight_decay=0.0, hyperball=True)
+                if hyperball
+                else NorMuon([weight], lr=0.05, weight_decay=0.0, adjust_lr_fn="match_rms_adamw")
+            )
+            weights = []
+            for grad in grads:
+                weight.grad = grad.clone()
+                optimizer.step()
+                weights.append(weight.detach().clone())
+            return weights
+
+        radius = start.norm()
+        for weight in stepped(True):
+            torch.testing.assert_close(weight.norm(), radius)
+        # From the same start, the first step goes where NorMuon's update points.
+        moved = stepped(False)[0] - start
+        expected = start + 0.05 * radius * moved / moved.norm()
+        torch.testing.assert_close(stepped(True)[0], radius * expected / expected.norm())
+
+    def test_hyperball_takes_attention_and_feed_forward_matrices_at_its_multiple_of_the_rate(self):
+        """Hyperball は注意と FFN の行列を学習率の指定倍で受け持ち、ゲートを含むほかの重みは AdamW が一度ずつ受け持つ。"""
+        config = TrainConfig(**{**self.config().__dict__, "optimizer": "normuon", "hyperball_rate": 10.0})
+        for model_config in (
+            dataclasses.replace(
+                self.llama_config(), qk_norm=True, attention_gate="headwise", value_embeddings=True, residual_scalars=True
+            ),
+            dataclasses.replace(self.llama_config(), feed_forward="relu_squared"),
+        ):
+            model = LanguageModel(258, model_config)
+            hyperball, adamw = make_optimizer(model, config, torch.device("cpu")).optimizers
+            (group,) = hyperball.param_groups
+            self.assertTrue(group["hyperball"])
+            self.assertEqual((group["lr_scale"], group["weight_decay"]), (10.0, 0.0))
+            held = {id(parameter) for parameter in group["params"]}
+            others = [id(parameter) for group in adamw.param_groups for parameter in group["params"]]
+            self.assertEqual(len(others), len(set(others)))
+            for name, parameter in model.named_parameters():
+                matrix = name.startswith("blocks.") and name.split(".")[-2] in (
+                    "query", "key_value", "attention_output", "gate", "up", "down"
+                )
+                self.assertEqual(id(parameter) in held, matrix, name)
+                self.assertEqual(id(parameter) in others, not matrix, name)
+        for model_config in (
+            dataclasses.replace(self.llama_config(), zero_output_init=True),
+            dataclasses.replace(self.llama_config(), full_attention_every=2),
+            dataclasses.replace(self.llama_config(), experts=4, active_experts=2),
+            self.model_config,
+        ):
+            with self.assertRaisesRegex(ValueError, "hyperball"):
+                make_optimizer(LanguageModel(258, model_config), config, torch.device("cpu"))
+
+    def test_hyperball_training_learns_keeps_the_norms_and_resumes_the_same_updates(self):
+        """Hyperball で両言語の検証損失を下げ、行列を最初のノルムに保ち、途中保存から再開しても連続学習と同じ重みを得る。"""
+        self.model_config = dataclasses.replace(self.llama_config(), attention_gate="headwise")
+        config = TrainConfig(
+            **{**self.config(steps=24).__dict__, "optimizer": "normuon", "hyperball_rate": 10.0}
+        )
+        torch.manual_seed(42)
+        start = LanguageModel(258, self.model_config)
+        before = evaluate(start, self.corpus, torch.device("cpu"), batches=2, batch_size=4)
+        after = self.run_training("hyperball-continuous", config)["validation"]
+        for language in ("ja", "en"):
+            self.assertLess(after[language]["loss"], before[language]["loss"] * 0.8)
+        self.run_training("hyperball-resumed", config, max_steps=10)
+        self.run_training(
+            "hyperball-resumed", config, resume=self.root / "hyperball-resumed/last.pt"
+        )
+        first, second = (
+            load_checkpoint(self.root / name / "last.pt")
+            for name in ("hyperball-continuous", "hyperball-resumed")
+        )
+        for name, parameter in first["model"].items():
+            torch.testing.assert_close(parameter, second["model"][name], rtol=0, atol=0)
+        held = [
+            name for name, _ in start.named_parameters()
+            if name.startswith("blocks.") and name.split(".")[-2] in ("query", "key_value", "attention_output", "gate", "up", "down")
+        ]
+        self.assertEqual(len(held), 2 * 6)
+        for name in held:
+            trained, initial = first["model"][name], start.state_dict()[name]
+            self.assertFalse(torch.equal(trained, initial), name)
+            torch.testing.assert_close(trained.norm(), initial.norm())
+
+    def test_hyperball_is_set_only_for_normuon_without_a_decay_schedule(self):
+        """Hyperball の倍率は NorMuon でだけ受け付け、負の値や weight decay の予定との組み合わせを断る。"""
+        for changes in (
+            {"hyperball_rate": 10.0},
+            {"hyperball_rate": 10.0, "optimizer": "muon"},
+            {"hyperball_rate": 10.0, "optimizer": "normuon", "weight_decay_schedule": "cosine"},
+            {"hyperball_rate": -1.0, "optimizer": "normuon"},
+        ):
+            with self.assertRaisesRegex(ValueError, "hyperball|weight decay"):
+                TrainConfig(**changes)
+        self.assertEqual(TrainConfig(optimizer="normuon", hyperball_rate=10).hyperball_rate, 10)
+
     def test_cosine_weight_decay_falls_from_the_setting_to_zero(self):
         """cosine の weight decay は設定値から始まり、半ばで半分、終わりでほぼゼロになる。"""
         config = TrainConfig(
@@ -1460,6 +1564,15 @@ class PretrainingTests(unittest.TestCase):
                 "muon-decay",
                 self.wsd_config(optimizer="muon"),
                 continue_from=self.root / "adamw-stable/last.pt",
+            )
+        # Hyperball's radii are part of the optimizer's state, so it is not switched on midway.
+        self.model_config = self.llama_config()
+        self.run_training("normuon-stable", self.wsd_config(optimizer="normuon"), max_steps=6)
+        with self.assertRaisesRegex(ValueError, "change the optimizer"):
+            self.run_training(
+                "hyperball-decay",
+                self.wsd_config(optimizer="normuon", hyperball_rate=10.0),
+                continue_from=self.root / "normuon-stable/last.pt",
             )
 
     def test_prepared_data_reports_corruption_before_training(self):
