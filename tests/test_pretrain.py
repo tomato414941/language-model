@@ -533,25 +533,89 @@ class PretrainingTests(unittest.TestCase):
         # Even routing makes the balancing loss 1, its least value, weighted by 0.01.
         self.assertGreater(loss.item(), 0.01)
 
+    def test_二乗ReLUの専門家は選んだ専門家の出力に共有の専門家の出力を足す(self):
+        """二乗 ReLU の専門家は、各単語を点数の高い専門家の網で計算して点数の比で混ぜ、全単語が通る共有の専門家の出力を足す。"""
+        torch.manual_seed(0)
+        experts = Experts(width=8, count=4, active=2, size=6, feed_forward="relu_squared", shared=5)
+        self.assertIsNone(experts.gate)
+        hidden = torch.randn(3, 5, 8)
+        mixed, _ = experts(hidden)
+        tokens = hidden.reshape(-1, 8)
+        probabilities = experts.router(tokens).softmax(-1)
+        shared = experts.shared
+        for token, output, scores in zip(tokens, mixed.reshape(-1, 8), probabilities):
+            top, chosen = scores.topk(2)
+            expected = sum(
+                weight / top.sum() * torch.relu(token @ experts.up[index]).square() @ experts.down[index]
+                for weight, index in zip(top, chosen)
+            ) + shared["down"](torch.relu(shared["up"](token)).square())
+            torch.testing.assert_close(output, expected, rtol=1e-4, atol=1e-5)
+
+    def test_偏りで均す専門家は偏りを足した点で選び元の点で混ぜ使われ方で偏りを動かす(self):
+        """偏りで均す専門家は、偏りを足した点で専門家を選び、元の点の比で混ぜ、損失には点数の大きさだけを入れる。
+        学習中に数えた使われ方から、使われすぎた専門家の偏りを下げ、少ない専門家の偏りを上げる。"""
+        torch.manual_seed(0)
+        experts = Experts(width=8, count=4, active=2, size=6, balance="bias")
+        experts.bias.copy_(torch.tensor([0.0, 0.0, 10.0, 10.0]))
+        hidden = torch.randn(2, 6, 8)
+        mixed, loss = experts(hidden)
+        tokens = hidden.reshape(-1, 8)
+        logits = experts.router(tokens).float()
+        for token, output, scores in zip(tokens, mixed.reshape(-1, 8), logits.softmax(-1)):
+            expected = sum(
+                scores[index] / scores[2:].sum()
+                * (torch.nn.functional.silu(token @ experts.gate[index]) * (token @ experts.up[index]))
+                @ experts.down[index]
+                for index in (2, 3)
+            )
+            torch.testing.assert_close(output, expected, rtol=1e-4, atol=1e-5)
+        torch.testing.assert_close(loss, 0.001 * torch.logsumexp(logits, -1).square().mean())
+        torch.testing.assert_close(experts.load, torch.tensor([0.0, 0.0, 12.0, 12.0]))
+        experts.eval()
+        experts(hidden)
+        torch.testing.assert_close(experts.load, torch.tensor([0.0, 0.0, 12.0, 12.0]))
+        self.assertEqual(experts.update_bias(0.5), 2.0)
+        torch.testing.assert_close(experts.bias, torch.tensor([0.5, 0.5, 9.5, 9.5]))
+        torch.testing.assert_close(experts.load, torch.zeros(4))
+        self.assertIsNone(experts.update_bias(0.5))
+        torch.testing.assert_close(experts.bias, torch.tensor([0.5, 0.5, 9.5, 9.5]))
+        self.assertIn("bias", experts.state_dict())
+        self.assertNotIn("load", experts.state_dict())
+
+    def test_専門家の設定は専門家なしでは受け付けず均し方は損失か偏りだけを受け付ける(self):
+        """共有の専門家の大きさと均し方は専門家があるときだけ、均し方は loss か bias だけを受け付ける。"""
+        for changes in ({"shared_expert_size": 8}, {"expert_balance": "bias"}):
+            with self.assertRaisesRegex(ValueError, "require experts"):
+                dataclasses.replace(self.llama_config(), **changes)
+        mixture = {"experts": 4, "active_experts": 2}
+        for changes in ({"expert_balance": "drop"}, {"shared_expert_size": 0}):
+            with self.assertRaisesRegex(ValueError, "expert_balance|shared_expert_size"):
+                dataclasses.replace(self.llama_config(), **mixture, **changes)
+        config = dataclasses.replace(
+            self.llama_config(), **mixture, feed_forward="relu_squared", shared_expert_size=8, expert_balance="bias"
+        )
+        self.assertEqual((config.shared_expert_size, config.expert_balance), (8, "bias"))
+
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA GPU required")
     def test_GPUでは専門家をまとめて計算し一つずつと同じ結果を返す(self):
         """GPUのbfloat16では全専門家の積をまとめて計算し、一つずつ計算したときと同じ出力と勾配を返す。"""
-        torch.manual_seed(0)
-        experts = Experts(width=64, count=8, active=2, size=32).cuda()
-        hidden = torch.randn(4, 50, 64, device="cuda")
-        results = []
-        for grouped in (True, False):
-            experts.zero_grad()
-            with (
-                patch("pretrain.model.half_precision", return_value=None) if not grouped else contextlib.nullcontext(),
-                torch.autocast("cuda", dtype=torch.bfloat16),
-            ):
-                mixed, loss = experts(hidden)
-            (mixed.float().square().mean() + loss).backward()
-            results.append((mixed.float(), [p.grad.float().clone() for p in experts.parameters()]))
-        torch.testing.assert_close(results[0][0], results[1][0], rtol=0.05, atol=2e-3)
-        for grouped, separate in zip(results[0][1], results[1][1]):
-            torch.testing.assert_close(grouped, separate, rtol=0.05, atol=2e-3)
+        for form, shared in (("swiglu", None), ("relu_squared", 16)):
+            torch.manual_seed(0)
+            experts = Experts(width=64, count=8, active=2, size=32, feed_forward=form, shared=shared).cuda()
+            hidden = torch.randn(4, 50, 64, device="cuda")
+            results = []
+            for grouped in (True, False):
+                experts.zero_grad()
+                with (
+                    patch("pretrain.model.half_precision", return_value=None) if not grouped else contextlib.nullcontext(),
+                    torch.autocast("cuda", dtype=torch.bfloat16),
+                ):
+                    mixed, loss = experts(hidden)
+                (mixed.float().square().mean() + loss).backward()
+                results.append((mixed.float(), [p.grad.float().clone() for p in experts.parameters()]))
+            torch.testing.assert_close(results[0][0], results[1][0], rtol=0.05, atol=2e-3)
+            for grouped, separate in zip(results[0][1], results[1][1]):
+                torch.testing.assert_close(grouped, separate, rtol=0.05, atol=2e-3)
 
     def test_さらに先の予測は学習の目的にだけ加わる(self):
         """さらに先の単語の予測は学習中の目的にだけ加わり、評価の損失は次の単語の予測だけで測る。"""
@@ -1149,15 +1213,11 @@ class PretrainingTests(unittest.TestCase):
         self.assertAlmostEqual(weight.std().item(), 0.4 / 24**0.5, delta=0.01)
 
     def test_feed_forward_settings_that_cannot_work_are_refused_before_training(self):
-        """An unknown network, and a squared ReLU outside rotary models or with experts, are refused."""
+        """An unknown network, and a squared ReLU outside rotary models, are refused."""
         with self.assertRaisesRegex(ValueError, "feed_forward"):
             dataclasses.replace(self.llama_config(), feed_forward="gelu")
         with self.assertRaisesRegex(ValueError, "require llama"):
             ModelConfig(width=24, heads=4, layers=1, context=16, feed_forward="relu_squared")
-        with self.assertRaisesRegex(ValueError, "experts"):
-            dataclasses.replace(
-                self.llama_config(), feed_forward="relu_squared", experts=4, active_experts=2
-            )
 
     def patch_model_config(self):
         return ModelConfig(
@@ -1446,6 +1506,26 @@ class PretrainingTests(unittest.TestCase):
         expected = start + 0.05 * radius * moved / moved.norm()
         torch.testing.assert_close(stepped(True)[0], radius * expected / expected.norm())
 
+    def test_hyperball_moves_each_matrix_of_an_experts_stack_as_that_matrix_alone(self):
+        """Hyperball は専門家の行列の積み重ねを、それぞれ出力×入力の行列として一つずつ動かしたのと同じに動かし、各行列を最初のノルムに保つ。"""
+        torch.manual_seed(0)
+        # The experts' layout: each matrix takes the inputs first.
+        start = torch.randn(3, 8, 5)
+        stack = torch.nn.Parameter(start.clone())
+        singles = [torch.nn.Parameter(start[index].mT.clone()) for index in range(3)]
+        stacked = NorMuon([stack], lr=0.05, weight_decay=0.0, hyperball=True)
+        separate = NorMuon(singles, lr=0.05, weight_decay=0.0, hyperball=True)
+        for _ in range(3):
+            grad = torch.randn(3, 8, 5)
+            stack.grad = grad.clone()
+            for index, single in enumerate(singles):
+                single.grad = grad[index].mT.clone()
+            stacked.step()
+            separate.step()
+            for index, single in enumerate(singles):
+                torch.testing.assert_close(stack.detach()[index].mT, single.detach(), rtol=1e-3, atol=1e-4)
+                torch.testing.assert_close(stack.detach()[index].norm(), start[index].norm())
+
     def test_hyperball_takes_attention_and_feed_forward_matrices_at_its_multiple_of_the_rate(self):
         """Hyperball は注意と FFN の行列を学習率の指定倍で受け持ち、ゲートを含むほかの重みは AdamW が一度ずつ受け持つ。"""
         config = TrainConfig(**{**self.config().__dict__, "optimizer": "normuon", "hyperball_rate": 10.0})
@@ -1469,10 +1549,18 @@ class PretrainingTests(unittest.TestCase):
                 )
                 self.assertEqual(id(parameter) in held, matrix, name)
                 self.assertEqual(id(parameter) in others, not matrix, name)
+        # A mixture's experts and shared expert go to Hyperball, its router to AdamW.
+        model = LanguageModel(258, dataclasses.replace(
+            self.llama_config(), feed_forward="relu_squared", experts=4, active_experts=2, shared_expert_size=8,
+        ))
+        hyperball, adamw = make_optimizer(model, config, torch.device("cpu")).optimizers
+        held = {id(parameter) for group in hyperball.param_groups for parameter in group["params"]}
+        for name, parameter in model.named_parameters():
+            if ".experts." in name:
+                self.assertEqual(id(parameter) in held, "router" not in name, name)
         for model_config in (
             dataclasses.replace(self.llama_config(), zero_output_init=True),
             dataclasses.replace(self.llama_config(), full_attention_every=2),
-            dataclasses.replace(self.llama_config(), experts=4, active_experts=2),
             self.model_config,
         ):
             with self.assertRaisesRegex(ValueError, "hyperball"):
@@ -1509,6 +1597,39 @@ class PretrainingTests(unittest.TestCase):
             trained, initial = first["model"][name], start.state_dict()[name]
             self.assertFalse(torch.equal(trained, initial), name)
             torch.testing.assert_close(trained.norm(), initial.norm())
+
+    def test_偏りで均す二乗ReLUの専門家をHyperballで学び途中保存から同じ重みと偏りで再開する(self):
+        """二乗 ReLU と共有の専門家の混合を偏りで均して Hyperball で学ぶと、両言語の検証損失が下がり、
+        専門家の行列は各自の最初のノルムを保ち、偏りが動き、途中保存から再開しても連続学習と同じ重みと偏りになる。"""
+        self.model_config = dataclasses.replace(
+            self.llama_config(), feed_forward="relu_squared", experts=4, active_experts=2,
+            shared_expert_size=8, expert_balance="bias",
+        )
+        config = TrainConfig(**{
+            **self.config(steps=24).__dict__, "optimizer": "normuon", "hyperball_rate": 10.0, "expert_bias_rate": 0.01,
+        })
+        torch.manual_seed(42)
+        start = LanguageModel(258, self.model_config)
+        before = evaluate(start, self.corpus, torch.device("cpu"), batches=2, batch_size=4)
+        after = self.run_training("experts-continuous", config)["validation"]
+        for language in ("ja", "en"):
+            self.assertLess(after[language]["loss"], before[language]["loss"] * 0.8)
+        self.run_training("experts-resumed", config, max_steps=10)
+        self.run_training("experts-resumed", config, resume=self.root / "experts-resumed/last.pt")
+        first, second = (
+            load_checkpoint(self.root / name / "last.pt") for name in ("experts-continuous", "experts-resumed")
+        )
+        for name, value in first["model"].items():
+            torch.testing.assert_close(value, second["model"][name], rtol=0, atol=0)
+        biases = [name for name in first["model"] if name.endswith("experts.bias")]
+        self.assertEqual(len(biases), self.model_config.layers)
+        self.assertTrue(all(first["model"][name].abs().sum() > 0 for name in biases))
+        for name, initial in start.state_dict().items():
+            if name.split(".")[-2:] in (["experts", "up"], ["experts", "down"]):
+                torch.testing.assert_close(first["model"][name].norm(dim=(-2, -1)), initial.norm(dim=(-2, -1)))
+        records = [json.loads(line) for line in (self.root / "experts-continuous/metrics.jsonl").read_text().splitlines()]
+        shares = [record["expert_share"] for record in records if "expert_share" in record]
+        self.assertTrue(shares and all(share >= 1.0 for share in shares))
 
     def test_hyperball_is_set_only_for_normuon_without_a_decay_schedule(self):
         """Hyperball の倍率は NorMuon でだけ受け付け、負の値や weight decay の予定との組み合わせを断る。"""

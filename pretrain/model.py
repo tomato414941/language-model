@@ -43,12 +43,20 @@ class ModelConfig:
     # attention layer. None keeps attention in every layer.
     full_attention_every: int | None = None
     # A mixture of experts in place of each feed-forward network: each token
-    # goes to active_experts of the experts, small SwiGLU networks with
-    # expert_size hidden units, by default as many as keep the computation of
-    # the dense network.
+    # goes to active_experts of the experts, small networks of the model's
+    # feed_forward form with expert_size hidden units, by default as many as
+    # keep the computation of the dense network.
     experts: int | None = None
     active_experts: int | None = None
     expert_size: int | None = None
+    # A shared expert of this many hidden units that every token passes
+    # through besides its chosen ones, as DeepSeekMoE isolates common knowledge.
+    shared_expert_size: int | None = None
+    # How the experts are kept evenly used: "loss", OLMoE's load-balancing loss
+    # over each forward pass, or "bias", DeepSeek-V3's bias on each expert's
+    # score when choosing, moved toward even use after every update by the
+    # tokens of the whole update, which adds no loss and no gradient.
+    expert_balance: str = "loss"
     # Each depth predicts one token further ahead, from the depth before it and
     # the embedding of the token in between, as DeepSeek-V3 trains; the
     # predictions add to the training objective only.
@@ -118,12 +126,21 @@ class ModelConfig:
                 or not 1 <= self.active_experts <= self.experts
             ):
                 raise ValueError("active_experts must be between 1 and experts")
-            if self.expert_size is not None and (
-                type(self.expert_size) is not int or self.expert_size <= 0
-            ):
-                raise ValueError("expert_size must be a positive integer")
-        elif self.active_experts is not None or self.expert_size is not None:
-            raise ValueError("active_experts and expert_size require experts")
+            for name in ("expert_size", "shared_expert_size"):
+                value = getattr(self, name)
+                if value is not None and (type(value) is not int or value <= 0):
+                    raise ValueError(f"{name} must be a positive integer")
+            if self.expert_balance not in ("loss", "bias"):
+                raise ValueError("expert_balance must be loss or bias")
+        elif (
+            self.active_experts is not None
+            or self.expert_size is not None
+            or self.shared_expert_size is not None
+            or self.expert_balance != "loss"
+        ):
+            raise ValueError(
+                "active_experts, expert_size, shared_expert_size and expert_balance require experts"
+            )
         if type(self.prediction_depth) is not int or not 0 <= self.prediction_depth <= 4:
             raise ValueError("prediction_depth must be an integer from 0 to 4")
         if type(self.value_embeddings) is not bool:
@@ -134,8 +151,6 @@ class ModelConfig:
             raise ValueError("feed_forward must be swiglu or relu_squared")
         if type(self.count_table) is not bool:
             raise ValueError("count_table must be true or false")
-        if self.feed_forward != "swiglu" and self.experts is not None:
-            raise ValueError("experts are SwiGLU networks, so feed_forward must be swiglu")
         if self.value_embeddings and self.full_attention_every is not None:
             raise ValueError("value_embeddings require attention in every layer")
         if self.value_embeddings and self.width < VALUE_GATE_CHANNELS:
@@ -347,58 +362,104 @@ def kernel_delta_rule(query, key, value, decay, beta, state=None, keep_state=Fal
 class Experts(nn.Module):
     """Route each token to its highest-scoring experts and mix their outputs by score.
 
-    Each expert is a small SwiGLU network. Training also minimizes OLMoE's
-    load-balancing loss, which keeps the experts evenly used, and its router
-    z-loss, which keeps the router's scores small (arXiv:2409.02060).
+    Each expert is a small feed-forward network of the model's form: SwiGLU, or
+    a squared ReLU between two matrices. A shared expert, which every token
+    passes through, may add to the chosen ones, as in DeepSeekMoE. Training
+    minimizes OLMoE's router z-loss, which keeps the router's scores small
+    (arXiv:2409.02060), and keeps the experts evenly used in one of two ways:
+    OLMoE's load-balancing loss over each forward pass, or, with balance
+    "bias", DeepSeek-V3's bias on each expert's score when choosing
+    (arXiv:2408.15664), which update_bias moves toward even use by the tokens
+    counted since its last call, so over a whole update rather than one window.
     """
 
-    def __init__(self, width, count, active, size):
+    def __init__(self, width, count, active, size, feed_forward="swiglu", shared=None, balance="loss"):
         super().__init__()
         self.active = active
+        self.balance = balance
         self.router = nn.Linear(width, count, bias=False)
-        self.gate = nn.Parameter(torch.randn(count, width, size) * 0.02)
+        if feed_forward == "swiglu":
+            self.gate = nn.Parameter(torch.randn(count, width, size) * 0.02)
+        else:
+            self.register_parameter("gate", None)
         self.up = nn.Parameter(torch.randn(count, width, size) * 0.02)
         self.down = nn.Parameter(torch.randn(count, size, width) * 0.02)
+        self.shared = None
+        if shared:
+            self.shared = nn.ModuleDict({
+                **({"gate": nn.Linear(width, shared, bias=False)} if feed_forward == "swiglu" else {}),
+                "up": nn.Linear(width, shared, bias=False),
+                "down": nn.Linear(shared, width, bias=False),
+            })
+        if balance == "bias":
+            # The bias is part of the model, since it decides where tokens go;
+            # the counts behind its next move are not.
+            self.register_buffer("bias", torch.zeros(count))
+            self.register_buffer("load", torch.zeros(count), persistent=False)
+
+    def feed_forward(self, inputs, gate, up, down, product):
+        units = product(inputs, up)
+        units = F.silu(product(inputs, gate)) * units if gate is not None else F.relu(units).square()
+        return product(units, down)
 
     def forward(self, hidden):
         tokens = hidden.reshape(-1, hidden.shape[-1])
         logits = self.router(tokens).float()
         probabilities = logits.softmax(-1)
-        scores, chosen = probabilities.topk(self.active, dim=-1)
+        if self.balance == "bias":
+            # The bias decides which experts a token goes to, not how much of each it takes.
+            chosen = (probabilities + self.bias).topk(self.active, dim=-1).indices
+            scores = probabilities.gather(-1, chosen)
+        else:
+            scores, chosen = probabilities.topk(self.active, dim=-1)
         scores = scores / scores.sum(-1, keepdim=True)
         assigned = chosen.flatten()
         order = assigned.argsort(stable=True)
         counts = torch.bincount(assigned, minlength=probabilities.shape[-1])
+        if self.balance == "bias" and self.training:
+            self.load.add_(counts)
         sources = order // self.active
         selected = tokens[sources]
         if half_precision(tokens.device, tokens.dtype) == torch.bfloat16:
             # Each grouped product multiplies every expert's tokens at once.
             ends = counts.cumsum(0, dtype=torch.int32)
-            selected = selected.to(torch.bfloat16)
-            gate, up, down = (w.to(torch.bfloat16) for w in (self.gate, self.up, self.down))
-            outputs = F.grouped_mm(
-                F.silu(F.grouped_mm(selected, gate, offs=ends))
-                * F.grouped_mm(selected, up, offs=ends),
-                down,
-                offs=ends,
+            weights = [None if w is None else w.to(torch.bfloat16) for w in (self.gate, self.up, self.down)]
+            outputs = self.feed_forward(
+                selected.to(torch.bfloat16), *weights, lambda a, b: F.grouped_mm(a, b, offs=ends)
             )
         else:
-            outputs = torch.cat(
-                [
-                    (F.silu(part @ gate) * (part @ up)) @ down
-                    for part, gate, up, down in zip(
-                        selected.split(counts.tolist()), self.gate, self.up, self.down
-                    )
-                ]
-            )
+            outputs = torch.cat([
+                self.feed_forward(part, None if self.gate is None else self.gate[index],
+                                  self.up[index], self.down[index], torch.matmul)
+                for index, part in enumerate(selected.split(counts.tolist()))
+            ])
         mixed = tokens.new_zeros(tokens.shape).index_add_(
             0, sources, (outputs * scores.flatten()[order, None]).to(tokens.dtype)
         )
+        if self.shared is not None:
+            shared = self.shared
+            mixed = mixed + self.feed_forward(
+                tokens, shared["gate"] if "gate" in shared else None, shared["up"], shared["down"],
+                lambda inputs, linear: linear(inputs),
+            )
+        z_loss = torch.logsumexp(logits, -1).square().mean()
+        if self.balance == "bias":
+            return mixed.view(hidden.shape), 0.001 * z_loss
         balance = probabilities.shape[-1] * (
             counts / assigned.numel() * probabilities.mean(0)
         ).sum()
-        z_loss = torch.logsumexp(logits, -1).square().mean()
         return mixed.view(hidden.shape), 0.01 * balance + 0.001 * z_loss
+
+    @torch.no_grad()
+    def update_bias(self, rate):
+        """Move each expert's bias by rate toward even use, from the tokens counted
+        since the last call; the most-used expert's share of an even share, or None."""
+        if not self.load.sum():
+            return None
+        imbalance = (self.load.max() / self.load.mean()).item()
+        self.bias.add_(rate * torch.sign(self.load.mean() - self.load))
+        self.load.zero_()
+        return imbalance
 
 
 class ModernBlock(nn.Module):
@@ -422,7 +483,10 @@ class ModernBlock(nn.Module):
             self.down = nn.Linear(intermediate, config.width, bias=False)
         else:
             size = config.expert_size or max(1, intermediate // config.active_experts)
-            self.experts = Experts(config.width, config.experts, config.active_experts, size)
+            self.experts = Experts(
+                config.width, config.experts, config.active_experts, size, config.feed_forward,
+                config.shared_expert_size, config.expert_balance,
+            )
 
     def forward(self, hidden, positions=None, mask=None, cache=None, starts=None, values=None):
         hidden = hidden + self.mix(
@@ -785,13 +849,21 @@ class LanguageModel(nn.Module):
             if name.endswith("value_gate.weight"):
                 nn.init.uniform_(parameter, 0.0, 0.02)
             # What a squared ReLU reads starts at nanochat's scale for the width.
-            if self.config.feed_forward == "relu_squared" and name.endswith("up.weight"):
+            if self.config.feed_forward == "relu_squared" and name.endswith(("up.weight", "experts.up")):
                 nn.init.normal_(parameter, std=0.4 / math.sqrt(self.config.width))
 
     @staticmethod
     def _initialize(module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
             nn.init.normal_(module.weight, std=0.02)
+
+    def update_expert_bias(self, rate):
+        """After an update, move each layer's expert biases toward even use; the
+        largest share any expert took of an even share, or None without biases."""
+        shares = [module.update_bias(rate) for module in self.modules()
+                  if isinstance(module, Experts) and module.balance == "bias"]
+        shares = [share for share in shares if share is not None]
+        return max(shares) if shares else None
 
     def embed(self, tokens, history=None):
         """The tokens' embeddings, with their counted continuations where the model reads them.

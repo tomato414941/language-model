@@ -70,6 +70,9 @@ class TrainConfig:
     patch_size: int = 1
     # The share of their rates that the residual scalars take.
     scalar_rate: float = 1.0
+    # How far each update moves the biases of experts balanced by bias toward
+    # even use, DeepSeek-V3's 0.001.
+    expert_bias_rate: float = 0.001
 
     def __post_init__(self):
         for field in (
@@ -100,6 +103,7 @@ class TrainConfig:
             "gradient_clip",
             "scalar_rate",
             "hyperball_rate",
+            "expert_bias_rate",
         ):
             value = getattr(self, field)
             if type(value) not in (float, int) or not math.isfinite(value) or value < 0:
@@ -270,6 +274,26 @@ class Optimizers:
             optimizer.load_state_dict(saved)
 
 
+def orthogonalize(matrix, coefficients, steps, eps):
+    """Muon's Newton-Schulz orthogonalization of a matrix, or of each matrix in a stack.
+
+    A stack runs PyTorch's iteration with batched products, so each of its
+    matrices comes out as PyTorch makes a matrix on its own.
+    """
+    if matrix.ndim == 2:
+        return _zeropower_via_newtonschulz(matrix, coefficients, steps, eps)
+    a, b, c = coefficients
+    tall = matrix.size(-2) > matrix.size(-1)
+    result = matrix.bfloat16()
+    if tall:
+        result = result.mT
+    result = result / torch.linalg.vector_norm(result, dim=(-2, -1), keepdim=True).clamp(min=eps)
+    for _ in range(steps):
+        gram = result @ result.mT
+        result = torch.baddbmm(result, torch.baddbmm(gram, gram, gram, beta=b, alpha=c), result, beta=a)
+    return result.mT if tall else result
+
+
 class NorMuon(torch.optim.Muon):
     """Muon whose orthogonalized updates are evened out across neurons, with cautious decay.
 
@@ -286,11 +310,22 @@ class NorMuon(torch.optim.Muon):
     it had when this optimizer first moved it (arxiv.org/abs/2606.16899): the
     update, scaled to the learning rate times that norm, moves the matrix,
     which is then scaled back to that norm, without weight decay.
+
+    A stack of matrices, as the experts of a mixture hold theirs, inputs
+    first, is updated as each of its matrices on its own, read as the
+    outputs-by-inputs matrix a Linear layer holds, so that NorMuon evens out
+    its output neurons.
     """
 
     def __init__(self, params, beta2=0.9, hyperball=False, **options):
-        super().__init__(params, **options)
+        # Muon's constructor checks the options but refuses stacks of matrices,
+        # so the options pass its checks on a stand-in and the parameters,
+        # matrices or stacks of them, go straight to the optimizer.
+        defaults = torch.optim.Muon([torch.nn.Parameter(torch.zeros(1, 1))], **options).defaults
+        torch.optim.Optimizer.__init__(self, params, defaults)
         for group in self.param_groups:
+            if any(parameter.ndim not in (2, 3) for parameter in group["params"]):
+                raise ValueError("NorMuon takes matrices and stacks of matrices")
             group.setdefault("beta2", beta2)
             group.setdefault("hyperball", hyperball)
 
@@ -306,33 +341,45 @@ class NorMuon(torch.optim.Muon):
                     continue
                 grad = parameter.grad
                 state = self.state[parameter]
+                stacked = grad.ndim == 3
                 if "momentum_buffer" not in state:
                     state["momentum_buffer"] = torch.zeros_like(grad)
-                    rows, columns = grad.shape
+                    *stack, rows, columns = (grad.mT if stacked else grad).shape
                     state["second_moment"] = grad.new_zeros(
-                        (rows, 1) if rows >= columns else (1, columns), dtype=torch.float32
+                        (*stack, rows, 1) if rows >= columns else (*stack, 1, columns), dtype=torch.float32
                     )
                     if group.get("hyperball"):
-                        state["radius"] = torch.linalg.vector_norm(parameter)
+                        state["radius"] = (
+                            torch.linalg.vector_norm(parameter, dim=(-2, -1), keepdim=True)
+                            if stacked else torch.linalg.vector_norm(parameter)
+                        )
                 buffer = state["momentum_buffer"]
                 buffer.lerp_(grad, 1 - group["momentum"])
                 update = grad.lerp(buffer, group["momentum"]) if group["nesterov"] else buffer
-                update = _zeropower_via_newtonschulz(
-                    update, group["ns_coefficients"], group["ns_steps"], group["eps"]
+                update = orthogonalize(
+                    update.mT if stacked else update, group["ns_coefficients"], group["ns_steps"], group["eps"]
                 ).float()
-                axis = -1 if update.size(0) >= update.size(1) else -2
+                axis = -1 if update.size(-2) >= update.size(-1) else -2
                 mean = update.square().mean(dim=axis, keepdim=True)
                 state["second_moment"].lerp_(mean, 1 - group["beta2"])
                 evened = update * state["second_moment"].clamp_min(1e-10).rsqrt()
-                update = evened * (update.norm() / evened.norm().clamp_min(1e-10))
-                update = update.to(parameter.dtype)
+                update = evened * (
+                    torch.linalg.vector_norm(update, dim=(-2, -1), keepdim=True)
+                    / torch.linalg.vector_norm(evened, dim=(-2, -1), keepdim=True).clamp_min(1e-10)
+                )
+                update = (update.mT if stacked else update).to(parameter.dtype)
                 if group.get("hyperball"):
                     radius = state["radius"]
-                    parameter.sub_(
-                        update * (group["lr"] * radius / torch.linalg.vector_norm(update).clamp_min(1e-10))
+                    parameter.sub_(update * (
+                        group["lr"] * radius
+                        / torch.linalg.vector_norm(update, dim=(-2, -1), keepdim=True).clamp_min(1e-10)
+                    ))
+                    parameter.mul_(
+                        radius / torch.linalg.vector_norm(parameter, dim=(-2, -1), keepdim=True).clamp_min(1e-10)
                     )
-                    parameter.mul_(radius / torch.linalg.vector_norm(parameter).clamp_min(1e-10))
                     continue
+                if stacked:
+                    raise ValueError("NorMuon takes stacks of matrices under hyperball only")
                 decay = group["lr"] * group["weight_decay"]
                 parameter.sub_(decay * parameter * (update * parameter >= 0))
                 parameter.add_(
@@ -358,7 +405,9 @@ SCALAR_SETTINGS = {
 }
 
 # The matrices of the attention layers and the feed-forward networks, which
-# Puro-2B held with Hyperball as weights nearly free of scale.
+# Puro-2B held with Hyperball as weights nearly free of scale; the experts of
+# a mixture, and its shared expert, hold their networks' matrices under the
+# same names.
 HYPERBALL_MATRICES = ("query", "key_value", "attention_output", "gate", "up", "down")
 
 
@@ -371,8 +420,9 @@ def make_optimizer(model, config, device):
     scalars take nanochat's rates instead, grown with the square root of the
     batch as its rates are, times the config's scalar_rate, and follow the
     schedule in proportion through each group's lr_scale. With hyperball_rate,
-    NorMuon takes only HYPERBALL_MATRICES, at that multiple of the rate, and
-    AdamW the rest.
+    NorMuon takes only HYPERBALL_MATRICES, the experts' stacks of them
+    included, at that multiple of the rate, and AdamW the rest, the experts'
+    router among them.
     """
     scalars = {
         id(parameter): name
@@ -419,12 +469,15 @@ def make_optimizer(model, config, device):
     named = list(model.named_parameters())
     if config.hyperball_rate:
         shape = model.config
-        if shape.architecture != "llama" or shape.full_attention_every is not None or shape.experts is not None:
-            raise ValueError("hyperball holds the matrices of attention layers and dense feed-forward networks")
+        if shape.architecture != "llama" or shape.full_attention_every is not None:
+            raise ValueError("hyperball holds the matrices of attention layers and feed-forward networks")
         if shape.zero_output_init:
             raise ValueError("hyperball keeps each matrix at the norm it starts with, so none may start at zero")
         matrices = [
-            p for name, p in named if name.startswith("blocks.") and name.split(".")[-2] in HYPERBALL_MATRICES
+            p for name, p in named if name.startswith("blocks.") and (
+                name.split(".")[-2] in HYPERBALL_MATRICES
+                or name.split(".")[-2] == "experts" and name.split(".")[-1] in HYPERBALL_MATRICES
+            )
         ]
         first = NorMuon(
             [{"params": matrices, "lr_scale": config.hyperball_rate}],
@@ -945,6 +998,8 @@ def train(
             scaler.step(optimizer)
             scaler.update()
             skipped_updates += scaler.get_scale() < previous_scale
+            # Experts balanced by bias move toward even use by this update's tokens.
+            expert_share = model.update_expert_bias(config.expert_bias_rate)
             step += 1
             tokens_seen += tokens_per_step
             stopping = bool(stop_requested and stop_requested())
@@ -958,6 +1013,9 @@ def train(
                 "tokens_per_second": (tokens_seen - initial_tokens)
                 / (time.perf_counter() - started),
             }
+            if expert_share is not None:
+                # The most any expert took of an even share of this update's tokens.
+                record["expert_share"] = expert_share
             if step % config.eval_every == 0 or final:
                 validation = evaluate(
                     model,
