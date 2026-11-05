@@ -1,5 +1,6 @@
 """A reproducible bilingual corpus and training recipe, independent of its host."""
 
+import array
 import gzip
 import hashlib
 import http.client
@@ -260,6 +261,19 @@ def read_recipe(path):
             raise ValueError(
                 f"{item['name']} must allocate 100 percent, with a share for each language"
             )
+        # The field that scores each document of a source, for a corpus written
+        # in quality order; the sources not named keep their reading order.
+        quality = item.get("quality")
+        if quality is not None and (
+            not isinstance(quality, dict)
+            or not quality
+            or any(source not in mix or not isinstance(field, str) or not field for source, field in quality.items())
+            or item["purpose"] not in ("patch", "phase", "alternative")
+            or "select" in item
+        ):
+            raise ValueError(
+                f"{item['name']} quality must name a scoring field for sources in its mix, in a corpus trained as written"
+            )
     selected = [item for item in corpora if "select" in item]
     if selected:
         settings = recipe.get("selection")
@@ -301,6 +315,15 @@ def read_recipe(path):
     alternatives = [item for item in corpora if item["purpose"] == "alternative"]
     if bool(phases) == bool(alternatives):
         raise ValueError("a recipe trains either sequential phases or alternatives")
+
+    def check_order(item, reading):
+        if ("quality" in item) != (reading.sampling == "ordered"):
+            raise ValueError(
+                f"{item['name']} is written in quality order exactly when its training reads in that order"
+            )
+
+    for item in phases + alternatives:
+        check_order(item, training)
     start = continued_step(recipe)
     if start and not phases:
         raise ValueError("continue_from continues a recipe's sequential phases")
@@ -344,6 +367,7 @@ def read_recipe(path):
         )
         if patch_training.steps != math.ceil(patches[0]["training_tokens"] / patch_tokens):
             raise ValueError("patch_config's steps must cover the patch corpus")
+        check_order(patches[0], patch_training)
     if recipe["evaluation"]["framework"] != "lm-eval":
         raise ValueError("evaluation uses the standard lm-evaluation-harness tasks")
     if "sft" in recipe and (
@@ -797,7 +821,8 @@ def template_fields(template):
     return [name for _, name, _, _ in string.Formatter().parse(template) if name]
 
 
-def source_columns(source):
+def source_columns(source, extra=()):
+    """The columns a source's documents are read from, with the extra fields' columns."""
     if "template" in source:
         fields = {*(name.split(".")[0] for name in template_fields(source["template"])), "id", "url"}
     elif "conversation_field" in source:
@@ -806,6 +831,7 @@ def source_columns(source):
         fields = {source.get("text_field", "text").split(".")[0], "id", "url"}
     for name in FILTERS:
         fields.update(key.split(".")[0] for key in source.get(name, {}))
+    fields.update(name.split(".")[0] for name in extra)
     return sorted(fields)
 
 
@@ -1010,14 +1036,14 @@ def reading_order(source, shards, seed):
     return order
 
 
-def iter_source(source, seed, part=None):
-    """Yield the rows of a part's files, or of all the source's files."""
+def iter_source(source, seed, part=None, extra=()):
+    """Yield the rows of a part's files, or of all the source's files, with the extra fields."""
     from pyarrow import parquet
 
     shards, open_file, _ = source_shards(source)
     form = source.get("format", "parquet")
     shards = part["files"] if part is not None else reading_order(source, shards, seed)
-    columns = source_columns(source)
+    columns = source_columns(source, extra)
     for shard in shards:
         generator = random.Random(f"{seed}:{source['id']}:{shard}")
         with open_file(shard) as handle:
@@ -1190,13 +1216,14 @@ def accepted_documents(
     training_fraction=None,
     part=None,
     earlier=None,
+    extra=(),
 ):
     """Yield new clean documents; with training_fraction, only training ones.
 
     Documents recorded in `earlier`, a database of earlier corpora's
-    documents, are passed over.
+    documents, are passed over. Rows also hold the extra fields.
     """
-    for row in iter_source(source, recipe["seed"], part):
+    for row in iter_source(source, recipe["seed"], part, extra):
         text = document_text(row, source, recipe["corpus"])
         if text is None:
             stats["quality_rejected"] += 1
@@ -1426,6 +1453,12 @@ def prepare_part(recipe_path, tokenizer_directory, benchmarks_path, part, parts_
     benchmarks = BenchmarkFilter(benchmarks_path)
     output = part_directory(parts_root, part)
     output.mkdir(parents=True)
+    # The field scoring each document, for the corpora written in quality order.
+    scoring = {
+        name: corpora[name]["quality"][part["source"]]
+        for name in part["targets"]
+        if part["source"] in corpora[name].get("quality", {})
+    }
     scanned = Counter()
     summary, collected = {}, {}
     with closing(seen_documents()) as database, ExitStack() as opened:
@@ -1438,7 +1471,14 @@ def prepare_part(recipe_path, tokenizer_directory, benchmarks_path, part, parts_
                 closing(sqlite3.connect(f"{location}?mode=ro", uri=True))
             )
         stream = accepted_documents(
-            source, recipe, benchmarks, database, scanned, part=part, earlier=earlier
+            source,
+            recipe,
+            benchmarks,
+            database,
+            scanned,
+            part=part,
+            earlier=earlier,
+            extra=sorted(set(scoring.values())),
         )
         for name, targets in part["targets"].items():
             fraction = validation_fraction(recipe, corpora[name])
@@ -1470,26 +1510,28 @@ def prepare_part(recipe_path, tokenizer_directory, benchmarks_path, part, parts_
                             [bos, *encoding.ids, eos], dtype=TOKEN_PIECE_DTYPE
                         )
                         pieces[split].write(encoded.tobytes())
-                        documents.write(
-                            json.dumps(
-                                {
-                                    "digest": digest.hex(),
-                                    "id": row.get("id"),
-                                    "url": row.get("url"),
-                                    "split": split,
-                                    "tokens": len(encoded),
-                                    "source_file": row["source_file"],
-                                },
-                                ensure_ascii=False,
-                            )
-                            + "\n"
-                        )
+                        record = {
+                            "digest": digest.hex(),
+                            "id": row.get("id"),
+                            "url": row.get("url"),
+                            "split": split,
+                            "tokens": len(encoded),
+                            "source_file": row["source_file"],
+                        }
+                        if name in scoring:
+                            score = field_value(row, scoring[name])
+                            record["score"] = score if finite_number(score) else None
+                            stats["scored"] += record["score"] is not None
+                        documents.write(json.dumps(record, ensure_ascii=False) + "\n")
                         stats[f"{split}_tokens"] += len(encoded)
                     if all(
                         stats[f"{split}_tokens"] >= target
                         for split, target in targets.items()
                     ):
                         break
+            if name in scoring and not stats["scored"] and any(stats.values()):
+                # A field the rows lack would leave the source in reading order unnoticed.
+                raise ValueError(f"{part['source']} rows hold no {scoring[name]} to order {name} by")
             summary[name] = dict(scanned - before)
             collected[name] = {split: stats[f"{split}_tokens"] for split in targets}
     (output / "statistics.json").write_text(json.dumps(summary) + "\n")
@@ -1714,6 +1756,58 @@ class ShortCorpus(ValueError):
     """Sources holding too few clean tokens for their shares of a corpus."""
 
 
+class QualityOrder:
+    """A source's training documents, held as the merge keeps them and written in order of their scores.
+
+    The merge decides which documents a corpus keeps in reading order, so
+    the order changes only where they are written: from the lowest score to
+    the highest, documents without a score first, and equal scores in the
+    order of the documents' digests, which the seed scatters. Their
+    provenance lines wait in a file beside the corpus, so a large source
+    holds only a few numbers per document in memory.
+    """
+
+    def __init__(self, path):
+        self.path = path
+        self.lines = path.open("w+b")
+        self.pieces = []
+        self.scores, self.ties = array.array("d"), array.array("Q")
+        self.owners, self.starts, self.sizes, self.offsets = (array.array("q") for _ in range(4))
+        self.unscored = 0
+
+    def add(self, document, piece, start, record):
+        """Hold a document whose tokens lie at start in piece."""
+        if not self.pieces or self.pieces[-1] is not piece:
+            self.pieces.append(piece)
+        score = document.get("score")
+        if not finite_number(score):
+            score = -math.inf
+            self.unscored += 1
+        self.scores.append(score)
+        self.ties.append(int(document["digest"][:16], 16))
+        self.owners.append(len(self.pieces) - 1)
+        self.starts.append(start)
+        self.sizes.append(document["tokens"])
+        self.offsets.append(self.lines.tell())
+        self.lines.write((json.dumps(record, ensure_ascii=False) + "\n").encode())
+
+    def write(self, stream, provenance):
+        """Write the held documents' tokens to stream and their lines to provenance, in order."""
+        self.offsets.append(self.lines.tell())
+        self.lines.close()
+        if self.sizes:
+            lines = np.memmap(self.path, mode="r", dtype=np.uint8)
+            order = np.lexsort(
+                (np.frombuffer(self.ties, dtype=np.uint64), np.frombuffer(self.scores, dtype=np.float64))
+            )
+            for index in order.tolist():
+                start = self.starts[index]
+                stream.write(self.pieces[self.owners[index]][start : start + self.sizes[index]].tobytes())
+                provenance.write(lines[self.offsets[index] : self.offsets[index + 1]].tobytes().decode())
+            del lines
+        self.path.unlink()
+
+
 def write_corpus(
     recipe,
     item,
@@ -1754,6 +1848,11 @@ def write_corpus(
             targets = source_targets(recipe, item, source_id)
             stats = Counter()
             shards = set()
+            held = (
+                QualityOrder(staging / f"{source_id}.held.jsonl")
+                if source_id in item.get("quality", {})
+                else None
+            )
             for part in parts:
                 if part["source"] != source_id:
                     continue
@@ -1785,29 +1884,30 @@ def write_corpus(
                     ):
                         stats["duplicates"] += 1
                         continue
-                    streams[split, language].write(
-                        pieces[split][start : start + size].tobytes()
-                    )
-                    provenance.write(
-                        json.dumps(
-                            {
-                                "digest": document["digest"],
-                                "source": source_id,
-                                "id": document["id"],
-                                "url": document["url"],
-                                "split": split,
-                                "tokens": size,
-                            },
-                            ensure_ascii=False,
+                    record = {
+                        "digest": document["digest"],
+                        "source": source_id,
+                        "id": document["id"],
+                        "url": document["url"],
+                        "split": split,
+                        "tokens": size,
+                    }
+                    if held is not None and split == "train":
+                        held.add(document, pieces[split], start, record)
+                    else:
+                        streams[split, language].write(
+                            pieces[split][start : start + size].tobytes()
                         )
-                        + "\n"
-                    )
+                        provenance.write(json.dumps(record, ensure_ascii=False) + "\n")
                     stats[f"{split}_tokens"] += size
                     stats[f"{split}_documents"] += 1
                     tokens[split, language] += size
                     counts[language][split] += 1
                     shards.add(document["source_file"])
                 database.commit()
+            if held is not None:
+                held.write(streams["train", language], provenance)
+                stats["unscored_documents"] = held.unscored
             print(
                 json.dumps(
                     {"corpus": item["name"], "source": source_id, **dict(stats)}
@@ -1845,6 +1945,8 @@ def write_corpus(
             "tokenizer_sha256": file_digest(staging / "tokenizer.json"),
             "tokenizer_training": tokenizer_manifest,
             "sources": used,
+            # The sources whose training documents run from the lowest score to the highest, and their fields.
+            **({"quality": item["quality"]} if "quality" in item else {}),
             "benchmarks_sha256": benchmark_digest,
             "documents": counts,
             "duplicates_removed": sum(

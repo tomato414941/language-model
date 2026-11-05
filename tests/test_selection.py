@@ -264,7 +264,7 @@ select = {{ pool = "pool", method = "learnable" }}
         with (
             patch(
                 "pretrain.recipe.iter_source",
-                side_effect=lambda source, seed, part=None: iter(rows[source["id"]]),
+                side_effect=lambda source, seed, part=None, extra=(): iter(rows[source["id"]]),
             ),
             patch(
                 "pretrain.recipe.source_sizes",

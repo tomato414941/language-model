@@ -157,7 +157,7 @@ class RecipeTests(unittest.TestCase):
         self.layouts = {}
         self.source_patch = patch(
             "pretrain.recipe.iter_source",
-            side_effect=lambda source, seed, part=None: (
+            side_effect=lambda source, seed, part=None, extra=(): (
                 row
                 for index, row in enumerate(self.rows[source["id"]])
                 if part is None or self.file(source, index) in part["files"]
@@ -390,6 +390,106 @@ class RecipeTests(unittest.TestCase):
         )
         self.assertEqual(tuple(x.shape), (2, 128))
         self.assertTrue(torch.equal(x[:, 1:], y[:, :-1]))
+
+    def test_質の欄を指定したデータ源は読み順で選ぶのと同じ文書を点の低い順に書く(self):
+        """Writes a scored source's training documents, the same ones as without the order, unscored first and then from the lowest score up."""
+        for index, row in enumerate(self.rows["en-web"]):
+            row["score"] = 3 + index * 37 % 100 / 100
+        for index, row in enumerate(self.rows["en-wiki"]):
+            row["rank"] = None if index % 5 == 0 else index * 13 % 50
+        # About ten documents of each English source.
+        text = self.recipe_path.read_text().replace(
+            "mix = { ja-hq = 45, ja-wiki = 5, en-web = 40, en-math = 5, en-wiki = 5 }",
+            "corpus_tokens = 40000\nmix = { ja-hq = 45, ja-wiki = 5, en-web = 25, en-math = 5, en-wiki = 20 }",
+        )
+        self.recipe_path.write_text(text)
+        unordered = self.prepare()
+        ordered_path = self.root / "ordered.toml"
+        ordered_path.write_text(
+            text.replace('"training.toml"', '"ordered-training.toml"').replace(
+                "corpus_tokens = 40000\n", 'corpus_tokens = 40000\nquality = { en-web = "score", en-wiki = "rank" }\n'
+            )
+        )
+        (self.root / "ordered-training.toml").write_text(
+            (self.root / "training.toml").read_text() + 'sampling = "ordered"\n'
+        )
+        prepare_tokenizer(ordered_path, self.root / "ordered-tokenizer", self.benchmarks)
+        with contextlib.redirect_stdout(io.StringIO()):
+            prepare_corpus(ordered_path, self.root / "ordered-tokenizer", self.root / "ordered", self.benchmarks)
+        ordered = Corpus(self.root / "ordered/corpus")
+
+        def records(corpus, source_id=None, split="train"):
+            lines = (corpus.path / "documents.jsonl").read_text().splitlines()
+            return [
+                record for record in map(json.loads, lines)
+                if record["split"] == split and source_id in (None, record["source"])
+            ]
+
+        def values(source_id, field):
+            return [
+                self.rows[source_id][int(record["id"].split(":")[1])][field]
+                for record in records(ordered, source_id)
+            ]
+
+        for source_id in self.rows:
+            for split in ("train", "validation"):
+                self.assertEqual(
+                    sorted(record["digest"] for record in records(unordered, source_id, split)),
+                    sorted(record["digest"] for record in records(ordered, source_id, split)),
+                )
+        self.assertEqual(records(ordered, "en-math"), records(unordered, "en-math"))
+        scores = values("en-web", "score")
+        self.assertGreater(len(scores), 5)
+        self.assertEqual(scores, sorted(scores))
+        ranks = values("en-wiki", "rank")
+        unscored = ranks.count(None)
+        self.assertTrue(0 < unscored < len(ranks) - 2)
+        self.assertEqual(ranks[unscored:], sorted(ranks[unscored:]))
+        self.assertEqual(ranks[:unscored], [None] * unscored)
+        self.assertEqual(
+            ordered.manifest["sources"]["en-wiki"]["statistics"]["unscored_documents"], unscored
+        )
+        self.assertEqual(ordered.manifest["quality"], {"en-web": "score", "en-wiki": "rank"})
+        # Each line of the provenance still describes the tokens at its place in the stream.
+        languages = {source["id"]: source["language"] for source in self.recipe["sources"]}
+        offsets = Counter()
+        for record in records(ordered):
+            language = languages[record["source"]]
+            tokens = ordered.streams["train"][language][offsets[language] : offsets[language] + record["tokens"]]
+            offsets[language] += record["tokens"]
+            self.assertTrue(ordered.tokenizer.decode(tokens.tolist()).endswith(record["id"]))
+        for language in ("ja", "en"):
+            self.assertEqual(offsets[language], len(ordered.streams["train"][language]))
+
+    def test_並べる欄を持たないデータ源はコーパスを作る途中で知らせる(self):
+        """Stops building when a source's rows hold none of the field its corpus is ordered by."""
+        self.recipe_path.write_text(
+            self.recipe_path.read_text().replace("mix = {", 'quality = { en-web = "scroe" }\nmix = {', 1)
+        )
+        (self.root / "training.toml").write_text(
+            (self.root / "training.toml").read_text() + 'sampling = "ordered"\n'
+        )
+        with self.assertRaisesRegex(ValueError, "en-web rows hold no scroe"):
+            self.prepare()
+
+    def test_質の順に書くコーパスと質の順に読む学習は対にして受け付ける(self):
+        """Accepts a corpus written in quality order only with training that reads in that order, and the reverse."""
+        text = self.recipe_path.read_text()
+        cases = (
+            (text.replace("mix = {", 'quality = { en-web = "score" }\nmix = {', 1), ""),
+            (text, 'sampling = "ordered"\n'),
+            (text.replace("mix = {", 'quality = { en-edu-top = "score" }\nmix = {', 1), 'sampling = "ordered"\n'),
+            (text.replace("mix = {", 'quality = { en-web = 3 }\nmix = {', 1), 'sampling = "ordered"\n'),
+        )
+        for recipe, sampling in cases:
+            self.recipe_path.write_text(recipe)
+            (self.root / "training.toml").write_text(
+                (self.root / "training.toml").read_text().replace('sampling = "ordered"\n', "") + sampling
+            )
+            with self.assertRaisesRegex(ValueError, "quality"):
+                read_recipe(self.recipe_path)
+        self.recipe_path.write_text(text.replace("mix = {", 'quality = { en-web = "score" }\nmix = {', 1))
+        self.assertEqual(read_recipe(self.recipe_path)["corpora"][0]["quality"], {"en-web": "score"})
 
     def test_言語の割合を配合から決めどの言語にも同じ量の検証用文書を割り当てる(self):
         """日英の割合は配合で決まり、どの言語も同じ量の検証用の文書を持つ。配合のない言語があるレシピや、合計が100%でないレシピは断る。"""

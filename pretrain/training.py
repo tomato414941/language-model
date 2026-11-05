@@ -41,7 +41,9 @@ class TrainConfig:
     # first and spends more of the decay near the final rate.
     decay_shape: str = "linear"
     # "random" draws windows with replacement; "sequential" reads every window
-    # once per epoch in a seeded order.
+    # once per epoch in a seeded order; "ordered" reads them once per epoch
+    # from the lowest quality to the highest, from a corpus written in that
+    # order, shuffling each hundredth of every source together.
     sampling: str = "random"
     # "adamw" updates every weight with AdamW; "muon" updates the matrices in
     # the blocks with Muon and the embedding and norms with AdamW; "normuon"
@@ -108,8 +110,8 @@ class TrainConfig:
             raise ValueError("min_learning_rate must not exceed learning_rate")
         if self.schedule not in ("cosine", "wsd"):
             raise ValueError("schedule must be cosine or wsd")
-        if self.sampling not in ("random", "sequential"):
-            raise ValueError("sampling must be random or sequential")
+        if self.sampling not in ("random", "sequential", "ordered"):
+            raise ValueError("sampling must be random, sequential or ordered")
         if type(self.decay_steps) is not int or not (
             0 <= self.decay_steps <= self.steps - self.warmup_steps
         ):
@@ -683,6 +685,8 @@ def train(
         )
     corpus = open_corpus(data)
     corpus.validate_context(read_length(model_config.context, config.patch_size))
+    if config.sampling == "ordered" and not corpus.manifest.get("quality"):
+        raise ValueError("ordered sampling reads a corpus written in quality order")
     precision = select_precision(device, precision)
     if config.fp8:
         check_fp8(device, precision, compiled)
@@ -903,8 +907,9 @@ def train(
                     group["weight_decay"] = weight_decay(config, step)
             total_loss = 0.0
             for micro in range(config.accumulation_steps):
-                if config.sampling == "sequential":
-                    x, y = corpus.sequential_batch(
+                if config.sampling != "random":
+                    read = corpus.ordered_batch if config.sampling == "ordered" else corpus.sequential_batch
+                    x, y = read(
                         phase_row
                         + ((step - phase_start) * config.accumulation_steps + micro)
                         * config.batch_size,

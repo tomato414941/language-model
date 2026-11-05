@@ -15,6 +15,10 @@ from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 LANGUAGES = ("ja", "en")
 BOS, EOS = "<|bos|>", "<|eos|>"
 TOKEN_DTYPE = np.dtype("<u4")
+# Reading in quality order takes every source's windows a hundredth at a time,
+# shuffled together, as Puro-2B's curriculum takes each component's next slice
+# of its quality ranking in every bucket.
+ORDER_BUCKETS = 100
 
 
 def file_digest(path):
@@ -386,12 +390,14 @@ class Corpus:
             )
         return to_device(windows, device)
 
-    def sequential_batch(self, start, batch_size, context, seed, device):
+    def sequential_batch(self, start, batch_size, context, seed, device, ordered=False):
         """Read rows start.. of an endless, epoch-by-epoch pass over the windows.
 
         The languages take rows in proportion to their windows, so they finish
         each epoch together, and each language visits every context-sized
-        training window once per epoch in a seeded order.
+        training window once per epoch in a seeded order. Ordered, the order
+        goes through window_buckets from the first to the last, shuffling
+        the windows within each.
         """
         streams = self.streams["train"]
         counts = {
@@ -403,19 +409,53 @@ class Corpus:
             stream = streams[language]
             epoch, position = divmod(place, counts[language])
             cached = getattr(self, "_orders", {}).get(language)
-            if cached is None or cached[0] != epoch:
-                order = np.random.default_rng(
-                    [seed, epoch, LANGUAGES.index(language)]
-                ).permutation(counts[language])
+            if cached is None or cached[0] != (epoch, ordered):
+                generator = np.random.default_rng([seed, epoch, LANGUAGES.index(language)])
+                order = (
+                    np.lexsort(
+                        (generator.random(counts[language]), self.window_buckets(language, context))
+                    )
+                    if ordered
+                    else generator.permutation(counts[language])
+                )
                 self._orders = {
                     **getattr(self, "_orders", {}),
-                    language: (epoch, order),
+                    language: ((epoch, ordered), order),
                 }
             begin = int(self._orders[language][1][position]) * context
             windows.append(
                 np.asarray(stream[begin : begin + context + 1], dtype=np.int64)
             )
         return to_device(windows, device)
+
+    def ordered_batch(self, start, batch_size, context, seed, device):
+        """sequential_batch's rows, read in quality order."""
+        return self.sequential_batch(start, batch_size, context, seed, device, ordered=True)
+
+    def window_buckets(self, language, context):
+        """The part of its source each of a language's training windows starts in.
+
+        Each source's training tokens split into ORDER_BUCKETS equal parts. A
+        corpus written in quality order holds each source's training documents
+        from the lowest score to the highest, the sources one after another,
+        so a window's part tells how far up its source's order its text is.
+        """
+        if not self.manifest.get("quality"):
+            raise ValueError("reading in quality order needs a corpus written in that order")
+        sizes = np.asarray(
+            [
+                source["statistics"]["train_tokens"]
+                for source in self.manifest["sources"].values()
+                if source["language"] == language
+            ],
+            dtype=np.int64,
+        )
+        ends = np.cumsum(sizes)
+        if ends[-1] != len(self.streams["train"][language]):
+            raise ValueError(f"the sources' {language} training tokens do not fill the stream")
+        starts = np.arange((ends[-1] - 1) // context, dtype=np.int64) * context
+        owner = np.searchsorted(ends, starts, side="right")
+        return (starts - (ends - sizes)[owner]) * ORDER_BUCKETS // sizes[owner]
 
 
 def to_device(windows, device):

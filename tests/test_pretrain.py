@@ -5,6 +5,7 @@ import io
 import itertools
 import json
 import math
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,7 +22,7 @@ import numpy as np
 import torch
 
 from pretrain.__main__ import main
-from pretrain.data import Corpus, interleaved, prepare_data, token_bytes
+from pretrain.data import Corpus, file_digest, interleaved, prepare_data, token_bytes
 from pretrain.growth import grow_checkpoint
 from pretrain.model import (
     RESET,
@@ -1520,6 +1521,84 @@ class PretrainingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "hyperball|weight decay"):
                 TrainConfig(**changes)
         self.assertEqual(TrainConfig(optimizer="normuon", hyperball_rate=10).hyperball_rate, 10)
+
+    def quality_corpus(self, sources, counting=False):
+        """The test corpus, marked as written in quality order by the sources, each a language and its training tokens.
+
+        With counting, each training token is its place in its stream.
+        """
+        directory = self.root / "quality"
+        shutil.copytree(self.data, directory)
+        manifest = json.loads((directory / "manifest.json").read_text())
+        for language in ("ja", "en"):
+            path = directory / f"train_{language}.bin"
+            tokens = sum(size for owner, size in sources.values() if owner == language)
+            if counting:
+                np.arange(tokens, dtype=manifest["dtype"]).tofile(path)
+                manifest["files"][path.name] = {"tokens": tokens, "sha256": file_digest(path)}
+            self.assertEqual(manifest["files"][path.name]["tokens"], tokens)
+        manifest["sources"] = {
+            name: {"language": language, "statistics": {"train_tokens": size}}
+            for name, (language, size) in sources.items()
+        }
+        manifest["quality"] = {next(iter(sources)): "score"}
+        (directory / "manifest.json").write_text(json.dumps(manifest))
+        return directory
+
+    def test_ordered_reading_mixes_the_same_parts_of_every_source_and_reads_each_window_once_an_epoch(self):
+        """質の順に読むと、各データ源を同じ数の部分に分けて前の部分から読み、同じ部分は源をまとめて混ぜ、エポックごとにすべての窓を一度ずつ読む。"""
+        sources = {"ja-low": ("ja", 401), "en-all": ("en", 321), "ja-high": ("ja", 161)}
+        corpus = Corpus(self.quality_corpus(sources, counting=True))
+        context, parts = 8, 4
+        counts = {"ja": (401 + 161 - 1) // context, "en": (321 - 1) // context}
+        rows = sum(counts.values())
+        with patch("pretrain.data.ORDER_BUCKETS", parts):
+            x, _ = corpus.ordered_batch(0, 2 * rows, context, 42, torch.device("cpu"))
+
+        def part(language, start):
+            # Where in its source a window starts, from the sources' tokens.
+            begin = 0
+            for name, (owner, size) in sources.items():
+                if owner == language:
+                    if start < begin + size:
+                        return min((start - begin) * parts // size, parts - 1), name
+                    begin += size
+
+        orders = []
+        for epoch in range(2):
+            read = {"ja": [], "en": []}
+            for row in range(epoch * rows, (epoch + 1) * rows):
+                language, _ = interleaved(row, counts)
+                read[language].append(int(x[row, 0]))
+            for language, starts in read.items():
+                self.assertEqual(sorted(starts), [index * context for index in range(counts[language])])
+                places = [part(language, start) for start in starts]
+                self.assertEqual([place for place, _ in places], sorted(place for place, _ in places))
+            # The first part holds windows of both Japanese sources, shuffled together.
+            first = [name for place, name in map(lambda start: part("ja", start), read["ja"]) if place == 0]
+            self.assertEqual(set(first), {"ja-low", "ja-high"})
+            self.assertNotEqual(first, sorted(first))
+            orders.append(read["ja"])
+        self.assertNotEqual(orders[0], orders[1])
+
+    def test_ordered_training_reads_a_corpus_written_in_quality_order_and_resumes_the_same_updates(self):
+        """質の順に読む学習は質の順に書いたコーパスだけを受け付け、途中保存から再開しても連続学習と同じ重みを得る。"""
+        config = TrainConfig(**{**self.config(steps=8).__dict__, "sampling": "ordered"})
+        with self.assertRaisesRegex(ValueError, "quality order"):
+            self.run_training("unordered", config)
+        tokens = {language: Corpus(self.data).manifest["files"][f"train_{language}.bin"]["tokens"] for language in ("ja", "en")}
+        self.data = self.quality_corpus(
+            {"ja-low": ("ja", tokens["ja"] // 3), "en-all": ("en", tokens["en"]), "ja-high": ("ja", tokens["ja"] - tokens["ja"] // 3)}
+        )
+        self.run_training("ordered-continuous", config)
+        self.run_training("ordered-resumed", config, max_steps=4)
+        self.run_training("ordered-resumed", config, resume=self.root / "ordered-resumed/last.pt")
+        first, second = (
+            load_checkpoint(self.root / name / "last.pt")
+            for name in ("ordered-continuous", "ordered-resumed")
+        )
+        for name, parameter in first["model"].items():
+            torch.testing.assert_close(parameter, second["model"][name], rtol=0, atol=0)
 
     def test_cosine_weight_decay_falls_from_the_setting_to_zero(self):
         """cosine の weight decay は設定値から始まり、半ばで半分、終わりでほぼゼロになる。"""
