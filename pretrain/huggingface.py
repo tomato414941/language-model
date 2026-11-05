@@ -9,6 +9,7 @@ conversation without adding special tokens.
 """
 
 import dataclasses
+import json
 from pathlib import Path
 
 from tokenizers import Tokenizer, processors
@@ -125,4 +126,12 @@ def export_huggingface(checkpoint, output):
         pad_token=EOS,
         chat_template=CHAT_TEMPLATE if markers else None,
     ).save_pretrained(output)
+    # Transformers 5 records the class as TokenizersBackend, which Transformers 4, as vLLM installs it, does not
+    # know; both load the older name.
+    settings = output / "tokenizer_config.json"
+    settings.write_text(
+        json.dumps({**json.loads(settings.read_text(encoding="utf-8")), "tokenizer_class": "PreTrainedTokenizerFast"},
+                   ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     return {"output": str(output), "step": payload["step"], "parameters": model.num_parameters()}

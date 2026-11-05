@@ -1,4 +1,5 @@
 import dataclasses
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -165,6 +166,9 @@ class HuggingFaceTest(unittest.TestCase):
         self.export()
         loaded = AutoTokenizer.from_pretrained(self.root / "hf")
         self.assertEqual(loaded("雨が降る")["input_ids"], [self.bos, *self.tokenizer.encode("雨が降る").ids])
+        # A class Transformers 4 knows too, as vLLM's environments install it.
+        settings = json.loads((self.root / "hf" / "tokenizer_config.json").read_text(encoding="utf-8"))
+        self.assertEqual(settings["tokenizer_class"], "PreTrainedTokenizerFast")
         messages = [
             {"role": "system", "content": "短く答える。"},
             {"role": "user", "content": "天気は？"},
