@@ -34,7 +34,10 @@ TASKS = (
     "niah_single_1", "niah_single_2", "niah_single_3", "niah_multikey_1", "niah_multikey_2",
     "niah_multikey_3", "niah_multivalue", "niah_multiquery", "vt", "cwe", "fwe", "qa_1", "qa_2",
 )
-LENGTHS = (4096, 8192, 16384)
+# For now, and fixed for v7's pass line. 4,096 is left out: the authors' QA generator (qa.py) loops forever when
+# a question's own documents alone exceed the length, which this project's tokenizer reaches with HotpotQA at
+# 4,096. Later generations' lines may choose other lengths.
+LENGTHS = (8192, 16384)
 QUESTIONS_PER_TASK = 100
 # The authors' example: greedy replies of up to 4,096 tokens.
 GENERATION = ("++inference.tokens_to_generate=4096", "++inference.top_p=1.0", "++inference.temperature=0.0")

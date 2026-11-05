@@ -47,10 +47,10 @@ class RulerTests(unittest.TestCase):
             # At each length, half the tasks score every reply 1 and the rest 0, except a part-scored reply.
             write_outputs(root, "v5", lambda length, task, index: float(TASKS.index(task) % 2 == 0) * (0.5 if index == 0 else 1.0))
             record = read_results(root, "v5")
-        task = record["lengths"]["4096"]["tasks"]["niah_single_1"]
+        task = record["lengths"][str(LENGTHS[0])]["tasks"]["niah_single_1"]
         self.assertEqual(task["questions"], QUESTIONS_PER_TASK)
         self.assertAlmostEqual(task["accuracy"], 0.995)
-        self.assertAlmostEqual(record["lengths"]["8192"]["accuracy"], 7 * 0.995 / 13)
+        self.assertAlmostEqual(record["lengths"][str(LENGTHS[-1])]["accuracy"], 7 * 0.995 / 13)
         self.assertAlmostEqual(record["accuracy"], 7 * 0.995 / 13)
         self.assertEqual(record["questions"], len(LENGTHS) * len(TASKS) * QUESTIONS_PER_TASK)
 
