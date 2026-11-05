@@ -18,16 +18,14 @@ from tests.test_benchmarks import benchmark_dataset, byte_tokenizer
 
 # The checks run on a model without and with value embeddings and residual
 # scalars, with a squared ReLU in place of SwiGLU, reading a count table, and
-# with experts: SwiGLU ones, and squared-ReLU ones with a shared expert and
-# biases on their scores.
+# with experts: SwiGLU ones, and squared-ReLU ones with a shared expert.
 PARTS = (
     {},
     {"value_embeddings": True, "residual_scalars": True},
     {"feed_forward": "relu_squared"},
     {"count_table": True},
     {"experts": 4, "active_experts": 2},
-    {"feed_forward": "relu_squared", "experts": 4, "active_experts": 2, "shared_expert_size": 16,
-     "expert_balance": "bias"},
+    {"feed_forward": "relu_squared", "experts": 4, "active_experts": 2, "shared_expert_size": 16},
 )
 
 
@@ -75,10 +73,6 @@ class HuggingFaceTest(unittest.TestCase):
         with torch.no_grad():
             for parameter in native.parameters():
                 parameter.add_(0.1 * torch.randn_like(parameter))
-            # Biases large enough to change which experts tokens go to.
-            for name, buffer in native.named_buffers():
-                if name.endswith("experts.bias"):
-                    buffer.add_(torch.randn_like(buffer))
         checkpoint = self.root / "last.pt"
         torch.save(
             {"version": 1, "model": native.state_dict(), "model_config": dataclasses.asdict(config),

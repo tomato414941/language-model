@@ -70,9 +70,6 @@ class TrainConfig:
     patch_size: int = 1
     # The share of their rates that the residual scalars take.
     scalar_rate: float = 1.0
-    # How far each update moves the biases of experts balanced by bias toward
-    # even use, DeepSeek-V3's 0.001.
-    expert_bias_rate: float = 0.001
 
     def __post_init__(self):
         for field in (
@@ -103,7 +100,6 @@ class TrainConfig:
             "gradient_clip",
             "scalar_rate",
             "hyperball_rate",
-            "expert_bias_rate",
         ):
             value = getattr(self, field)
             if type(value) not in (float, int) or not math.isfinite(value) or value < 0:
@@ -1001,8 +997,8 @@ def train(
             scaler.step(optimizer)
             scaler.update()
             skipped_updates += scaler.get_scale() < previous_scale
-            # Experts balanced by bias move toward even use by this update's tokens.
-            expert_share = model.update_expert_bias(config.expert_bias_rate)
+            # The experts' counts of this update's tokens start over.
+            expert_share = model.finish_update()
             step += 1
             tokens_seen += tokens_per_step
             stopping = bool(stop_requested and stop_requested())

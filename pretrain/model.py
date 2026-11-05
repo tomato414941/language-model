@@ -52,11 +52,6 @@ class ModelConfig:
     # A shared expert of this many hidden units that every token passes
     # through besides its chosen ones, as DeepSeekMoE isolates common knowledge.
     shared_expert_size: int | None = None
-    # How the experts are kept evenly used: "loss", OLMoE's load-balancing loss
-    # over each forward pass, or "bias", DeepSeek-V3's bias on each expert's
-    # score when choosing, moved toward even use after every update by the
-    # tokens of the whole update, which adds no loss and no gradient.
-    expert_balance: str = "loss"
     # Each depth predicts one token further ahead, from the depth before it and
     # the embedding of the token in between, as DeepSeek-V3 trains; the
     # predictions add to the training objective only.
@@ -130,17 +125,12 @@ class ModelConfig:
                 value = getattr(self, name)
                 if value is not None and (type(value) is not int or value <= 0):
                     raise ValueError(f"{name} must be a positive integer")
-            if self.expert_balance not in ("loss", "bias"):
-                raise ValueError("expert_balance must be loss or bias")
         elif (
             self.active_experts is not None
             or self.expert_size is not None
             or self.shared_expert_size is not None
-            or self.expert_balance != "loss"
         ):
-            raise ValueError(
-                "active_experts, expert_size, shared_expert_size and expert_balance require experts"
-            )
+            raise ValueError("active_experts, expert_size and shared_expert_size require experts")
         if type(self.prediction_depth) is not int or not 0 <= self.prediction_depth <= 4:
             raise ValueError("prediction_depth must be an integer from 0 to 4")
         if type(self.value_embeddings) is not bool:
@@ -359,24 +349,114 @@ def kernel_delta_rule(query, key, value, decay, beta, state=None, keep_state=Fal
     )
 
 
+def groupable(tensor, *sides):
+    """Whether grouped products take rows of these sides: in bfloat16, starting 16 bytes apart."""
+    return tensor.dtype == torch.bfloat16 and all(side * tensor.element_size() % 16 == 0 for side in sides)
+
+
+def grouped(inputs, matrices, ends):
+    """Each expert's rows of inputs times its matrix: the rows come sorted by
+    expert, and ends holds where each expert's rows end."""
+    if groupable(inputs, *matrices.shape[-2:]):
+        return F.grouped_mm(inputs, matrices, offs=ends)
+    # Otherwise, as in single precision or with the small sides of test
+    # models, one expert at a time.
+    bounds = [0, *ends.tolist()]
+    return torch.cat([inputs[start:end] @ matrix for start, end, matrix in zip(bounds, bounds[1:], matrices)])
+
+
+def grouped_outer(inputs, gradients, ends):
+    """Each expert's rows of inputs, transposed, times its rows of gradients:
+    the gradient of each expert's matrix."""
+    if groupable(inputs, inputs.shape[-1], gradients.shape[-1]):
+        return F.grouped_mm(inputs.t(), gradients, offs=ends)
+    bounds = [0, *ends.tolist()]
+    return torch.stack([inputs[start:end].t() @ gradients[start:end] for start, end in zip(bounds, bounds[1:])])
+
+
+def expert_units(raised, gated):
+    """The experts' hidden units: a squared ReLU, or SwiGLU when the gate's product is given."""
+    if gated is None:
+        return F.relu(raised).square()
+    return F.silu(gated) * raised
+
+
+def expert_unit_gradients(raised, gated, gradient):
+    """The gradients of expert_units' inputs, given the gradient of its output."""
+    if gated is None:
+        return 2 * F.relu(raised) * gradient, None
+    sigmoid = torch.sigmoid(gated)
+    return gated * sigmoid * gradient, raised * gradient * sigmoid * (1 + gated * (1 - sigmoid))
+
+
+class ExpertProducts(torch.autograd.Function):
+    """Each token's chosen experts' outputs, weighted by score and summed.
+
+    The experts multiply the tokens' copies sorted by expert: sources holds
+    each row's token, ranks each copy's row, and ends where each expert's rows
+    end. The backward pass keeps only the tokens and the first products, as
+    SonicMoE does (Guo et al., arXiv:2512.14080): it gathers the copies again,
+    and it never needs the experts' outputs, since the scores weight the
+    hidden units rather than the outputs. So what a layer keeps does not grow
+    with the experts each token goes to.
+    """
+
+    @staticmethod
+    def forward(ctx, tokens, gate, up, down, scores, sources, ranks, ends):
+        precision = tokens.dtype
+        copies = tokens[sources]
+        raised = grouped(copies, up.to(precision), ends)
+        gated = None if gate is None else grouped(copies, gate.to(precision), ends)
+        units = expert_units(raised, gated) * scores[:, None].to(precision)
+        outputs = grouped(units, down.to(precision), ends)
+        ctx.save_for_backward(tokens, gate, up, down, scores, sources, ranks, ends, raised, gated)
+        return outputs[ranks].view(tokens.shape[0], -1, tokens.shape[1]).sum(1, dtype=torch.float32)
+
+    @staticmethod
+    def backward(ctx, gradient):
+        tokens, gate, up, down, scores, sources, ranks, ends, raised, gated = ctx.saved_tensors
+        precision = tokens.dtype
+        weights = scores[:, None].to(precision)
+        # Each row's output went to its token, so each row takes its token's gradient.
+        received = gradient.to(precision)[sources]
+        units = expert_units(raised, gated)
+        unit_gradient = grouped(received, down.to(precision).transpose(-2, -1), ends)
+        score_gradient = (unit_gradient.float() * units.float()).sum(-1)
+        down_gradient = grouped_outer(units * weights, received, ends)
+        raised_gradient, gated_gradient = expert_unit_gradients(raised, gated, unit_gradient * weights)
+        copies = tokens[sources]
+        up_gradient = grouped_outer(copies, raised_gradient, ends)
+        copy_gradient = grouped(raised_gradient, up.to(precision).transpose(-2, -1), ends)
+        gate_gradient = None
+        if gate is not None:
+            gate_gradient = grouped_outer(copies, gated_gradient, ends).to(gate.dtype)
+            copy_gradient = copy_gradient + grouped(gated_gradient, gate.to(precision).transpose(-2, -1), ends)
+        token_gradient = copy_gradient[ranks].view(tokens.shape[0], -1, tokens.shape[1]).sum(1, dtype=torch.float32)
+        return (
+            token_gradient.to(precision), gate_gradient, up_gradient.to(up.dtype), down_gradient.to(down.dtype),
+            score_gradient, None, None, None,
+        )
+
+
 class Experts(nn.Module):
     """Route each token to its highest-scoring experts and mix their outputs by score.
 
     Each expert is a small feed-forward network of the model's form: SwiGLU, or
     a squared ReLU between two matrices. A shared expert, which every token
-    passes through, may add to the chosen ones, as in DeepSeekMoE. Training
-    minimizes OLMoE's router z-loss, which keeps the router's scores small
-    (arXiv:2409.02060), and keeps the experts evenly used in one of two ways:
-    OLMoE's load-balancing loss over each forward pass, or, with balance
-    "bias", DeepSeek-V3's bias on each expert's score when choosing
-    (arXiv:2408.15664), which update_bias moves toward even use by the tokens
-    counted since its last call, so over a whole update rather than one window.
+    passes through, may add to the chosen ones, as in DeepSeekMoE. The router
+    scores in single precision, which the Switch Transformer found steadies
+    training. Training minimizes OLMoE's router z-loss, which keeps the
+    router's scores small (arXiv:2409.02060), and its load-balancing loss with
+    each expert's share of tokens counted over every window of the update so
+    far (Qiu et al., arXiv:2501.11873): even use over the whole update rather
+    than each window lets the experts specialize in kinds of text, which
+    lowered the loss and raised downstream scores. finish_update starts the
+    count over.
     """
 
-    def __init__(self, width, count, active, size, feed_forward="swiglu", shared=None, balance="loss"):
+    def __init__(self, width, count, active, size, feed_forward="swiglu", shared=None):
         super().__init__()
         self.active = active
-        self.balance = balance
         self.router = nn.Linear(width, count, bias=False)
         if feed_forward == "swiglu":
             self.gate = nn.Parameter(torch.randn(count, width, size) * 0.02)
@@ -391,80 +471,52 @@ class Experts(nn.Module):
                 "up": nn.Linear(width, shared, bias=False),
                 "down": nn.Linear(shared, width, bias=False),
             })
-        if balance == "bias":
-            # The bias is part of the model, since it decides where tokens go;
-            # the counts behind its next move are not.
-            self.register_buffer("bias", torch.zeros(count))
-            self.register_buffer("load", torch.zeros(count), persistent=False)
-
-    def feed_forward(self, inputs, gate, up, down, product):
-        units = product(inputs, up)
-        units = F.silu(product(inputs, gate)) * units if gate is not None else F.relu(units).square()
-        return product(units, down)
+        # The tokens each expert has taken in this update; not part of the model.
+        self.register_buffer("load", torch.zeros(count), persistent=False)
 
     def forward(self, hidden):
         tokens = hidden.reshape(-1, hidden.shape[-1])
-        logits = self.router(tokens).float()
+        with torch.autocast(tokens.device.type, enabled=False):
+            logits = F.linear(tokens.float(), self.router.weight.float())
         probabilities = logits.softmax(-1)
-        if self.balance == "bias":
-            # The bias decides which experts a token goes to, not how much of each it takes.
-            chosen = (probabilities + self.bias).topk(self.active, dim=-1).indices
-            scores = probabilities.gather(-1, chosen)
-        else:
-            scores, chosen = probabilities.topk(self.active, dim=-1)
+        scores, chosen = probabilities.topk(self.active, dim=-1)
         scores = scores / scores.sum(-1, keepdim=True)
         assigned = chosen.flatten()
         order = assigned.argsort(stable=True)
+        ranks = torch.empty_like(order).scatter_(0, order, torch.arange(order.numel(), device=order.device))
         # Counted into a fixed number of experts: bincount sizes its output by
         # the largest index, so it waits for the device and breaks compiled code.
         counts = torch.zeros(probabilities.shape[-1], dtype=torch.long, device=assigned.device)
         counts = counts.scatter_add(0, assigned, torch.ones_like(assigned))
-        if self.balance == "bias" and self.training:
-            self.load.add_(counts)
-        sources = order // self.active
-        selected = tokens[sources]
-        if half_precision(tokens.device, tokens.dtype) == torch.bfloat16:
-            # Each grouped product multiplies every expert's tokens at once. Its
-            # inputs come back to bfloat16 first: autocast squares in float32,
-            # and the grouped product takes no mixed types.
-            ends = counts.cumsum(0, dtype=torch.int32)
-            weights = [None if w is None else w.to(torch.bfloat16) for w in (self.gate, self.up, self.down)]
-            outputs = self.feed_forward(
-                selected, *weights, lambda a, b: F.grouped_mm(a.to(torch.bfloat16), b, offs=ends)
-            )
-        else:
-            outputs = torch.cat([
-                self.feed_forward(part, None if self.gate is None else self.gate[index],
-                                  self.up[index], self.down[index], torch.matmul)
-                for index, part in enumerate(selected.split(counts.tolist()))
-            ])
-        mixed = tokens.new_zeros(tokens.shape).index_add_(
-            0, sources, (outputs * scores.flatten()[order, None]).to(tokens.dtype)
+        # Under autocast on a GPU the experts multiply in bfloat16; the grouped
+        # product takes no mixed types.
+        precision = half_precision(tokens.device, tokens.dtype) or tokens.dtype
+        mixed = ExpertProducts.apply(
+            tokens.to(precision), self.gate, self.up, self.down, scores.flatten()[order],
+            order // self.active, ranks, counts.cumsum(0, dtype=torch.int32),
         )
         if self.shared is not None:
             shared = self.shared
-            mixed = mixed + self.feed_forward(
-                tokens, shared["gate"] if "gate" in shared else None, shared["up"], shared["down"],
-                lambda inputs, linear: linear(inputs),
-            )
+            units = shared["up"](tokens)
+            units = F.silu(shared["gate"](tokens)) * units if "gate" in shared else F.relu(units).square()
+            mixed = mixed + shared["down"](units)
+        counted = counts
+        if self.training:
+            self.load.add_(counts)
+            counted = self.load
+        balance = probabilities.shape[-1] * (counted / counted.sum() * probabilities.mean(0)).sum()
         z_loss = torch.logsumexp(logits, -1).square().mean()
-        if self.balance == "bias":
-            return mixed.view(hidden.shape), 0.001 * z_loss
-        balance = probabilities.shape[-1] * (
-            counts / assigned.numel() * probabilities.mean(0)
-        ).sum()
         return mixed.view(hidden.shape), 0.01 * balance + 0.001 * z_loss
 
     @torch.no_grad()
-    def update_bias(self, rate):
-        """Move each expert's bias by rate toward even use, from the tokens counted
-        since the last call; the most-used expert's share of an even share, or None."""
-        if not self.load.sum():
+    def finish_update(self):
+        """The most any expert took of an even share of the tokens counted since
+        the last call, or None if none were; the count starts over."""
+        if not self.load.any():
             return None
-        imbalance = (self.load.max() / self.load.mean()).item()
-        self.bias.add_(rate * torch.sign(self.load.mean() - self.load))
+        share = (self.load.max() / self.load.mean()).item()
         self.load.zero_()
-        return imbalance
+        return share
 
 
 class ModernBlock(nn.Module):
@@ -490,7 +542,7 @@ class ModernBlock(nn.Module):
             size = config.expert_size or max(1, intermediate // config.active_experts)
             self.experts = Experts(
                 config.width, config.experts, config.active_experts, size, config.feed_forward,
-                config.shared_expert_size, config.expert_balance,
+                config.shared_expert_size,
             )
 
     def forward(self, hidden, positions=None, mask=None, cache=None, starts=None, values=None):
@@ -862,11 +914,10 @@ class LanguageModel(nn.Module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
             nn.init.normal_(module.weight, std=0.02)
 
-    def update_expert_bias(self, rate):
-        """After an update, move each layer's expert biases toward even use; the
-        largest share any expert took of an even share, or None without biases."""
-        shares = [module.update_bias(rate) for module in self.modules()
-                  if isinstance(module, Experts) and module.balance == "bias"]
+    def finish_update(self):
+        """After an update, the largest share any layer's expert took of an even
+        share of its tokens, or None without experts; the counts start over."""
+        shares = [module.finish_update() for module in self.modules() if isinstance(module, Experts)]
         shares = [share for share in shares if share is not None]
         return max(shares) if shares else None
 

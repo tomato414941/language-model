@@ -26,12 +26,14 @@ from pretrain.data import Corpus, file_digest, interleaved, prepare_data, token_
 from pretrain.growth import grow_checkpoint
 from pretrain.model import (
     RESET,
+    ExpertProducts,
     Experts,
     LanguageModel,
     ModelConfig,
     chunk_gated_delta_rule,
     chunked_delta_rule,
     document_bounds,
+    expert_units,
     kernel_delta_rule,
     recurrent_delta_rule,
 )
@@ -551,71 +553,85 @@ class PretrainingTests(unittest.TestCase):
             ) + shared["down"](torch.relu(shared["up"](token)).square())
             torch.testing.assert_close(output, expected, rtol=1e-4, atol=1e-5)
 
-    def test_偏りで均す専門家は偏りを足した点で選び元の点で混ぜ使われ方で偏りを動かす(self):
-        """偏りで均す専門家は、偏りを足した点で専門家を選び、元の点の比で混ぜ、損失には点数の大きさだけを入れる。
-        学習中に数えた使われ方から、使われすぎた専門家の偏りを下げ、少ない専門家の偏りを上げる。"""
+    def test_均しの損失は更新の中でそれまでに読んだ全窓で各専門家の割合を数える(self):
+        """学習中の均しの損失は、更新の中でそれまでに読んだ全ての窓で各専門家に送った単語の割合を数え、
+        その窓の点数の平均と掛ける。評価では数えず、更新の終わりに一番使われた専門家の割合を返して数え直す。"""
         torch.manual_seed(0)
-        experts = Experts(width=8, count=4, active=2, size=6, balance="bias")
-        experts.bias.copy_(torch.tensor([0.0, 0.0, 10.0, 10.0]))
-        hidden = torch.randn(2, 6, 8)
-        mixed, loss = experts(hidden)
-        tokens = hidden.reshape(-1, 8)
-        logits = experts.router(tokens).float()
-        for token, output, scores in zip(tokens, mixed.reshape(-1, 8), logits.softmax(-1)):
-            expected = sum(
-                scores[index] / scores[2:].sum()
-                * (torch.nn.functional.silu(token @ experts.gate[index]) * (token @ experts.up[index]))
-                @ experts.down[index]
-                for index in (2, 3)
-            )
-            torch.testing.assert_close(output, expected, rtol=1e-4, atol=1e-5)
-        torch.testing.assert_close(loss, 0.001 * torch.logsumexp(logits, -1).square().mean())
-        torch.testing.assert_close(experts.load, torch.tensor([0.0, 0.0, 12.0, 12.0]))
+        experts = Experts(width=8, count=4, active=2, size=6)
+        windows = [torch.randn(2, 6, 8) for _ in range(2)]
+        counts = torch.zeros(4)
+        for hidden in windows:
+            _, loss = experts(hidden)
+            logits = experts.router(hidden.reshape(-1, 8))
+            chosen = logits.softmax(-1).topk(2).indices.flatten()
+            counts += torch.bincount(chosen, minlength=4)
+            balance = 4 * (counts / counts.sum() * logits.softmax(-1).mean(0)).sum()
+            z_loss = torch.logsumexp(logits, -1).square().mean()
+            torch.testing.assert_close(loss, 0.01 * balance + 0.001 * z_loss)
         experts.eval()
-        experts(hidden)
-        torch.testing.assert_close(experts.load, torch.tensor([0.0, 0.0, 12.0, 12.0]))
-        self.assertEqual(experts.update_bias(0.5), 2.0)
-        torch.testing.assert_close(experts.bias, torch.tensor([0.5, 0.5, 9.5, 9.5]))
+        experts(windows[0])
+        experts.train()
+        torch.testing.assert_close(experts.load, counts)
+        self.assertAlmostEqual(experts.finish_update(), (counts.max() / counts.mean()).item(), places=5)
         torch.testing.assert_close(experts.load, torch.zeros(4))
-        self.assertIsNone(experts.update_bias(0.5))
-        torch.testing.assert_close(experts.bias, torch.tensor([0.5, 0.5, 9.5, 9.5]))
-        self.assertIn("bias", experts.state_dict())
+        self.assertIsNone(experts.finish_update())
         self.assertNotIn("load", experts.state_dict())
 
-    def test_専門家の設定は専門家なしでは受け付けず均し方は損失か偏りだけを受け付ける(self):
-        """共有の専門家の大きさと均し方は専門家があるときだけ、均し方は loss か bias だけを受け付ける。"""
-        for changes in ({"shared_expert_size": 8}, {"expert_balance": "bias"}):
-            with self.assertRaisesRegex(ValueError, "require experts"):
-                dataclasses.replace(self.llama_config(), **changes)
+    def test_専門家の設定は専門家があるときだけ受け付ける(self):
+        """共有の専門家の大きさは専門家があるときだけ、正の整数だけを受け付ける。"""
+        with self.assertRaisesRegex(ValueError, "require experts"):
+            dataclasses.replace(self.llama_config(), shared_expert_size=8)
         mixture = {"experts": 4, "active_experts": 2}
-        for changes in ({"expert_balance": "drop"}, {"shared_expert_size": 0}):
-            with self.assertRaisesRegex(ValueError, "expert_balance|shared_expert_size"):
-                dataclasses.replace(self.llama_config(), **mixture, **changes)
-        config = dataclasses.replace(
-            self.llama_config(), **mixture, feed_forward="relu_squared", shared_expert_size=8, expert_balance="bias"
-        )
-        self.assertEqual((config.shared_expert_size, config.expert_balance), (8, "bias"))
+        with self.assertRaisesRegex(ValueError, "shared_expert_size"):
+            dataclasses.replace(self.llama_config(), **mixture, shared_expert_size=0)
+        config = dataclasses.replace(self.llama_config(), **mixture, feed_forward="relu_squared", shared_expert_size=8)
+        self.assertEqual(config.shared_expert_size, 8)
 
-    @unittest.skipUnless(torch.cuda.is_available(), "CUDA GPU required")
-    def test_GPUでは専門家をまとめて計算し一つずつと同じ結果を返す(self):
-        """GPUのbfloat16では全専門家の積をまとめて計算し、一つずつ計算したときと同じ出力と勾配を返す。"""
-        for form, shared in (("swiglu", None), ("relu_squared", 16)):
-            torch.manual_seed(0)
-            experts = Experts(width=64, count=8, active=2, size=32, feed_forward=form, shared=shared).cuda()
-            hidden = torch.randn(4, 50, 64, device="cuda")
-            results = []
-            for grouped in (True, False):
-                experts.zero_grad()
-                with (
-                    patch("pretrain.model.half_precision", return_value=None) if not grouped else contextlib.nullcontext(),
-                    torch.autocast("cuda", dtype=torch.bfloat16),
-                ):
-                    mixed, loss = experts(hidden)
-                (mixed.float().square().mean() + loss).backward()
-                results.append((mixed.float(), [p.grad.float().clone() for p in experts.parameters()]))
-            torch.testing.assert_close(results[0][0], results[1][0], rtol=0.05, atol=2e-3)
-            for grouped, separate in zip(results[0][1], results[1][1]):
-                torch.testing.assert_close(grouped, separate, rtol=0.05, atol=2e-3)
+    def test_専門家の積は一つずつ計算したときと同じ出力と勾配を返す(self):
+        """専門家の積は、各単語を選んだ専門家の網に通して点数で混ぜ、一つずつ計算したときと同じ出力と、
+        単語、各専門家の行列、点数への勾配を返す。bfloat16 でまとめて掛けても、単精度や小さな網で一つずつ掛けても同じにする。"""
+        forms, precisions = ("swiglu", "relu_squared"), ((torch.float32, 6), (torch.float32, 8), (torch.bfloat16, 8))
+        for form, (dtype, size) in itertools.product(forms, precisions):
+            with self.subTest(form=form, dtype=dtype, size=size):
+                torch.manual_seed(0)
+                count, active = 5, 2
+                tokens = torch.randn(7, 8).to(dtype).requires_grad_()
+                gate = (0.5 * torch.randn(count, 8, size)).requires_grad_() if form == "swiglu" else None
+                up = (0.5 * torch.randn(count, 8, size)).requires_grad_()
+                down = (0.5 * torch.randn(count, size, 8)).requires_grad_()
+                # The last expert takes no token.
+                chosen = torch.stack([torch.randperm(count - 1)[:active] for _ in range(7)])
+                scores = torch.rand(7, active, requires_grad=True)
+                assigned = chosen.flatten()
+                order = assigned.argsort(stable=True)
+                ranks = torch.empty_like(order).scatter_(0, order, torch.arange(order.numel()))
+                ends = torch.bincount(assigned, minlength=count).cumsum(0).int()
+                mixed = ExpertProducts.apply(
+                    tokens, gate, up, down, scores.flatten()[order], order // active, ranks, ends
+                )
+
+                def rounded(matrix):
+                    # The experts multiply in the tokens' precision.
+                    return matrix.to(dtype).float()
+
+                expected = torch.stack([
+                    sum(
+                        weight * expert_units(
+                            token.float() @ rounded(up[index]),
+                            None if gate is None else token.float() @ rounded(gate[index]),
+                        ) @ rounded(down[index])
+                        for weight, index in zip(weights, indices)
+                    )
+                    for token, weights, indices in zip(tokens, scores, chosen)
+                ])
+                tolerance = {"rtol": 1e-4, "atol": 1e-4} if dtype == torch.float32 else {"rtol": 0.05, "atol": 0.1}
+                torch.testing.assert_close(mixed, expected, **tolerance)
+                upstream = torch.randn_like(expected)
+                inputs = [tokens, up, down, scores] + ([gate] if gate is not None else [])
+                got = torch.autograd.grad(mixed, inputs, upstream)
+                wanted = torch.autograd.grad(expected, inputs, upstream)
+                for name, actual, reference in zip(("tokens", "up", "down", "scores", "gate"), got, wanted):
+                    torch.testing.assert_close(actual.float(), reference.float(), **tolerance, msg=name)
 
     def test_さらに先の予測は学習の目的にだけ加わる(self):
         """さらに先の単語の予測は学習中の目的にだけ加わり、評価の損失は次の単語の予測だけで測る。"""
@@ -1598,16 +1614,14 @@ class PretrainingTests(unittest.TestCase):
             self.assertFalse(torch.equal(trained, initial), name)
             torch.testing.assert_close(trained.norm(), initial.norm())
 
-    def test_偏りで均す二乗ReLUの専門家をHyperballで学び途中保存から同じ重みと偏りで再開する(self):
-        """二乗 ReLU と共有の専門家の混合を偏りで均して Hyperball で学ぶと、両言語の検証損失が下がり、
-        専門家の行列は各自の最初のノルムを保ち、偏りが動き、途中保存から再開しても連続学習と同じ重みと偏りになる。"""
+    def test_二乗ReLUの専門家をHyperballで学び途中保存から同じ重みで再開する(self):
+        """二乗 ReLU と共有の専門家の混合を Hyperball で学ぶと、両言語の検証損失が下がり、
+        専門家の行列は各自の最初のノルムを保ち、途中保存から再開しても連続学習と同じ重みになり、
+        更新ごとに一番使われた専門家の割合を記録する。"""
         self.model_config = dataclasses.replace(
-            self.llama_config(), feed_forward="relu_squared", experts=4, active_experts=2,
-            shared_expert_size=8, expert_balance="bias",
+            self.llama_config(), feed_forward="relu_squared", experts=4, active_experts=2, shared_expert_size=8,
         )
-        config = TrainConfig(**{
-            **self.config(steps=24).__dict__, "optimizer": "normuon", "hyperball_rate": 10.0, "expert_bias_rate": 0.01,
-        })
+        config = TrainConfig(**{**self.config(steps=24).__dict__, "optimizer": "normuon", "hyperball_rate": 10.0})
         torch.manual_seed(42)
         start = LanguageModel(258, self.model_config)
         before = evaluate(start, self.corpus, torch.device("cpu"), batches=2, batch_size=4)
@@ -1621,9 +1635,6 @@ class PretrainingTests(unittest.TestCase):
         )
         for name, value in first["model"].items():
             torch.testing.assert_close(value, second["model"][name], rtol=0, atol=0)
-        biases = [name for name in first["model"] if name.endswith("experts.bias")]
-        self.assertEqual(len(biases), self.model_config.layers)
-        self.assertTrue(all(first["model"][name].abs().sum() > 0 for name in biases))
         for name, initial in start.state_dict().items():
             if name.split(".")[-2:] in (["experts", "up"], ["experts", "down"]):
                 torch.testing.assert_close(first["model"][name].norm(dim=(-2, -1)), initial.norm(dim=(-2, -1)))

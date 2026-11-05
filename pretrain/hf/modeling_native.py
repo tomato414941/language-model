@@ -69,11 +69,11 @@ def has_value_embedding(config, index):
 class NativeExperts(nn.Module):
     """A mixture of experts in place of a feed-forward network, as pretrain.model's Experts.
 
-    Each token goes to its highest-scoring experts, with each expert's bias
-    added to the scores when the model learned one, and mixes their outputs by
-    its scores; a shared expert adds its output for every token. On a GPU in
-    bfloat16 the experts multiply in grouped products, without waiting for the
-    device, so that vLLM can capture the layer; elsewhere one by one.
+    Each token goes to its highest-scoring experts, scored in single
+    precision, and mixes their outputs by its scores; a shared expert adds its
+    output for every token. On a GPU in bfloat16 the experts multiply in
+    grouped products, without waiting for the device, so that vLLM can capture
+    the layer; elsewhere one by one.
     """
 
     def __init__(self, config):
@@ -96,9 +96,6 @@ class NativeExperts(nn.Module):
                 "up": nn.Linear(width, shared, bias=False),
                 "down": nn.Linear(shared, width, bias=False),
             })
-        self.balanced_by_bias = config.expert_balance == "bias"
-        if self.balanced_by_bias:
-            self.register_buffer("bias", torch.zeros(count))
 
     @staticmethod
     def network(inputs, gate, up, down, product):
@@ -108,12 +105,8 @@ class NativeExperts(nn.Module):
 
     def forward(self, hidden):
         tokens = hidden.reshape(-1, hidden.shape[-1])
-        probabilities = self.router(tokens).float().softmax(-1)
-        if self.balanced_by_bias:
-            chosen = (probabilities + self.bias).topk(self.active, dim=-1).indices
-            scores = probabilities.gather(-1, chosen)
-        else:
-            scores, chosen = probabilities.topk(self.active, dim=-1)
+        probabilities = F.linear(tokens.float(), self.router.weight.float()).softmax(-1)
+        scores, chosen = probabilities.topk(self.active, dim=-1)
         scores = scores / scores.sum(-1, keepdim=True)
         assigned = chosen.flatten()
         order = assigned.argsort(stable=True)

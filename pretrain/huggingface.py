@@ -28,7 +28,7 @@ SUPPORTED = {
     "width", "heads", "layers", "context", "architecture", "kv_heads", "intermediate_size",
     "rope_theta", "qk_norm", "attention_gate", "document_start", "value_embeddings",
     "residual_scalars", "prediction_depth", "zero_output_init", "feed_forward", "count_table",
-    "experts", "active_experts", "expert_size", "shared_expert_size", "expert_balance",
+    "experts", "active_experts", "expert_size", "shared_expert_size",
 }
 CHAT_TEMPLATE = (
     f"{BOS}"
@@ -81,7 +81,6 @@ def native_config(config, tokenizer, table=None):
             config.expert_size or max(1, config.feed_forward_units() // config.active_experts)
         ),
         shared_expert_size=config.shared_expert_size,
-        expert_balance=config.expert_balance,
         count_table=None
         if not config.count_table
         else {

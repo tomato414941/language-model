@@ -27,7 +27,6 @@ class NativeConfig(PretrainedConfig):
         active_experts=None,
         expert_size=None,
         shared_expert_size=None,
-        expert_balance="loss",
         tie_word_embeddings=True,
         use_cache=True,
         **kwargs,
@@ -52,13 +51,11 @@ class NativeConfig(PretrainedConfig):
         self.feed_forward = feed_forward
         # A mixture of experts in place of each feed-forward network: experts
         # networks of expert_size units, active_experts of them for each token,
-        # a shared expert of shared_expert_size units every token passes
-        # through, and with expert_balance "bias" a learned bias on each
-        # expert's score when choosing.
+        # and a shared expert of shared_expert_size units every token passes
+        # through.
         self.experts = experts
         self.active_experts = active_experts
         self.expert_size = expert_size
         self.shared_expert_size = shared_expert_size
-        self.expert_balance = expert_balance
         self.use_cache = use_cache
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
