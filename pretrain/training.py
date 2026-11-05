@@ -958,7 +958,9 @@ def train(
             if config.optimizer == "normuon" and not config.hyperball_rate:
                 for group in optimizer.optimizers[0].param_groups:
                     group["weight_decay"] = weight_decay(config, step)
-            total_loss = 0.0
+            # The update's loss stays on the GPU until its last window, so that
+            # no window waits for the GPU to finish the one before it.
+            losses = torch.zeros((), device=device)
             for micro in range(config.accumulation_steps):
                 if config.sampling != "random":
                     read = corpus.ordered_batch if config.sampling == "ordered" else corpus.sequential_batch
@@ -982,12 +984,13 @@ def train(
                 x, y = patch_batch(x, y, config.patch_size)
                 with autocast(device, precision):
                     loss = model(x, y)
-                if not torch.isfinite(loss).item():
-                    raise RuntimeError(
-                        "training loss is not finite; inspect the data and saved checkpoint"
-                    )
-                total_loss += loss.detach().item() / config.accumulation_steps
+                losses += loss.detach().float() / config.accumulation_steps
                 scaler.scale(loss / config.accumulation_steps).backward()
+            total_loss = losses.item()
+            if not math.isfinite(total_loss):
+                raise RuntimeError(
+                    "training loss is not finite; inspect the data and saved checkpoint"
+                )
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(
                 model.parameters(),
