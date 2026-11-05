@@ -404,34 +404,41 @@ class ExpertProducts(torch.autograd.Function):
     @staticmethod
     def forward(ctx, tokens, gate, up, down, scores, sources, ranks, ends):
         precision = tokens.dtype
-        copies = tokens[sources]
-        raised = grouped(copies, up.to(precision), ends)
-        gated = None if gate is None else grouped(copies, gate.to(precision), ends)
-        units = expert_units(raised, gated) * scores[:, None].to(precision)
-        outputs = grouped(units, down.to(precision), ends)
+        # Everything stays in the tokens' precision: autocast would square in
+        # float32 on a GPU, and grouped products take no mixed types.
+        with torch.autocast(tokens.device.type, enabled=False):
+            copies = tokens[sources]
+            raised = grouped(copies, up.to(precision), ends)
+            gated = None if gate is None else grouped(copies, gate.to(precision), ends)
+            units = expert_units(raised, gated) * scores[:, None].to(precision)
+            outputs = grouped(units, down.to(precision), ends)
+            mixed = outputs[ranks].view(tokens.shape[0], -1, tokens.shape[1]).sum(1, dtype=torch.float32)
         ctx.save_for_backward(tokens, gate, up, down, scores, sources, ranks, ends, raised, gated)
-        return outputs[ranks].view(tokens.shape[0], -1, tokens.shape[1]).sum(1, dtype=torch.float32)
+        return mixed
 
     @staticmethod
     def backward(ctx, gradient):
         tokens, gate, up, down, scores, sources, ranks, ends, raised, gated = ctx.saved_tensors
         precision = tokens.dtype
-        weights = scores[:, None].to(precision)
-        # Each row's output went to its token, so each row takes its token's gradient.
-        received = gradient.to(precision)[sources]
-        units = expert_units(raised, gated)
-        unit_gradient = grouped(received, down.to(precision).transpose(-2, -1), ends)
-        score_gradient = (unit_gradient.float() * units.float()).sum(-1)
-        down_gradient = grouped_outer(units * weights, received, ends)
-        raised_gradient, gated_gradient = expert_unit_gradients(raised, gated, unit_gradient * weights)
-        copies = tokens[sources]
-        up_gradient = grouped_outer(copies, raised_gradient, ends)
-        copy_gradient = grouped(raised_gradient, up.to(precision).transpose(-2, -1), ends)
-        gate_gradient = None
-        if gate is not None:
-            gate_gradient = grouped_outer(copies, gated_gradient, ends).to(gate.dtype)
-            copy_gradient = copy_gradient + grouped(gated_gradient, gate.to(precision).transpose(-2, -1), ends)
-        token_gradient = copy_gradient[ranks].view(tokens.shape[0], -1, tokens.shape[1]).sum(1, dtype=torch.float32)
+        with torch.autocast(tokens.device.type, enabled=False):
+            weights = scores[:, None].to(precision)
+            # Each row's output went to its token, so each row takes its token's gradient.
+            received = gradient.to(precision)[sources]
+            units = expert_units(raised, gated)
+            unit_gradient = grouped(received, down.to(precision).transpose(-2, -1), ends)
+            score_gradient = (unit_gradient.float() * units.float()).sum(-1)
+            down_gradient = grouped_outer(units * weights, received, ends)
+            raised_gradient, gated_gradient = expert_unit_gradients(raised, gated, unit_gradient * weights)
+            copies = tokens[sources]
+            up_gradient = grouped_outer(copies, raised_gradient, ends)
+            copy_gradient = grouped(raised_gradient, up.to(precision).transpose(-2, -1), ends)
+            gate_gradient = None
+            if gate is not None:
+                gate_gradient = grouped_outer(copies, gated_gradient, ends).to(gate.dtype)
+                copy_gradient = copy_gradient + grouped(gated_gradient, gate.to(precision).transpose(-2, -1), ends)
+            token_gradient = copy_gradient[ranks].view(tokens.shape[0], -1, tokens.shape[1]).sum(
+                1, dtype=torch.float32
+            )
         return (
             token_gradient.to(precision), gate_gradient, up_gradient.to(up.dtype), down_gradient.to(down.dtype),
             score_gradient, None, None, None,
