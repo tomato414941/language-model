@@ -70,8 +70,9 @@ class NativeExperts(nn.Module):
     """A mixture of experts in place of a feed-forward network, as pretrain.model's Experts.
 
     Each token goes to its highest-scoring experts, scored in single
-    precision, and mixes their outputs by its scores; a shared expert adds its
-    output for every token. On a GPU in bfloat16 the experts multiply in
+    precision, and mixes their outputs by the square roots of its shares of
+    the chosen scores; a shared expert's output for every token joins theirs,
+    each scaled by the root of one half. On a GPU in bfloat16 the experts multiply in
     grouped products, without waiting for the device, so that vLLM can capture
     the layer; elsewhere one by one.
     """
@@ -105,14 +106,13 @@ class NativeExperts(nn.Module):
 
     def forward(self, hidden):
         tokens = hidden.reshape(-1, hidden.shape[-1])
-        probabilities = F.linear(tokens.float(), self.router.weight.float()).softmax(-1)
-        scores, chosen = probabilities.topk(self.active, dim=-1)
-        scores = scores / scores.sum(-1, keepdim=True)
+        top, chosen = F.linear(tokens.float(), self.router.weight.float()).topk(self.active, dim=-1)
+        weights = (0.5 * top.log_softmax(-1)).exp()
         assigned = chosen.flatten()
         order = assigned.argsort(stable=True)
         # Counted into a fixed number of experts: bincount sizes its output by
         # the largest index, so it waits for the device and breaks compiled code.
-        counts = torch.zeros(probabilities.shape[-1], dtype=torch.long, device=assigned.device)
+        counts = torch.zeros(self.up.shape[0], dtype=torch.long, device=assigned.device)
         counts = counts.scatter_add(0, assigned, torch.ones_like(assigned))
         sources = order // self.active
         selected = tokens[sources]
@@ -129,14 +129,14 @@ class NativeExperts(nn.Module):
                 for index, part in enumerate(selected.split(counts.tolist()))
             ])
         mixed = tokens.new_zeros(tokens.shape).index_add_(
-            0, sources, (outputs * scores.flatten()[order, None]).to(tokens.dtype)
+            0, sources, (outputs * weights.flatten()[order, None]).to(tokens.dtype)
         )
         if self.shared is not None:
             shared = self.shared
-            mixed = mixed + self.network(
+            mixed = (mixed + self.network(
                 tokens, shared["gate"] if "gate" in shared else None, shared["up"], shared["down"],
                 lambda inputs, linear: linear(inputs),
-            )
+            )) * 0.5**0.5
         return mixed.view(hidden.shape)
 
 

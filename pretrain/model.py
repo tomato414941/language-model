@@ -422,20 +422,28 @@ class ExpertProducts(torch.autograd.Function):
         precision = tokens.dtype
         with torch.autocast(tokens.device.type, enabled=False):
             weights = scores[:, None].to(precision)
-            # Each row's output went to its token, so each row takes its token's gradient.
-            received = gradient.to(precision)[sources]
+            # Each row's output went to its token, so each row takes its
+            # token's gradient, gathered together with the token's copy:
+            # PyTorch's compiler never recomputes for this pass what a product
+            # here reads, so copies gathered from the tokens alone would be
+            # gathered in the forward pass and kept.
+            width = tokens.shape[1]
+            gathered = torch.cat([tokens, gradient.to(precision)], 1)[sources]
+            copies, received = gathered[:, :width], gathered[:, width:]
             units = expert_units(raised, gated)
-            unit_gradient = grouped(received, down.to(precision).transpose(-2, -1), ends)
+            # The matrices' half-precision copies are made by other operations
+            # than the forward pass's, which a compiler would otherwise merge
+            # with these and keep.
+            unit_gradient = grouped(received, down.transpose(-2, -1).to(precision), ends)
             score_gradient = (unit_gradient.float() * units.float()).sum(-1)
             down_gradient = grouped_outer(units * weights, received, ends)
             raised_gradient, gated_gradient = expert_unit_gradients(raised, gated, unit_gradient * weights)
-            copies = tokens[sources]
             up_gradient = grouped_outer(copies, raised_gradient, ends)
-            copy_gradient = grouped(raised_gradient, up.to(precision).transpose(-2, -1), ends)
+            copy_gradient = grouped(raised_gradient, up.transpose(-2, -1).to(precision), ends)
             gate_gradient = None
             if gate is not None:
                 gate_gradient = grouped_outer(copies, gated_gradient, ends).to(gate.dtype)
-                copy_gradient = copy_gradient + grouped(gated_gradient, gate.to(precision).transpose(-2, -1), ends)
+                copy_gradient = copy_gradient + grouped(gated_gradient, gate.transpose(-2, -1).to(precision), ends)
             token_gradient = copy_gradient[ranks].view(tokens.shape[0], -1, tokens.shape[1]).sum(
                 1, dtype=torch.float32
             )
@@ -452,13 +460,21 @@ class Experts(nn.Module):
     a squared ReLU between two matrices. A shared expert, which every token
     passes through, may add to the chosen ones, as in DeepSeekMoE. The router
     scores in single precision, which the Switch Transformer found steadies
-    training. Training minimizes OLMoE's router z-loss, which keeps the
-    router's scores small (arXiv:2409.02060), and its load-balancing loss with
-    each expert's share of tokens counted over every window of the update so
-    far (Qiu et al., arXiv:2501.11873): even use over the whole update rather
-    than each window lets the experts specialize in kinds of text, which
-    lowered the loss and raised downstream scores. finish_update starts the
-    count over.
+    training. The chosen experts' outputs mix by the square roots of their
+    shares of the chosen scores, HyperP's SqrtGate (Ren et al.,
+    arXiv:2603.28743): outputs of equal size that do not correlate then mix
+    to that size however many experts are chosen, where weighting by the
+    shares themselves shrinks the mixture with each expert added. A shared
+    expert's output joins theirs as HyperP's does, each scaled by the root of
+    one half, so that the sum keeps that size too. Training minimizes OLMoE's
+    router z-loss, which keeps the router's scores small (arXiv:2409.02060),
+    and its load-balancing loss with each expert's share of tokens counted
+    over every window of the update so far (Qiu et al., arXiv:2501.11873):
+    even use over the whole update rather than each window lets the experts
+    specialize in kinds of text, which lowered the loss and raised downstream
+    scores. The loss weighs 0.1 in each layer, as HyperP's did with matrices
+    held at their norms: the best loss and the evenest use among 0.001, 0.01
+    and 0.1. finish_update starts the count over.
     """
 
     def __init__(self, width, count, active, size, feed_forward="swiglu", shared=None):
@@ -486,8 +502,11 @@ class Experts(nn.Module):
         with torch.autocast(tokens.device.type, enabled=False):
             logits = F.linear(tokens.float(), self.router.weight.float())
         probabilities = logits.softmax(-1)
-        scores, chosen = probabilities.topk(self.active, dim=-1)
-        scores = scores / scores.sum(-1, keepdim=True)
+        top, chosen = logits.topk(self.active, dim=-1)
+        # The square roots of the chosen experts' shares, taken through
+        # logarithms so that no share too small for single precision has an
+        # infinite gradient.
+        weights = (0.5 * top.log_softmax(-1)).exp()
         assigned = chosen.flatten()
         order = assigned.argsort(stable=True)
         ranks = torch.empty_like(order).scatter_(0, order, torch.arange(order.numel(), device=order.device))
@@ -499,21 +518,21 @@ class Experts(nn.Module):
         # product takes no mixed types.
         precision = half_precision(tokens.device, tokens.dtype) or tokens.dtype
         mixed = ExpertProducts.apply(
-            tokens.to(precision), self.gate, self.up, self.down, scores.flatten()[order],
+            tokens.to(precision), self.gate, self.up, self.down, weights.flatten()[order],
             order // self.active, ranks, counts.cumsum(0, dtype=torch.int32),
         )
         if self.shared is not None:
             shared = self.shared
             units = shared["up"](tokens)
             units = F.silu(shared["gate"](tokens)) * units if "gate" in shared else F.relu(units).square()
-            mixed = mixed + shared["down"](units)
+            mixed = (mixed + shared["down"](units)) * 0.5**0.5
         counted = counts
         if self.training:
             self.load.add_(counts)
             counted = self.load
         balance = probabilities.shape[-1] * (counted / counted.sum() * probabilities.mean(0)).sum()
         z_loss = torch.logsumexp(logits, -1).square().mean()
-        return mixed.view(hidden.shape), 0.01 * balance + 0.001 * z_loss
+        return mixed.view(hidden.shape), 0.1 * balance + 0.001 * z_loss
 
     @torch.no_grad()
     def finish_update(self):
@@ -907,8 +926,17 @@ class LanguageModel(nn.Module):
             ):
                 if self.config.zero_output_init:
                     nn.init.zeros_(parameter)
-                else:
-                    nn.init.normal_(parameter, std=0.02 / math.sqrt(2 * self.config.layers))
+                    continue
+                scale = 0.02 / math.sqrt(2 * self.config.layers)
+                if name.endswith(("down.weight", "experts.down")):
+                    # A feed-forward network's output sums over its units, so
+                    # an expert, chosen or shared, starts with weights larger
+                    # by the root of how many times fewer units it has than
+                    # the dense network it stands in for, and outputs as much,
+                    # as HyperP's experts do under PyTorch's default start,
+                    # which shrinks each matrix by the root of its inputs.
+                    scale *= math.sqrt(self.config.feed_forward_units() / parameter.shape[1])
+                nn.init.normal_(parameter, std=scale)
             # Gates start a little above their midpoint, 1.5 times the embedded values.
             if name.endswith("value_gate.weight"):
                 nn.init.uniform_(parameter, 0.0, 0.02)

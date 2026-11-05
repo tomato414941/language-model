@@ -403,8 +403,10 @@ SCALAR_SETTINGS = {
 # The matrices of the attention layers and the feed-forward networks, which
 # Puro-2B held with Hyperball as weights nearly free of scale; the experts of
 # a mixture, and its shared expert, hold their networks' matrices under the
-# same names.
-HYPERBALL_MATRICES = ("query", "key_value", "attention_output", "gate", "up", "down")
+# same names. A mixture's router is held too, as HyperP held every matrix
+# inside its blocks (arXiv:2603.28743), which it found to bound the router's
+# scores and to let a strong load-balancing loss cost nothing.
+HYPERBALL_MATRICES = ("query", "key_value", "attention_output", "gate", "up", "down", "router")
 
 
 def make_optimizer(model, config, device):
@@ -417,8 +419,7 @@ def make_optimizer(model, config, device):
     batch as its rates are, times the config's scalar_rate, and follow the
     schedule in proportion through each group's lr_scale. With hyperball_rate,
     NorMuon takes only HYPERBALL_MATRICES, the experts' stacks of them
-    included, at that multiple of the rate, and AdamW the rest, the experts'
-    router among them.
+    included, at that multiple of the rate, and AdamW the rest.
     """
     scalars = {
         id(parameter): name

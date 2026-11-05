@@ -515,8 +515,8 @@ class PretrainingTests(unittest.TestCase):
         mixed, _ = kernel_delta_rule(query.detach(), key.detach(), value.detach().bfloat16(), decay.detach(), beta.detach())
         torch.testing.assert_close(mixed.float(), chunked[0].detach(), rtol=5e-2, atol=5e-2)
 
-    def test_専門家の混合は各単語を点数の高い専門家に送り点数で混ぜる(self):
-        """専門家の混合は、各単語を点数の高い専門家だけに送り、その出力を点数の比で混ぜ、偏りと点数の大きさを抑える損失を返す。"""
+    def test_専門家の混合は各単語を点数の高い専門家に送り点数の比の平方根で混ぜる(self):
+        """専門家の混合は、各単語を点数の高い専門家だけに送り、その出力を点数の比の平方根で混ぜ、偏りと点数の大きさを抑える損失を返す。"""
         torch.manual_seed(0)
         experts = Experts(width=8, count=4, active=2, size=6)
         hidden = torch.randn(3, 5, 8)
@@ -526,17 +526,18 @@ class PretrainingTests(unittest.TestCase):
         for token, output, scores in zip(tokens, mixed.reshape(-1, 8), probabilities):
             top, chosen = scores.topk(2)
             expected = sum(
-                weight / top.sum()
+                (weight / top.sum()).sqrt()
                 * (torch.nn.functional.silu(token @ experts.gate[index]) * (token @ experts.up[index]))
                 @ experts.down[index]
                 for weight, index in zip(top, chosen)
             )
             torch.testing.assert_close(output, expected, rtol=1e-4, atol=1e-5)
-        # Even routing makes the balancing loss 1, its least value, weighted by 0.01.
-        self.assertGreater(loss.item(), 0.01)
+        # Even routing makes the balancing loss 1, its least value, weighted by 0.1.
+        self.assertGreater(loss.item(), 0.1)
 
-    def test_二乗ReLUの専門家は選んだ専門家の出力に共有の専門家の出力を足す(self):
-        """二乗 ReLU の専門家は、各単語を点数の高い専門家の網で計算して点数の比で混ぜ、全単語が通る共有の専門家の出力を足す。"""
+    def test_二乗ReLUの専門家は選んだ専門家の出力と共有の専門家の出力を半分ずつの分散で足す(self):
+        """二乗 ReLU の専門家は、各単語を点数の高い専門家の網で計算して点数の比の平方根で混ぜ、
+        全単語が通る共有の専門家の出力と、それぞれ 1/2 の平方根を掛けて足す。"""
         torch.manual_seed(0)
         experts = Experts(width=8, count=4, active=2, size=6, feed_forward="relu_squared", shared=5)
         self.assertIsNone(experts.gate)
@@ -548,10 +549,31 @@ class PretrainingTests(unittest.TestCase):
         for token, output, scores in zip(tokens, mixed.reshape(-1, 8), probabilities):
             top, chosen = scores.topk(2)
             expected = sum(
-                weight / top.sum() * torch.relu(token @ experts.up[index]).square() @ experts.down[index]
+                (weight / top.sum()).sqrt() * torch.relu(token @ experts.up[index]).square() @ experts.down[index]
                 for weight, index in zip(top, chosen)
             ) + shared["down"](torch.relu(shared["up"](token)).square())
-            torch.testing.assert_close(output, expected, rtol=1e-4, atol=1e-5)
+            torch.testing.assert_close(output, expected * 0.5**0.5, rtol=1e-4, atol=1e-5)
+
+    def test_専門家の混合は初めに置き換えた密なネットワークと同じ大きさを出力する(self):
+        """初期化したモデルでは、選んだ専門家と共有の専門家を合わせた出力が、同じ数の単位が働く密なネットワークの出力とほぼ同じ大きさになる。"""
+        dense_config = dataclasses.replace(
+            self.llama_config(), width=64, heads=4, kv_heads=2, feed_forward="relu_squared", intermediate_size=512,
+        )
+        mixture_config = dataclasses.replace(
+            dense_config, experts=16, active_experts=6, expert_size=64, shared_expert_size=128,
+        )
+        hidden = torch.randn(4096, 64)
+        sizes = []
+        for config in (dense_config, mixture_config):
+            torch.manual_seed(0)
+            block = LanguageModel(258, config).blocks[0]
+            with torch.no_grad():
+                if config.experts:
+                    output, _ = block.experts(hidden)
+                else:
+                    output = block.down(torch.relu(block.up(hidden)).square())
+            sizes.append(output.square().mean().sqrt().item())
+        self.assertAlmostEqual(sizes[1] / sizes[0], 1.0, delta=0.15)
 
     def test_均しの損失は更新の中でそれまでに読んだ全窓で各専門家の割合を数える(self):
         """学習中の均しの損失は、更新の中でそれまでに読んだ全ての窓で各専門家に送った単語の割合を数え、
@@ -567,7 +589,7 @@ class PretrainingTests(unittest.TestCase):
             counts += torch.bincount(chosen, minlength=4)
             balance = 4 * (counts / counts.sum() * logits.softmax(-1).mean(0)).sum()
             z_loss = torch.logsumexp(logits, -1).square().mean()
-            torch.testing.assert_close(loss, 0.01 * balance + 0.001 * z_loss)
+            torch.testing.assert_close(loss, 0.1 * balance + 0.001 * z_loss)
         experts.eval()
         experts(windows[0])
         experts.train()
@@ -1565,15 +1587,17 @@ class PretrainingTests(unittest.TestCase):
                 )
                 self.assertEqual(id(parameter) in held, matrix, name)
                 self.assertEqual(id(parameter) in others, not matrix, name)
-        # A mixture's experts and shared expert go to Hyperball, its router to AdamW.
+        # A mixture's experts, shared expert and router all go to Hyperball.
         model = LanguageModel(258, dataclasses.replace(
             self.llama_config(), feed_forward="relu_squared", experts=4, active_experts=2, shared_expert_size=8,
         ))
         hyperball, adamw = make_optimizer(model, config, torch.device("cpu")).optimizers
         held = {id(parameter) for group in hyperball.param_groups for parameter in group["params"]}
+        mixtures = [name for name, _ in model.named_parameters() if ".experts." in name]
+        self.assertTrue(any("router" in name for name in mixtures))
         for name, parameter in model.named_parameters():
             if ".experts." in name:
-                self.assertEqual(id(parameter) in held, "router" not in name, name)
+                self.assertIn(id(parameter), held, name)
         for model_config in (
             dataclasses.replace(self.llama_config(), zero_output_init=True),
             dataclasses.replace(self.llama_config(), full_attention_every=2),
@@ -1616,7 +1640,7 @@ class PretrainingTests(unittest.TestCase):
 
     def test_二乗ReLUの専門家をHyperballで学び途中保存から同じ重みで再開する(self):
         """二乗 ReLU と共有の専門家の混合を Hyperball で学ぶと、両言語の検証損失が下がり、
-        専門家の行列は各自の最初のノルムを保ち、途中保存から再開しても連続学習と同じ重みになり、
+        専門家の行列とルーターは各自の最初のノルムを保ち、途中保存から再開しても連続学習と同じ重みになり、
         更新ごとに一番使われた専門家の割合を記録する。"""
         self.model_config = dataclasses.replace(
             self.llama_config(), feed_forward="relu_squared", experts=4, active_experts=2, shared_expert_size=8,
@@ -1635,9 +1659,15 @@ class PretrainingTests(unittest.TestCase):
         )
         for name, value in first["model"].items():
             torch.testing.assert_close(value, second["model"][name], rtol=0, atol=0)
-        for name, initial in start.state_dict().items():
-            if name.split(".")[-2:] in (["experts", "up"], ["experts", "down"]):
-                torch.testing.assert_close(first["model"][name].norm(dim=(-2, -1)), initial.norm(dim=(-2, -1)))
+        held = [
+            name for name in start.state_dict()
+            if name.split(".")[-2:] in (["experts", "up"], ["experts", "down"], ["router", "weight"])
+        ]
+        self.assertEqual(len(held), 2 * 3)
+        for name in held:
+            trained, initial = first["model"][name], start.state_dict()[name]
+            self.assertFalse(torch.equal(trained, initial), name)
+            torch.testing.assert_close(trained.norm(dim=(-2, -1)), initial.norm(dim=(-2, -1)))
         records = [json.loads(line) for line in (self.root / "experts-continuous/metrics.jsonl").read_text().splitlines()]
         shares = [record["expert_share"] for record in records if "expert_share" in record]
         self.assertTrue(shares and all(share >= 1.0 for share in shares))
