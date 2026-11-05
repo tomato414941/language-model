@@ -1,61 +1,62 @@
-# 評価
+# Evaluation
 
-## 決まり
+## Rules
 
-- 公開されて広く使われている評価だけを使う。独自の評価は作らない。
-- テストは提供者が定めた形式で行う。提供者は、評価の手順を定めていればテストの作者、定めていなければ広く使われている公開の道具とする。モデルの性能に合わせて形式を変えない。点が低くて差がつかないときは、他の人が提供しているもっと簡単なテストを足す。
-- 間違っていると確かめた測り方は、過去と比べられなくなっても切り捨てる。
-- 測り方を変えても、前の世代のモデルは測り直さない（2026-11-05 に決めた）。比べる相手の点がない課題は、その世代では参考にとどめ、合否には次の世代から入れる。
-- 全問を評価する。
-- 使う道具は lm-evaluation-harness と llm-jp-eval v2.1.5。課題は `configs/pretrain-v6.toml` の `evaluation` にある。各課題と提供者の定めの照合は `research/experiments/test-forms.md` にある。RULER も lm-evaluation-harness のもので測る（下の「長い文脈（RULER）」）。
-- 評価の問題は学習データから除く。
+- Use only public, widely used evaluations. Do not create our own.
+- Run each test in the form its provider defines. The provider is the test's author when the author defines an evaluation procedure, and otherwise a widely used public tool. Do not change a test's form to suit a model's performance. When scores are too low to separate models, add an easier test that someone else provides.
+- A way of measuring that is confirmed to be wrong is dropped, even if results then can no longer be compared with the past.
+- When the way of measuring changes, earlier generations' models are not measured again (decided on 2026-11-05). A task without a score for the model to compare with is reference only for that generation, and enters the pass line from the next generation.
+- Evaluate every question.
+- The tools are lm-evaluation-harness and llm-jp-eval v2.1.5. The tasks are in `evaluation` in `configs/pretrain-v6.toml`. Each task is checked against its provider's definition in `research/experiments/test-forms.md`. RULER is also measured with lm-evaluation-harness's version (see "Long context (RULER)" below).
+- Remove evaluation questions from the training data.
 
-## 問い方
+## How models are asked
 
-- 事前学習の後のモデルは、印のない文章で問う。
-- 指示学習の後のモデルは、会話形式で問う。lm-evaluation-harness の説明が、チャットや指示学習のモデルにはチャットの形式を使うとしているから。問いのない BLiMP と LAMBADA だけは印のない文章で問う。印のない文章での点も測るが、合否には使わない。
-- 比較は同じ問い方どうしで行う。
-- MMLU は、作者の形式（5例を付けて記号で答える）で問う。続きの形（OLMES）は、より簡単なテストとして別に測る。
-- M-IFEval-Ja は、保存した返答を公式の採点コードで採点する（`python -m pretrain score-m-ifeval`）。llm-jp-eval の既定（最初の空行まで）の点は使わない。
+- Models after pretraining are asked in plain text.
+- Models after instruction tuning are asked in the conversation format, because lm-evaluation-harness's documentation says to use the chat format for chat and instruction-tuned models. Only BLiMP and LAMBADA, which have no question, are asked in plain text. Plain-text scores are also measured but not used for pass or fail.
+- Comparisons are made only between results asked the same way.
+- MMLU is asked in its authors' form (five examples, answered with the choice's letter). The continuation form (OLMES) is measured separately as an easier test.
+- M-IFEval-Ja is scored by its official scoring code on the saved replies (`python -m pretrain score-m-ifeval`). llm-jp-eval's default score (up to the first blank line) is not used.
+- From v7, tasks in lm-evaluation-harness that have the model write an answer also keep each question's written answer in the record. Scoring does not change.
 
-## 長い文脈（RULER）
+## Long context (RULER)
 
-長い文脈の力にも少し点がつくように、2026-11-05 に足した。
+Added on 2026-11-05, so that long-context ability earns some score too.
 
-- **lm-evaluation-harness の RULER で測る：** ほかの harness の課題と同じく、自前のモデルに問う（`python -m pretrain ruler`）。2026-11-05 に、作者の手順から替えた。作者の手順はモデルを vLLM などで動かすことが前提で、直前の語を読む部品（COUNT など）を持つモデルを測れないから。
-  - harness が、RULER の 13 課題の問いをモデルのトークナイザで各長さ 500 問作り、RULER の文字列の一致で採点する。
-  - 答えは一番確率の高い語を順に選んで書かせる。長さは課題ごとの harness の上限（30〜128 トークン）まで。
-- **長さ：** 今は 8,192 と 16,384 トークン。モデルの文脈より長い問いは、harness の決まりどおり前を切り詰める。
-  - 4,096 は外した。作者のコードでは、HotpotQA の問いが段落だけで長さを超えると問いを作り終えず、このプロジェクトのトークナイザでは 4,096 がそれに当たった。
-  - 長さはずっとこのままとは限らない。v7 をこの 2 つで測り、v8 もこの 2 つで測って比べる。変えるのは、そのあとの世代の線を決めるときにする。モデルの文脈が 16,384 を超えたときも見直す。
-- **点：** 各長さで 13 課題を平均し、さらに長さどうしを平均する。記録には課題ごとの各問の点を残す。
-- **問うモデル：** 指示学習の後のモデルを、会話形式で問う。課題の答えの書き出し（「The special magic number is」など）は、harness の決め方どおり返答の頭に置き、その続きを書かせる。
-- **合格の線：** v7 から測るが、v7 では参考にとどめる。比べる相手の v5 の点がなく、v5 は測り直さないから。合否には v8 から、英語の平均に 1 課題として入れ、v7 と比べる。判定は `python -m pretrain pass-line` に `--ruler-base` と `--ruler-other` を渡す。作者の手順で v5 の 32k 版を測った 0.451 は、測り方が違うので比べる相手に使わない。
-- **学習データ：** RULER の QA の課題は SQuAD と HotpotQA の問題を使う。v7 からの学習データでは、この問題も除く。
+- **Measured with lm-evaluation-harness's RULER:** the project's own model is asked, as for the other harness tasks (`python -m pretrain ruler`). Switched from the authors' procedure on 2026-11-05, because that procedure runs models on vLLM or similar engines and cannot measure models with parts that read the preceding tokens, such as COUNT.
+  - The harness writes RULER's 13 tasks with the model's tokenizer, 500 questions per task at each length, and scores them by RULER's string matching.
+  - Answers are written greedily, up to the harness's per-task limit (30 to 128 tokens).
+- **Lengths:** 8,192 and 16,384 tokens for now. A question longer than the model's context is cut from the front, as the harness's rules do.
+  - 4,096 was left out. In the authors' code, a HotpotQA question whose paragraphs alone exceed the length is never finished, and with this project's tokenizer 4,096 hit that case.
+  - The lengths will not necessarily stay the same. v7 is measured at these two, and v8 is measured at the same two for comparison. They change only when a later generation's pass line is decided. They are also reviewed when a model's context exceeds 16,384.
+- **Score:** the 13 tasks are averaged at each length, and the lengths are then averaged. The record keeps each question's score for every task.
+- **Models asked:** models after instruction tuning, in the conversation format. Each task's answer prefix (such as "The special magic number is") is placed at the start of the reply, as the harness defines, and the model continues it.
+- **Pass line:** measured from v7, but reference only in v7, because there is no v5 score to compare with and v5 is not measured again. From v8 it enters the pass line as one task in the English mean, compared with v7. The judgment passes `--ruler-base` and `--ruler-other` to `python -m pretrain pass-line`. The 0.451 that v5's 32k model scored under the authors' procedure is measured differently and is not used as a base.
+- **Training data:** RULER's QA tasks use SQuAD and HotpotQA questions. From v7, these questions are also removed from the training data.
 
-## 読むときの注意
+## Cautions when reading results
 
-- 学習の記録の検証は世代どうしで比べない。世代ごとにランダムな64窓を読み、v5 と v6 の減衰期で同じ文章は多くても日本語31%、英語16%。v5 の同じ最終の重みでも、64窓と検証データ全体で日本語 .553 と .524、英語 .66 と .639 と違った。同じ世代の中の推移は同じ窓なので比べられる。
-- M-IFEval-Ja は172問しかなく、同じ重みでも .163 と .186 に揺れた。.03 程度の差は読めない。
-- llm-jp-eval の M-IFEval-Ja は、strict も loose も複数の指示の最初しか見ないようにコードが読める（44問。実行して確かめてはいない）。公式の採点コードの点と比べて確かめる。
-- KUCI と JMMLU の llm-jp-eval の点は、選択肢の記号だけで答えないとほぼ0になり、記号で答えれば当てずっぽうでも約 .25 になる。答え方だけで日本語の平均が大きく動くので、報告には2つを除いた平均を添える。
-- JNLI は常に中立と答えると .555 になり、v5 はどの段階でもこれを超えていない。JCommonsenseQA は指示学習の後に1番目の選択肢へ寄る。どちらも点の動きが答えの偏りで説明できることがあるので（`research/experiments/v5-answer-patterns.md`）、報告には JNLI の正解ごとの点と JCommonsenseQA の正解の位置ごとの点を添える。
+- Do not compare the training logs' validation across generations. Each generation reads 64 random windows, and in the v5 and v6 decay phases at most 31% of the Japanese text and 16% of the English text is shared. Even for the same final v5 weights, the 64 windows and the whole validation set gave .553 and .524 for Japanese and .66 and .639 for English. Trends within one generation can be compared, since they use the same windows.
+- M-IFEval-Ja has only 172 questions, and the same weights scored .163 and .186. Differences of about .03 cannot be read.
+- llm-jp-eval's M-IFEval-Ja code reads as if both strict and loose look only at the first of several instructions (44 questions; not confirmed by running it). Check it against the official scoring code.
+- llm-jp-eval's KUCI and JMMLU scores are near 0 unless the model answers with the choice's symbol alone, and about .25 by guessing if it does. The answer form alone moves the Japanese mean a lot, so reports add the mean without these two.
+- Always answering "neutral" on JNLI scores .555, and v5 has not exceeded this at any stage. After instruction tuning, JCommonsenseQA answers lean toward the first choice. Both scores can move because of answer bias (`research/experiments/v5-answer-patterns.md`), so reports add JNLI's score per correct label and JCommonsenseQA's score per position of the correct choice.
 
-## 合格の線
+## Pass line
 
-v6 について、結果を見る前に決めた。費用の線は v6 の改善を評価するために置いたもので、世代を上げる要件ではない。
+Decided for v6 before seeing the results. The cost line was set to evaluate v6's improvement, and is not a requirement for moving to a new generation.
 
-- **費用：** データ準備から指示学習と評価までが、v5 の $30.97 より少ない。試しは含めず、指示学習は選んだ1本だけを数える。
-- **点：** 指示学習の後のモデルを v5 の同じ段階と同じ問い方（上の会話形式）で比べ、日本語の課題の平均と英語の課題の平均が両方、読める差（v5 の点で日本語 約 .013、英語 約 .009）を超えて上がる。判定は `python -m pretrain pass-line` で計算する。基準は v6 と同じ文脈の 8k 版で、本番の後に v6 の指示学習の後と同じコマンドで測り直し、MMLU の作者の形式と M-IFEval-Ja の公式の採点も入れる。印のない文章での 8k 版の平均は日本語 .242、英語 .354（`results.md`）で、読める差もこの点で計算したもの。
-- **平均に入れる課題：** v5 と v6 の両方で提供者の形式で測る課題すべて。日本語は JCommonsenseQA、xWinograd、JNLI、JSQuAD、MGSM、KUCI、JMMLU、M-IFEval-Ja（strict）。英語は `results.md` の12課題と MMLU の作者の形式。RULER は v8 の線から英語に加える（上の「長い文脈（RULER）」）。
-- **下がる課題：** 2つのモデルの差の標準誤差の3倍を超えて下がる課題がない。2倍だと、何も変わっていなくても約4割の確率でどれかが超える（`research/experiments/readable-differences.md`）。
+- **Cost:** from data preparation through instruction tuning and evaluation, less than v5's $30.97. Trials are not counted, and only the one chosen instruction-tuning run is counted.
+- **Scores:** the model after instruction tuning is compared with v5 at the same stage, asked the same way (the conversation format above). The means of the Japanese tasks and of the English tasks must both rise by more than the readable difference (about .013 for Japanese and about .009 for English, from v5's scores). The judgment is computed by `python -m pretrain pass-line`. The base is v5's 8k version, with the same context as v6; after the main run it was measured again with the same command as v6 after instruction tuning, including MMLU in its authors' form and M-IFEval-Ja's official scoring. The 8k version's plain-text means are .242 for Japanese and .354 for English (`results.md`), and the readable differences were computed from these scores.
+- **Tasks in the means:** every task measured in its provider's form for both v5 and v6. Japanese: JCommonsenseQA, xWinograd, JNLI, JSQuAD, MGSM, KUCI, JMMLU and M-IFEval-Ja (strict). English: the 12 tasks in `results.md` and MMLU in its authors' form. RULER joins the English tasks from v8's line (see "Long context (RULER)" above).
+- **Falling tasks:** no task may fall by more than three standard errors of the difference between the two models. At two, some task would cross it about four times in ten even if nothing had changed (`research/experiments/readable-differences.md`).
 
-## 指示学習の2本から選ぶ
+## Choosing between the two instruction-tuning runs
 
-学習率 0.00016 と 0.0006 の2本のうち、合格の線の2つの平均の和が高い方を v6 とする。同じ問題で選んでから v5 と比べるので、比較は少し甘くなる。
+Of the two runs with learning rates 0.00016 and 0.0006, the one with the higher sum of the pass line's two means becomes v6. Because the choice is made on the same questions before comparing with v5, the comparison is slightly lenient.
 
-## 外のモデルとの比較
+## Comparison with outside models
 
-事前学習の後のモデルを、HobbyLM（arXiv 2610.34582）の表と同じ7課題で、例なしで測って並べる。課題は HellaSwag、OpenBookQA、WinoGrande、ARC-Challenge、ARC-Easy、BoolQ、PIQA で、指標は表と同じく WinoGrande と BoolQ が acc、他は acc_norm。並べたものは `research/topics/outside-comparison.md` にある。
+Models after pretraining are measured without examples on the same seven tasks as HobbyLM's table (arXiv 2610.34582) and listed beside it. The tasks are HellaSwag, OpenBookQA, WinoGrande, ARC-Challenge, ARC-Easy, BoolQ and PIQA, with the table's metrics: acc for WinoGrande and BoolQ, and acc_norm for the others. The comparison is in `research/topics/outside-comparison.md`.
 
-OpenBookQA、WinoGrande、BoolQ は v6 の合格の線と2本の選択に入れない。線は結果を見る前に決めたものだから。次の世代の線を決めるときに、入れるかを考える。この3つの問題は v5 と v6 の学習データから除いていない。除くかは次の世代のデータを作るときに決める。見直し期限：2026-11-15。
+OpenBookQA, WinoGrande and BoolQ are not part of v6's pass line or the choice between the two runs, because the line was decided before seeing the results. Whether to include them is decided when the next generation's line is set. Questions from these three tasks were not removed from v5's and v6's training data; whether to remove them is decided when the next generation's data is built. Review by: 2026-11-15.
