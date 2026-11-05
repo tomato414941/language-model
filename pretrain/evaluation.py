@@ -249,7 +249,11 @@ def record_questions(result, tasks, groups, references):
         # Kept per question so that models can be compared on the same
         # questions, with every score the task averages, so that a revised
         # choice of accuracy still reads this evaluation.
-        record = {"doc_id": [sample["doc_id"] for sample in next(iter(filtered.values()))]}
+        first = next(iter(filtered.values()))
+        record = {"doc_id": [sample["doc_id"] for sample in first]}
+        if task.OUTPUT_TYPE == "generate_until":
+            # The model's own words for each question, before the task's filters pick out what they score.
+            record["replies"] = [sample["resps"][0][0] for sample in first]
         record["correct"] = {
             metric if kept == "none" else f"{metric},{kept}": [sample[metric] for sample in rows]
             for kept, rows in filtered.items()

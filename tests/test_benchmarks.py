@@ -924,6 +924,9 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(result["results"]["ifeval"]["prompt_level_strict_acc,none"], 1)
         self.assertIn("acc,none", result["results"]["arc_easy"])
         self.assertEqual(result["conversation_format_tasks"], ["ifeval"])
+        # A written answer is kept as written; a choice task's answers are its choices' probabilities.
+        self.assertEqual(result["items"]["ifeval"]["replies"], ["Rain falls softly."])
+        self.assertNotIn("replies", result["items"]["arc_easy"])
 
     def test_tuned_models_are_asked_their_examples_as_earlier_turns(self):
         """Asks a choice task in the conversation format, its examples as earlier turns."""

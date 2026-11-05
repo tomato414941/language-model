@@ -12,8 +12,9 @@ def logged_samples(score, questions=QUESTIONS_PER_TASK):
     """The harness's logged samples of every task, each question's score at its length given by score(task, length, index)."""
     return {
         task: [
-            {"doc": {"max_length": length}, str(length): score(task, length, index), "4096": -1.0}
-            for length in LENGTHS
+            {"doc_id": order * questions + index, "doc": {"max_length": length}, str(length): score(task, length, index),
+             "4096": -1.0, "resps": [[f"{task} {length} {index}"]]}
+            for order, length in enumerate(LENGTHS)
             for index in range(questions)
         ]
         for task in TASKS
@@ -37,6 +38,8 @@ class RulerTests(unittest.TestCase):
         self.assertAlmostEqual(record["accuracy"], (7 * per_task / 13) * 0.75)
         self.assertEqual(record["questions"], len(LENGTHS) * len(TASKS) * QUESTIONS_PER_TASK)
         self.assertEqual(record["procedure"]["form"], "conversation")
+        # Each question's reply is kept beside its score.
+        self.assertEqual(second["tasks"]["ruler_vt"]["replies"][3], f"ruler_vt {LENGTHS[1]} 3")
 
     def test_返答が足りない課題があれば記録を作らない(self):
         samples = logged_samples(lambda task, length, index: 1.0)

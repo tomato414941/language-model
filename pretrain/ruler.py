@@ -25,20 +25,23 @@ QUESTIONS_PER_TASK = 500
 
 def ruler_record(samples, conversation, limit=None):
     """The record of one model's RULER replies, from the harness's logged samples: each length's tasks with their
-    questions' scores, each length's mean over the tasks, and the mean over the lengths."""
+    questions' scores and replies, each length's mean over the tasks, and the mean over the lengths."""
     lengths = {}
     for task in TASKS:
         by_length = {}
-        for sample in samples[task]:
+        for sample in sorted(samples[task], key=lambda sample: sample["doc_id"]):
             length = sample["doc"]["max_length"]
-            by_length.setdefault(length, []).append(float(sample[str(length)]))
+            by_length.setdefault(length, []).append((float(sample[str(length)]), sample["resps"][0][0]))
         if sorted(by_length) != sorted(LENGTHS):
             raise ValueError(f"{task} holds lengths {sorted(by_length)}, not {sorted(LENGTHS)}")
-        for length, scores in by_length.items():
-            if limit is None and len(scores) != QUESTIONS_PER_TASK:
-                raise ValueError(f"{task} at {length} holds {len(scores)} replies, not {QUESTIONS_PER_TASK}")
+        for length, answered in by_length.items():
+            if limit is None and len(answered) != QUESTIONS_PER_TASK:
+                raise ValueError(f"{task} at {length} holds {len(answered)} replies, not {QUESTIONS_PER_TASK}")
+            scores, replies = [score for score, _ in answered], [reply for _, reply in answered]
             read = lengths.setdefault(str(length), {"tasks": {}})
-            read["tasks"][task] = {"questions": len(scores), "accuracy": statistics.fmean(scores), "scores": scores}
+            read["tasks"][task] = {
+                "questions": len(scores), "accuracy": statistics.fmean(scores), "scores": scores, "replies": replies,
+            }
     for read in lengths.values():
         read["accuracy"] = statistics.fmean(task["accuracy"] for task in read["tasks"].values())
     return {
