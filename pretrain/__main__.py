@@ -366,6 +366,14 @@ def main(argv=None):
     )
     passing.add_argument("--base", type=Path, required=True, help="前の世代の評価の結果")
     passing.add_argument("--other", type=Path, required=True, help="新しい世代の評価の結果")
+    passing.add_argument("--ruler-base", type=Path, help="前の世代の RULER の結果（--ruler-other と一緒に渡す）")
+    passing.add_argument("--ruler-other", type=Path, help="新しい世代の RULER の結果（--ruler-base と一緒に渡す）")
+    ruler_record = commands.add_parser(
+        "ruler-record", help="NeMo-Skills で問うた RULER の返答を、長さと課題ごとの点の記録にまとめる"
+    )
+    ruler_record.add_argument("--results", type=Path, required=True, help="ns eval の出力の場所")
+    ruler_record.add_argument("--name", required=True, help="データを作ったときのモデルの名前")
+    ruler_record.add_argument("--output", type=Path, required=True, help="記録を書き出すJSONファイル")
     official = commands.add_parser(
         "score-m-ifeval",
         help="保存した M-IFEval-Ja の返答を、作者の採点コードで採点する",
@@ -601,11 +609,28 @@ def main(argv=None):
         elif args.command == "pass-line":
             from .comparison import pass_line
 
+            if (args.ruler_base is None) != (args.ruler_other is None):
+                raise ValueError("pass both RULER results or neither")
+            ruler = None
+            if args.ruler_base is not None:
+                ruler = {
+                    side: json.loads(path.read_text(encoding="utf-8"))
+                    for side, path in (("base", args.ruler_base), ("other", args.ruler_other))
+                }
             result = pass_line(
                 json.loads(args.base.read_text(encoding="utf-8")),
                 json.loads(args.other.read_text(encoding="utf-8")),
+                ruler,
             )
             print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "ruler-record":
+            from .ruler import read_results
+
+            record = read_results(args.results, args.name)
+            args.output.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            print(json.dumps({"accuracy": record["accuracy"], "lengths": {
+                length: read["accuracy"] for length, read in record["lengths"].items()
+            }}, ensure_ascii=False, indent=2))
         elif args.command == "score-m-ifeval":
             from .m_ifeval import official_scores, require_repeated
 

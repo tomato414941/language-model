@@ -162,13 +162,19 @@ def score_error(score, questions):
     return math.sqrt(max(score * (1 - score), 1 / questions) / questions)
 
 
-def pass_line(base, other):
+def pass_line(base, other, ruler=None):
     """Whether other passes docs/evaluation.md's pass line on scores against base.
 
     Only tasks both evaluations read in the same form count. The rest are listed,
-    and leave the line unmet: the comparison is then incomplete.
+    and leave the line unmet: the comparison is then incomplete. ruler, when
+    given, holds the RULER records (pretrain.ruler) that stand for base and
+    other, which may come from other models of their generations: RULER enters
+    the English mean as one task, asked in the conversation format.
     """
     first, second = generation_scores(base), generation_scores(other)
+    if ruler is not None:
+        for read, record in ((first, ruler["base"]), (second, ruler["other"])):
+            read["en"]["ruler"] = (record["accuracy"], record["questions"], "conversation")
     languages = {}
     for language in first:
         names = [

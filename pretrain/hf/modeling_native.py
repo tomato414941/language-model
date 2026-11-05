@@ -12,6 +12,13 @@ document_start, as in training. A model that reads a count table (COUNT,
 Magnusson et al., arXiv 2610.20456) adds to each token's embedding the
 share-weighted embeddings of the tokens counted most often after its last few
 tokens; the table's arrays are kept with the weights.
+
+NativeModel holds the layers up to the final norm and is what AutoModel loads;
+NativeForCausalLM reads the logits from it through the shared embedding.
+Attention other than eager and SDPA goes through Transformers' attention
+interface, which is how vLLM's Transformers backend runs the model: there each
+sequence it is handed is one document, so documents within a row are not
+separated.
 """
 
 import math
@@ -20,7 +27,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from transformers import DynamicCache, GenerationMixin, PreTrainedModel
-from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 
 from .configuration_native import NativeConfig
 
@@ -33,6 +40,8 @@ COUNT_BASES = (1_000_003, 998_244_353)
 COUNT_KEY_SHIFT = 14
 # The most tokens before a position that its lookups read.
 COUNT_HISTORY = 8
+# The attention this file computes itself, with its own mask.
+OWN_ATTENTION = (None, "eager", "sdpa")
 
 
 def history_keys(tokens, orders):
@@ -58,11 +67,16 @@ def has_value_embedding(config, index):
 
 
 class NativeBlock(nn.Module):
-    def __init__(self, config, value_embedding=False):
+    def __init__(self, config, layer_idx, value_embedding=False):
         super().__init__()
+        self.config = config
+        # Read by Transformers' attention interface and by vLLM to find this layer's cache.
+        self.layer_idx = layer_idx
+        self.is_causal = True
         width = config.hidden_size
         self.heads = config.num_attention_heads
         self.kv_heads = config.num_key_value_heads
+        self.num_key_value_groups = self.heads // self.kv_heads
         self.head_width = width // self.heads
         squared = config.feed_forward == "relu_squared"
         intermediate = config.intermediate_size or (
@@ -87,7 +101,7 @@ class NativeBlock(nn.Module):
         self.up = nn.Linear(width, intermediate, bias=False)
         self.down = nn.Linear(intermediate, width, bias=False)
 
-    def forward(self, hidden, cosine, sine, mask, cache, index, values=None):
+    def forward(self, hidden, cosine, sine, mask, cache, values=None, **kwargs):
         normalized = self.norm_attention(hidden)
         batch, length, width = normalized.shape
         query = self.query(normalized).view(batch, length, self.heads, self.head_width)
@@ -105,10 +119,19 @@ class NativeBlock(nn.Module):
         key = rotated(key.transpose(1, 2), cosine, sine)
         value = value.transpose(1, 2)
         if cache is not None:
-            key, value = cache.update(key, value, index)
-        attended = F.scaled_dot_product_attention(
-            query, key, value, attn_mask=mask, enable_gqa=self.heads != self.kv_heads
-        ).transpose(1, 2)
+            key, value = cache.update(key, value, self.layer_idx)
+        implementation = self.config._attn_implementation
+        if implementation in OWN_ATTENTION:
+            attended = F.scaled_dot_product_attention(
+                query, key, value, attn_mask=mask, enable_gqa=self.heads != self.kv_heads
+            ).transpose(1, 2)
+        else:
+            from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+            attended, _ = ALL_ATTENTION_FUNCTIONS[implementation](
+                self, query, key, value, None, scaling=self.head_width**-0.5, dropout=0.0, **kwargs
+            )
+        attended = attended.reshape(batch, length, self.heads, self.head_width)
         if self.attention_gate is not None:
             gate = torch.sigmoid(self.attention_gate(normalized))
             attended = attended * gate.view(batch, length, self.heads, -1)
@@ -119,17 +142,25 @@ class NativeBlock(nn.Module):
         return hidden + self.down(F.silu(self.gate(normalized)) * self.up(normalized))
 
 
-class NativeForCausalLM(PreTrainedModel, GenerationMixin):
+class NativePreTrainedModel(PreTrainedModel):
     config_class = NativeConfig
-    base_model_prefix = "native"
+    base_model_prefix = "model"
     _no_split_modules = ["NativeBlock"]
     _supports_sdpa = True
+    # The blocks take any attention through Transformers' attention interface.
+    _supports_attention_backend = True
 
+    def _init_weights(self, module):
+        if isinstance(module, (nn.Linear, nn.Embedding)):
+            nn.init.normal_(module.weight, std=0.02)
+
+
+class NativeModel(NativePreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.embedding = nn.Embedding(config.vocab_size, config.hidden_size)
         self.blocks = nn.ModuleList(
-            NativeBlock(config, has_value_embedding(config, index))
+            NativeBlock(config, index, has_value_embedding(config, index))
             for index in range(config.num_hidden_layers)
         )
         kv_width = config.num_key_value_heads * (config.hidden_size // config.num_attention_heads)
@@ -187,17 +218,6 @@ class NativeForCausalLM(PreTrainedModel, GenerationMixin):
         )
         return gathered.view(*input_ids.shape, -1)
 
-    def prepare_inputs_for_generation(self, input_ids, **kwargs):
-        inputs = super().prepare_inputs_for_generation(input_ids, **kwargs)
-        cached = input_ids.shape[1] - inputs["input_ids"].shape[1]
-        if self.config.count_table and cached:
-            inputs["count_history"] = input_ids[:, max(cached - COUNT_HISTORY, 0) : cached]
-        return inputs
-
-    def _init_weights(self, module):
-        if isinstance(module, (nn.Linear, nn.Embedding)):
-            nn.init.normal_(module.weight, std=0.02)
-
     def get_input_embeddings(self):
         return self.embedding
 
@@ -223,53 +243,113 @@ class NativeForCausalLM(PreTrainedModel, GenerationMixin):
 
     def forward(
         self,
-        input_ids,
+        input_ids=None,
         attention_mask=None,
         position_ids=None,
         past_key_values=None,
+        inputs_embeds=None,
         use_cache=None,
-        labels=None,
-        logits_to_keep=0,
         count_history=None,
+        return_dict=None,
         **kwargs,
     ):
+        if input_ids is None and (self.config.value_embeddings or self.config.count_table):
+            raise ValueError("value embeddings and count tables read the token ids")
+        if self.config.count_table and self.config._attn_implementation not in OWN_ATTENTION:
+            # vLLM hands each step only its new tokens, so the lookups would lose the history before them.
+            raise ValueError("a model that reads a count table runs only with its own attention")
         use_cache = self.config.use_cache if use_cache is None else use_cache
         if use_cache and past_key_values is None:
             past_key_values = DynamicCache()
         past = past_key_values.get_seq_length() if past_key_values is not None else 0
-        length = input_ids.shape[1]
+        hidden = self.embedding(input_ids) if inputs_embeds is None else inputs_embeds
+        length = hidden.shape[1]
         if position_ids is None:
             if attention_mask is not None:
                 position_ids = (attention_mask.long().cumsum(-1) - 1).clamp(min=0)[:, -length:]
             else:
-                position_ids = torch.arange(past, past + length, device=input_ids.device)[None]
+                position_ids = torch.arange(past, past + length, device=hidden.device)[None]
         # Computed here rather than kept in a buffer, which loading leaves unset.
         head_width = self.config.hidden_size // self.config.num_attention_heads
         frequencies = 1.0 / (
             self.config.rope_theta
-            ** (torch.arange(0, head_width, 2, device=input_ids.device).float() / head_width)
+            ** (torch.arange(0, head_width, 2, device=hidden.device).float() / head_width)
         )
         angles = position_ids.float()[..., None] * frequencies
         angles = torch.cat((angles, angles), dim=-1)[:, None]
-        hidden = self.embedding(input_ids)
         if self.config.count_table:
             hidden = hidden + self.counted(input_ids, count_history)
         cosine, sine = angles.cos().to(hidden.dtype), angles.sin().to(hidden.dtype)
-        mask = self.mask(input_ids, attention_mask, past, length)
+        mask = None
+        if self.config._attn_implementation in OWN_ATTENTION:
+            if input_ids is None:
+                raise ValueError("the documents' attention mask reads the token ids")
+            mask = self.mask(input_ids, attention_mask, past, length)
         first = hidden
         for index, block in enumerate(self.blocks):
             if self.config.residual_scalars:
                 hidden = self.residual_scales[index] * hidden + self.input_scales[index] * first
             table = self.value_embeddings[str(index)] if str(index) in self.value_embeddings else None
             values = None if table is None else table(input_ids)
-            hidden = block(hidden, cosine, sine, mask, past_key_values, index, values)
+            hidden = block(hidden, cosine, sine, mask, past_key_values, values, **kwargs)
         hidden = self.norm(hidden)
+        if return_dict is False:
+            return tuple(part for part in (hidden, past_key_values) if part is not None)
+        return BaseModelOutputWithPast(last_hidden_state=hidden, past_key_values=past_key_values)
+
+
+class NativeForCausalLM(NativePreTrainedModel, GenerationMixin):
+    def __init__(self, config):
+        super().__init__(config)
+        self.model = NativeModel(config)
+        self.post_init()
+
+    def prepare_inputs_for_generation(self, input_ids, **kwargs):
+        inputs = super().prepare_inputs_for_generation(input_ids, **kwargs)
+        cached = input_ids.shape[1] - inputs["input_ids"].shape[1]
+        if self.config.count_table and cached:
+            inputs["count_history"] = input_ids[:, max(cached - COUNT_HISTORY, 0) : cached]
+        return inputs
+
+    def get_input_embeddings(self):
+        return self.model.embedding
+
+    def set_input_embeddings(self, value):
+        self.model.embedding = value
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        position_ids=None,
+        past_key_values=None,
+        inputs_embeds=None,
+        use_cache=None,
+        labels=None,
+        logits_to_keep=0,
+        count_history=None,
+        **kwargs,
+    ):
+        # Generation asks for a dictionary, which this forward always reads from the layers.
+        kwargs.pop("return_dict", None)
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            count_history=count_history,
+            return_dict=True,
+            **kwargs,
+        )
+        hidden = outputs.last_hidden_state
         if logits_to_keep:
             hidden = hidden[:, -logits_to_keep:]
-        logits = F.linear(hidden, self.embedding.weight)
+        logits = F.linear(hidden, self.model.embedding.weight)
         loss = None
         if labels is not None:
             loss = F.cross_entropy(
                 logits[:, :-1].flatten(0, 1).float(), labels[:, 1:].flatten(), ignore_index=-100
             )
-        return CausalLMOutputWithPast(loss=loss, logits=logits, past_key_values=past_key_values)
+        return CausalLMOutputWithPast(loss=loss, logits=logits, past_key_values=outputs.past_key_values)

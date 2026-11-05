@@ -121,7 +121,47 @@ class HuggingFaceTest(unittest.TestCase):
                 stop = next((index for index, token in enumerate(written) if token in self.ends), len(written))
                 self.assertEqual(written[:stop], expected)
 
-    def test_トークナイザは先頭にBOSを付けて自前と同じ番号を返し会話を自前と同じ書式で書く(self):
+    def test_vLLMの呼び方で本体を読み注意を外から渡しても自前のモデルと同じ確率を出す(self):
+        from transformers import AutoModel
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+        instances = object()
+
+        def flattened(module, query, key, value, attention_mask, scaling=None, attention_instances=None, **kwargs):
+            # As vLLM's backend hands attention back: a row per token, the heads side by side.
+            self.assertIs(attention_instances, instances)
+            self.assertIsNone(attention_mask)
+            attended = torch.nn.functional.scaled_dot_product_attention(
+                query, key, value, is_causal=True, scale=scaling, enable_gqa=True
+            )
+            return attended.transpose(1, 2).reshape(query.shape[-2], -1), None
+
+        ALL_ATTENTION_FUNCTIONS["flattened"] = flattened
+        self.addCleanup(ALL_ATTENTION_FUNCTIONS.__delitem__, "flattened")
+        # vLLM serves each request as one document.
+        tokens = torch.tensor([self.bos, 70, 71, 72, 73, 74, 75])
+        for parts in PARTS:
+            with self.subTest(**parts):
+                native, _ = self.export(**parts)
+                model = AutoModel.from_pretrained(
+                    self.root / "hf", trust_remote_code=True, attn_implementation="flattened"
+                ).eval()
+                self.assertTrue(type(model).is_backend_compatible())
+                call = dict(
+                    input_ids=tokens[None], inputs_embeds=None, use_cache=False,
+                    position_ids=torch.arange(len(tokens))[None], attention_instances=instances, return_dict=False,
+                )
+                if parts.get("count_table"):
+                    with self.assertRaisesRegex(ValueError, "count table"):
+                        model(**call)
+                    continue
+                with torch.no_grad():
+                    hidden = model(**call)[0][0]
+                    expected = native(tokens[None])[0]
+                logits = hidden @ model.get_input_embeddings().weight.T
+                torch.testing.assert_close(logits, expected, atol=1e-5, rtol=1e-5)
+
+    def test_トークナイザは先頭にBOSを付けて自前と同じ番号を返し会話はBOSに続けて自前と同じ書式で書く(self):
         self.export()
         loaded = AutoTokenizer.from_pretrained(self.root / "hf")
         self.assertEqual(loaded("雨が降る")["input_ids"], [self.bos, *self.tokenizer.encode("雨が降る").ids])
@@ -131,7 +171,13 @@ class HuggingFaceTest(unittest.TestCase):
             {"role": "assistant", "content": "雨です。"},
             {"role": "user", "content": "明日は？"},
         ]
-        self.assertEqual(loaded.apply_chat_template(messages, tokenize=False, add_generation_prompt=True), chat_prompt(messages))
+        rendered = loaded.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        self.assertEqual(rendered, BOS + chat_prompt(messages))
+        # As vLLM reads a conversation: the rendered text, without special tokens added.
+        self.assertEqual(
+            loaded(rendered, add_special_tokens=False)["input_ids"],
+            [self.bos, *self.tokenizer.encode(chat_prompt(messages)).ids],
+        )
 
     def test_標準評価をHugging_Faceの道筋で測っても自前の道筋と同じ点数を出す(self):
         for parts in PARTS:

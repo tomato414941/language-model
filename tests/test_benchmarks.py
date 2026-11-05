@@ -1328,6 +1328,20 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(unmatched["languages"]["en"]["not_compared"], ["hellaswag"])
         self.assertFalse(unmatched["passed"])
 
+    def test_合格の線はRULERの結果を渡すと英語の平均に1課題として入れる(self):
+        """Adds RULER to the English mean as one task asked in the conversation format, from the records given."""
+
+        def evaluation(hellaswag):
+            asked = {"by_language": {"en": {"hellaswag": {"accuracy": hellaswag}}, "ja": {}},
+                     "n-samples": {"hellaswag": {"effective": 10000}}, "group_subtasks": {}}
+            return {**asked, "results": {}, "as_conversation": asked}
+
+        ruler = {"base": {"accuracy": 0.2, "questions": 3900}, "other": {"accuracy": 0.5, "questions": 3900}}
+        english = pass_line(evaluation(0.3), evaluation(0.3), ruler)["languages"]["en"]
+        self.assertEqual((english["tasks"]["ruler"]["base"], english["tasks"]["ruler"]["other"]), (0.2, 0.5))
+        self.assertAlmostEqual(english["difference"], 0.3 / 2)
+        self.assertNotIn("ruler", pass_line(evaluation(0.3), evaluation(0.3))["languages"]["en"]["tasks"])
+
     def test_文章の最後の語を当てる課題では最後の語を正解として測る(self):
         """Measures the passage's last word, as the task's continuation."""
         result, bits = self.evaluate_skewed(["lambada_openai"])

@@ -2,8 +2,10 @@
 
 Hugging Face's tools then load the model as they load any other, through
 AutoModelForCausalLM with trust_remote_code. The tokenizer puts BOS before
-each text, as training did, and its chat template writes the conversation
-format that pretrain.conversation defines.
+each text, as training did, and its chat template writes BOS and then the
+conversation format that pretrain.conversation defines: instruction tuning
+began each conversation with BOS, and servers such as vLLM tokenize a rendered
+conversation without adding special tokens.
 """
 
 import dataclasses
@@ -27,6 +29,7 @@ SUPPORTED = {
     "residual_scalars", "prediction_depth", "zero_output_init", "feed_forward", "count_table",
 }
 CHAT_TEMPLATE = (
+    f"{BOS}"
     "{%- for message in messages -%}"
     f"{TURN_START}{{{{ message['role'] }}}}\n"
     f"{{% if message['role'] == 'assistant' %}}{THINK_START}{THINK_END}{{% endif %}}"
@@ -100,12 +103,14 @@ def export_huggingface(checkpoint, output):
     config = native_config(model_config, tokenizer, table)
     NativeConfig.register_for_auto_class()
     NativeForCausalLM.register_for_auto_class("AutoModelForCausalLM")
+    # vLLM's Transformers backend loads the layers through AutoModel.
+    config.auto_map = {"AutoModel": "modeling_native.NativeModel"}
     model = NativeForCausalLM(config)
     # Multi-token prediction only trains; the logits come from the main layers.
     weights = {name: value for name, value in payload["model"].items() if not name.startswith("predictors.")}
     if table is not None:
         weights.update({f"count_{name}": tensor for name, tensor in table.tensors.items()})
-    model.load_state_dict(weights)
+    model.model.load_state_dict(weights)
     output = Path(output)
     model.save_pretrained(output)
     bos = tokenizer.token_to_id(BOS)
