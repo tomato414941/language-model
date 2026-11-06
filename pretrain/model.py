@@ -498,7 +498,12 @@ class Experts(nn.Module):
         self.register_buffer("load", torch.zeros(count), persistent=False)
 
     def forward(self, hidden):
+        # Under autocast on a GPU the router, the experts and the shared expert
+        # all read the tokens in bfloat16: the grouped product takes no mixed
+        # types, and the backward pass then keeps the tokens once, in half the
+        # bytes of single precision.
         tokens = hidden.reshape(-1, hidden.shape[-1])
+        tokens = tokens.to(half_precision(tokens.device, tokens.dtype) or tokens.dtype)
         with torch.autocast(tokens.device.type, enabled=False):
             logits = F.linear(tokens.float(), self.router.weight.float())
         probabilities = logits.softmax(-1)
@@ -514,11 +519,8 @@ class Experts(nn.Module):
         # the largest index, so it waits for the device and breaks compiled code.
         counts = torch.zeros(probabilities.shape[-1], dtype=torch.long, device=assigned.device)
         counts = counts.scatter_add(0, assigned, torch.ones_like(assigned))
-        # Under autocast on a GPU the experts multiply in bfloat16; the grouped
-        # product takes no mixed types.
-        precision = half_precision(tokens.device, tokens.dtype) or tokens.dtype
         mixed = ExpertProducts.apply(
-            tokens.to(precision), self.gate, self.up, self.down, weights.flatten()[order],
+            tokens, self.gate, self.up, self.down, weights.flatten()[order],
             order // self.active, ranks, counts.cumsum(0, dtype=torch.int32),
         )
         if self.shared is not None:
@@ -950,11 +952,11 @@ class LanguageModel(nn.Module):
             nn.init.normal_(module.weight, std=0.02)
 
     def finish_update(self):
-        """After an update, the largest share any layer's expert took of an even
-        share of its tokens, or None without experts; the counts start over."""
+        """After an update, for each layer of experts in order, the largest share
+        any expert took of an even share of its tokens, or None without experts;
+        the counts start over."""
         shares = [module.finish_update() for module in self.modules() if isinstance(module, Experts)]
-        shares = [share for share in shares if share is not None]
-        return max(shares) if shares else None
+        return shares if any(share is not None for share in shares) else None
 
     def embed(self, tokens, history=None):
         """The tokens' embeddings, with their counted continuations where the model reads them.

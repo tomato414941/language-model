@@ -1014,7 +1014,7 @@ def train(
                 / (time.perf_counter() - started),
             }
             if expert_share is not None:
-                # The most any expert took of an even share of this update's tokens.
+                # In each layer, the most any expert took of an even share of this update's tokens.
                 record["expert_share"] = expert_share
             if step % config.eval_every == 0 or final:
                 validation = evaluate(

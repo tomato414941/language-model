@@ -1641,7 +1641,7 @@ class PretrainingTests(unittest.TestCase):
     def test_二乗ReLUの専門家をHyperballで学び途中保存から同じ重みで再開する(self):
         """二乗 ReLU と共有の専門家の混合を Hyperball で学ぶと、両言語の検証損失が下がり、
         専門家の行列とルーターは各自の最初のノルムを保ち、途中保存から再開しても連続学習と同じ重みになり、
-        更新ごとに一番使われた専門家の割合を記録する。"""
+        更新ごとに各層で一番使われた専門家の割合を記録する。"""
         self.model_config = dataclasses.replace(
             self.llama_config(), feed_forward="relu_squared", experts=4, active_experts=2, shared_expert_size=8,
         )
@@ -1670,7 +1670,10 @@ class PretrainingTests(unittest.TestCase):
             torch.testing.assert_close(trained.norm(dim=(-2, -1)), initial.norm(dim=(-2, -1)))
         records = [json.loads(line) for line in (self.root / "experts-continuous/metrics.jsonl").read_text().splitlines()]
         shares = [record["expert_share"] for record in records if "expert_share" in record]
-        self.assertTrue(shares and all(share >= 1.0 for share in shares))
+        self.assertTrue(shares)
+        for layers in shares:
+            self.assertEqual(len(layers), self.model_config.layers)
+            self.assertTrue(all(share >= 1.0 for share in layers))
 
     def test_hyperball_is_set_only_for_normuon_without_a_decay_schedule(self):
         """Hyperball の倍率は NorMuon でだけ受け付け、負の値や weight decay の予定との組み合わせを断る。"""
