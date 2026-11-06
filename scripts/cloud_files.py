@@ -13,6 +13,13 @@ from urllib.request import Request, urlopen
 # only the rest of its part.
 PART_BYTES = 64 * 1024 * 1024
 CONNECTIONS = 8
+# A connection that keeps sending too slowly to reach the read timeout is
+# dropped once it has brought less than SLOW_BYTES_PER_SECOND over SLOW_SECONDS,
+# and its part asks again from where it got to, as a new connection usually runs
+# at full speed; a part does so at most SLOW_RESTARTS times.
+SLOW_SECONDS = 60
+SLOW_BYTES_PER_SECOND = 1024 * 1024
+SLOW_RESTARTS = 5
 
 
 def digest(path):
@@ -44,9 +51,9 @@ def fetch_part(url, descriptor, start, end, size, attempts):
 
     A response that stops early ends without an error, so the part continues
     from where its data stopped; only requests that bring nothing count
-    against the attempts.
+    against the attempts. A response that trickles is dropped the same way.
     """
-    position, stalled, error = start, 0, None
+    position, stalled, restarts, error = start, 0, 0, None
     while position < end:
         before = position
         try:
@@ -63,11 +70,18 @@ def fetch_part(url, descriptor, start, end, size, attempts):
                     raise ValueError(
                         "downloaded contents do not match the expected checksum"
                     )
+                since, reached = time.monotonic(), position
                 while position < end and (
-                    chunk := response.read(min(1024 * 1024, end - position))
+                    chunk := response.read1(min(1024 * 1024, end - position))
                 ):
                     os.pwrite(descriptor, chunk, position)
                     position += len(chunk)
+                    elapsed = time.monotonic() - since
+                    if elapsed >= SLOW_SECONDS:
+                        if restarts < SLOW_RESTARTS and position - reached < SLOW_BYTES_PER_SECOND * elapsed:
+                            restarts += 1
+                            break
+                        since, reached = time.monotonic(), position
         except (OSError, HTTPException) as failure:
             error = failure
         if position == before:

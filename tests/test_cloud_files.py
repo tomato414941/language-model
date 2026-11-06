@@ -1,6 +1,7 @@
 import hashlib
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -19,6 +20,7 @@ class CloudFileTests(unittest.TestCase):
         self.reports_etag = False
         self.serves_ranges = False
         self.stop_after = None
+        self.trickle = False
         objects, requests, tests = self.objects, self.requests, self
 
         class Handler(BaseHTTPRequestHandler):
@@ -42,6 +44,13 @@ class CloudFileTests(unittest.TestCase):
                 self.end_headers()
                 if tests.stop_after is not None:
                     body, tests.stop_after = body[: tests.stop_after], None
+                if tests.trickle:
+                    # A few bytes at a time, as a connection that keeps sending too slowly.
+                    for offset in range(0, len(body), 4):
+                        self.wfile.write(body[offset : offset + 4])
+                        self.wfile.flush()
+                        time.sleep(0.05)
+                    return
                 self.wfile.write(body)
 
             def do_PUT(self):
@@ -111,6 +120,21 @@ class CloudFileTests(unittest.TestCase):
             (self.root / entry["path"]).read_bytes(), self.objects["/source"]
         )
         self.assertEqual(self.ranges, [(0, 24), (10, 24)])
+
+    def test_download_drops_a_trickling_connection_and_asks_again_from_where_it_got_to(self):
+        self.serves_ranges = True
+        self.trickle = True
+        entry = self.download_entry()
+        with (
+            mock.patch("scripts.cloud_files.SLOW_SECONDS", 0),
+            mock.patch("scripts.cloud_files.SLOW_BYTES_PER_SECOND", 10**9),
+            mock.patch("scripts.cloud_files.SLOW_RESTARTS", 2),
+        ):
+            transfer_file("download", entry, self.root, attempts=1)
+        self.assertEqual(
+            (self.root / entry["path"]).read_bytes(), self.objects["/source"]
+        )
+        self.assertEqual(self.ranges, [(0, 24), (4, 24), (8, 24)])
 
     def test_download_assembles_parts_fetched_over_parallel_connections(self):
         self.serves_ranges = True
