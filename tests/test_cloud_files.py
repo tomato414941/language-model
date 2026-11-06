@@ -136,6 +136,45 @@ class CloudFileTests(unittest.TestCase):
         )
         self.assertEqual(self.ranges, [(0, 24), (4, 24), (8, 24)])
 
+    def test_upload_sends_a_file_in_pieces_and_download_joins_them(self):
+        self.serves_ranges = True
+        data = b"weights of a model too large for one request"
+        (self.root / "checkpoint.pt").write_bytes(data)
+        pieces = [
+            {"url": f"{self.url}/piece{index}", "verify_url": f"{self.url}/piece{index}"}
+            for index in range(4)
+        ]
+        with mock.patch("scripts.cloud_files.PIECE_BYTES", 16):
+            sent = transfer_file(
+                "upload", {"path": "checkpoint.pt", "pieces": pieces}, self.root, attempts=1
+            )
+            self.assertEqual(sent["pieces"], 3)
+            self.assertEqual(
+                [self.objects[f"/piece{index}"] for index in range(3)],
+                [data[:16], data[16:32], data[32:]],
+            )
+            entry = {
+                "path": "restored/checkpoint.pt",
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "bytes": len(data),
+                "pieces": [
+                    {"url": f"{self.url}/piece{index}", "bytes": len(self.objects[f"/piece{index}"])}
+                    for index in range(3)
+                ],
+            }
+            transfer_file("download", entry, self.root, attempts=1)
+        self.assertEqual((self.root / "restored/checkpoint.pt").read_bytes(), data)
+
+    def test_upload_refuses_a_file_needing_more_pieces_than_its_urls(self):
+        (self.root / "checkpoint.pt").write_bytes(b"weights of a model too large for one request")
+        pieces = [{"url": f"{self.url}/piece0", "verify_url": f"{self.url}/piece0"}]
+        with (
+            mock.patch("scripts.cloud_files.PIECE_BYTES", 16),
+            self.assertRaisesRegex(ValueError, "more pieces"),
+        ):
+            transfer_file("upload", {"path": "checkpoint.pt", "pieces": pieces}, self.root, attempts=1)
+        self.assertEqual(self.requests, [])
+
     def test_download_assembles_parts_fetched_over_parallel_connections(self):
         self.serves_ranges = True
         entry = self.download_entry()
