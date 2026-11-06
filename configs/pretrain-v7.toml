@@ -49,11 +49,13 @@ instruction_tasks = ["ifeval"]
 llm_jp_eval_tasks = ["kuci", "jmmlu"]
 llm_jp_eval_instruction_tasks = ["mif_eval_ja"]
 
-# Instruction tuning as v6's, until v7's is planned.
+# Instruction tuning as v6's, until v7's is planned, at the rate of the v6
+# tuning that was chosen: of its two rates, 0.0006 gave the higher sum of the
+# pass line's two means.
 [sft]
 epochs = 2
-learning_rate = 0.00016
-min_learning_rate = 0.000016
+learning_rate = 0.0006
+min_learning_rate = 0.00006
 batch_size = 1
 accumulation_steps = 32
 eval_batches = 64
