@@ -49,5 +49,5 @@ decay_steps = 1200
 decay_shape = "1-sqrt"
 sampling = "ordered"
 optimizer = "normuon"
-hyperball_rate = 10.0
+hyperball_rate = 5.0
 fp8 = true

@@ -24,12 +24,18 @@
 # weighs 0.1 in each layer. An RTX 5090 multiplies the experts in bfloat16:
 # PyTorch's FP8 grouped products run only on compute capability 9.0 and 10.0.
 # Hyperball holds every matrix of the attention, the experts, the shared
-# expert and the router at the Frobenius norm it starts with, at ten times the
-# learning rate, as Puro-2B trained with MuonH; so no output projection starts
-# at zero, and the matrices take no weight decay. The rate, 0.002, is Puro-2B's 5e-3 at
-# its 6.3M-token updates scaled by the square root of the batch to these
-# 1,048,576-token updates. The embeddings take AdamW without weight decay, as
-# OLMo 2 and SmolLM3 found steadier.
+# expert and the router at the Frobenius norm it starts with, so no output
+# projection starts at zero, and the matrices take no weight decay. At the
+# peak each update moves a matrix by 1% of its norm, five times the rate:
+# HyperP found the best step 1.06% for eight layers of width 1,024 at 1M-token
+# updates, and without its depth scaling the best step halved from 8 layers
+# to 24, where a step 2.5 times the best cost 0.1 in loss. The Hyperball
+# paper found the best step moved little with depth, and Puro-2B's 5% at its
+# 6.3M-token updates comes to about 2% at these; 1% lies within twice of
+# either reading. The rate, 0.002, is Puro-2B's 5e-3 scaled by the square
+# root of the batch to these 1,048,576-token updates. The embeddings take
+# AdamW at that rate without weight decay, as OLMo 2 and SmolLM3 found
+# steadier.
 # The matrices but the attention's queries, keys and values multiply in FP8
 # with a scale per tensor: on the RTX 5090 that ran 22% faster than bfloat16,
 # where the attention's inputs in FP8 had stopped an RTX 4090 with non-finite
@@ -87,6 +93,6 @@ decay_steps = 720
 decay_shape = "1-sqrt"
 sampling = "sequential"
 optimizer = "normuon"
-hyperball_rate = 10.0
+hyperball_rate = 5.0
 fp8 = true
 snapshot_every = 72
