@@ -1,0 +1,92 @@
+# The v7 model is v6's (model-v6.toml has its reasons) with a mixture of
+# experts in place of each feed-forward network, trained with Hyperball in FP8
+# on an RTX 5090.
+# A mixture adds parameters, which hold knowledge, without adding computation
+# per token: Ling's efficiency-leverage study of 300 models found mixtures
+# more efficient than dense models at every size, more so as experts get
+# finer and fewer of them act, and Mixture of Parrots found the experts raise
+# knowledge more than reasoning, which suits tasks of knowledge and common
+# sense. Each token reads as many units as v6's network did, 4,096, split
+# evenly, as HyperP splits them, among the experts it reads, the shared one
+# among them: three of twelve experts of 1,024 units and a shared expert of
+# 1,024, for 1.13B parameters in all, against v6's 0.52B. Experts of 256 units,
+# finer as Ling advises, ran 30% slower on the RTX 5090, and HyperP's
+# comparisons gained only 0.015 in loss from that much finer experts.
+# The experts keep even use by a load-balancing
+# loss over each whole update's tokens, since balancing each window's few
+# documents keeps experts from specializing (Qwen's "Demons in the Detail");
+# DeepSeek-V3 found such a loss as good as its biases at 1B and 3B, and its
+# biases let one expert take every token within 120 of our updates. The
+# mixture follows HyperP, which trained mixtures with matrices held at their
+# norms as Hyperball holds ours: the chosen experts mix by the square roots
+# of their scores and join the shared expert at half the variance each, each
+# expert starts with an output as large as the dense network's, and the loss
+# weighs 0.1 in each layer. An RTX 5090 multiplies the experts in bfloat16:
+# PyTorch's FP8 grouped products run only on compute capability 9.0 and 10.0.
+# Hyperball holds every matrix of the attention, the experts, the shared
+# expert and the router at the Frobenius norm it starts with, at ten times the
+# learning rate, as Puro-2B trained with MuonH; so no output projection starts
+# at zero, and the matrices take no weight decay. The rate, 0.002, is Puro-2B's 5e-3 at
+# its 6.3M-token updates scaled by the square root of the batch to these
+# 1,048,576-token updates. The embeddings take AdamW without weight decay, as
+# OLMo 2 and SmolLM3 found steadier.
+# The matrices but the attention's queries, keys and values multiply in FP8
+# with a scale per tensor: on the RTX 5090 that ran 22% faster than bfloat16,
+# where the attention's inputs in FP8 had stopped an RTX 4090 with non-finite
+# gradients.
+# Training begins in patches (model-v7-patch.toml), as v6's did, and these
+# settings then read the last third token by token. The rate decays only over
+# the last phase, to a third of its peak rather than v6's hundredth: Luo et
+# al. found a deep decay wasted the best data a curriculum saves for last, and
+# a third of the peak kept it, best with the last weights averaged, which ten
+# snapshots through the decay give.
+[model]
+architecture = "llama"
+width = 1024
+heads = 8
+kv_heads = 2
+layers = 32
+feed_forward = "relu_squared"
+intermediate_size = 4096
+context = 8192
+rope_theta = 10000.0
+qk_norm = true
+attention_gate = "headwise"
+value_embeddings = true
+residual_scalars = true
+zero_output_init = false
+document_start = 0
+experts = 12
+active_experts = 3
+expert_size = 1024
+shared_expert_size = 1024
+
+[training]
+# One window of 8,192 tokens a pass, 128 passes an update: 1,048,576 tokens;
+# two windows of the experts' activations do not fit the RTX 5090's 32GB.
+# These 3,000 updates read 3.15B tokens, after the patches' 6.29B, for 9.44B
+# in all: about 34 hours at the 38,300 tokens a second measured here on
+# synthetic text and four times that in patches, as v6 ran, so about $18 at
+# $0.50 an hour with setup and saving.
+steps = 3000
+batch_size = 1
+accumulation_steps = 128
+learning_rate = 0.002
+min_learning_rate = 0.000667
+# Warmup keeps v6's share of the updates.
+warmup_steps = 68
+weight_decay = 0.0
+gradient_clip = 1.0
+eval_every = 200
+save_every = 50
+eval_batches = 64
+log_every = 5
+seed = 42
+schedule = "wsd"
+decay_steps = 720
+decay_shape = "1-sqrt"
+sampling = "sequential"
+optimizer = "normuon"
+hyperball_rate = 10.0
+fp8 = true
+snapshot_every = 72

@@ -1,0 +1,53 @@
+# The first stage of the v7 model's training (model-v7.toml has the reasons):
+# the same model reads two thirds of its tokens in patches of four, each source
+# from its lowest-scored documents to its highest (pretrain-v7.toml).
+# The rate decays over the last fifth of these updates, as v6's patches did,
+# but to a third of its peak: a deep decay at the end of a curriculum wastes
+# the best data it saved for last (Luo et al.).
+[model]
+architecture = "llama"
+width = 1024
+heads = 8
+kv_heads = 2
+layers = 32
+feed_forward = "relu_squared"
+intermediate_size = 4096
+context = 8192
+rope_theta = 10000.0
+qk_norm = true
+attention_gate = "headwise"
+value_embeddings = true
+residual_scalars = true
+zero_output_init = false
+document_start = 0
+experts = 12
+active_experts = 3
+expert_size = 1024
+shared_expert_size = 1024
+
+[training]
+# One window of 32,768 tokens (8,192 patches) a pass, 32 passes an update:
+# 1,048,576 tokens, as in the rest of training, at a quarter of the computation.
+# 6,000 updates read 6.29B tokens, two thirds of the 9.44B.
+steps = 6000
+batch_size = 1
+accumulation_steps = 32
+patch_size = 4
+learning_rate = 0.002
+min_learning_rate = 0.000667
+# Warmup keeps v6's share of the updates.
+warmup_steps = 135
+weight_decay = 0.0
+gradient_clip = 1.0
+eval_every = 200
+save_every = 100
+eval_batches = 64
+log_every = 5
+seed = 42
+schedule = "wsd"
+decay_steps = 1200
+decay_shape = "1-sqrt"
+sampling = "ordered"
+optimizer = "normuon"
+hyperball_rate = 10.0
+fp8 = true
