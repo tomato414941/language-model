@@ -70,6 +70,10 @@ class TrainConfig:
     patch_size: int = 1
     # The share of their rates that the residual scalars take.
     scalar_rate: float = 1.0
+    # Keep the optimizers' state in the host's memory between updates, which
+    # leaves a GPU room for a mixture's experts or more windows a pass. It
+    # applies to NorMuon and Muon, whose optimizers step as one.
+    offload_optimizer: bool = False
 
     def __post_init__(self):
         for field in (
@@ -138,6 +142,10 @@ class TrainConfig:
             raise ValueError("snapshots are kept through a wsd decay")
         if type(self.fp8) is not bool:
             raise ValueError("fp8 must be true or false")
+        if type(self.offload_optimizer) is not bool:
+            raise ValueError("offload_optimizer must be true or false")
+        if self.offload_optimizer and self.optimizer == "adamw":
+            raise ValueError("offload_optimizer applies to muon and normuon")
 
 
 # Ada, the oldest generation whose matrix products take FP8.
@@ -243,10 +251,18 @@ def autocast(device, precision):
 
 
 class Optimizers:
-    """Several optimizers stepped as one, each over its own parameters."""
+    """Several optimizers stepped as one, each over its own parameters.
 
-    def __init__(self, *optimizers):
+    With offload, the state of a GPU's parameters waits in the host's memory
+    between steps, in page-locked buffers made once, and comes to the GPU
+    only for a step: it is read once an update, while between steps the GPU
+    holds the activations of every pass. Moving it costs two copies an update.
+    """
+
+    def __init__(self, *optimizers, offload=False):
         self.optimizers = optimizers
+        self.offload = offload
+        self.hosted = {}
 
     @property
     def param_groups(self):
@@ -259,10 +275,42 @@ class Optimizers:
             optimizer.zero_grad(set_to_none=set_to_none)
 
     def step(self):
+        if self.offload:
+            self.place(hosted=False)
         for optimizer in self.optimizers:
             optimizer.step()
+        if self.offload:
+            self.place(hosted=True)
+
+    def place(self, hosted):
+        """Move the state of the GPU's parameters to the host's buffers, or back to the GPU.
+
+        The copies queue on the GPU's stream, so nothing reads a buffer before
+        its copy ends; only the host must wait before reading one.
+        """
+        for optimizer in self.optimizers:
+            for parameter, state in optimizer.state.items():
+                if parameter.device.type != "cuda":
+                    continue
+                for key, value in state.items():
+                    if not torch.is_tensor(value):
+                        continue
+                    if not hosted:
+                        if value.device.type == "cpu":
+                            state[key] = value.to(parameter.device, non_blocking=True)
+                        continue
+                    if value.device.type != "cuda":
+                        continue
+                    buffer = self.hosted.get((id(parameter), key))
+                    if buffer is None or buffer.shape != value.shape or buffer.dtype != value.dtype:
+                        buffer = torch.empty(value.shape, dtype=value.dtype, pin_memory=True)
+                        self.hosted[(id(parameter), key)] = buffer
+                    state[key] = buffer.copy_(value, non_blocking=True)
 
     def state_dict(self):
+        if self.offload and torch.cuda.is_available():
+            # The host's buffers may still be filling.
+            torch.cuda.synchronize()
         return {"optimizers": [optimizer.state_dict() for optimizer in self.optimizers]}
 
     def load_state_dict(self, state):
@@ -491,7 +539,9 @@ def make_optimizer(model, config, device):
             adjust_lr_fn="match_rms_adamw",
         )
     chosen = {id(p) for p in matrices}
-    return Optimizers(first, adamw([p for _, p in named if id(p) not in chosen]))
+    return Optimizers(
+        first, adamw([p for _, p in named if id(p) not in chosen]), offload=config.offload_optimizer
+    )
 
 
 @torch.inference_mode()

@@ -1687,6 +1687,42 @@ class PretrainingTests(unittest.TestCase):
                 TrainConfig(**changes)
         self.assertEqual(TrainConfig(optimizer="normuon", hyperball_rate=10).hyperball_rate, 10)
 
+    def test_optimizer_offload_is_set_only_for_muon_and_normuon(self):
+        """最適化の状態をホストに置く設定は、Muon と NorMuon でだけ真偽値として受け付ける。"""
+        for changes in ({"offload_optimizer": True}, {"offload_optimizer": 1, "optimizer": "normuon"}):
+            with self.assertRaisesRegex(ValueError, "offload_optimizer"):
+                TrainConfig(**changes)
+        for optimizer in ("muon", "normuon"):
+            self.assertTrue(TrainConfig(optimizer=optimizer, offload_optimizer=True).offload_optimizer)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA GPU required")
+    def test_optimizer_state_waits_on_the_host_between_updates_and_steps_the_same(self):
+        """最適化の状態をホストに置くと、更新の合間は状態がホストのメモリにあり、置かないときと同じ重みに更新する。"""
+        device = torch.device("cuda")
+        model_config = dataclasses.replace(
+            self.llama_config(), feed_forward="relu_squared", experts=4, active_experts=2, shared_expert_size=8,
+        )
+        weights = []
+        for offload in (False, True):
+            torch.manual_seed(0)
+            model = LanguageModel(258, model_config).to(device)
+            config = TrainConfig(optimizer="normuon", hyperball_rate=10.0, offload_optimizer=offload)
+            optimizer = make_optimizer(model, config, device)
+            generator = torch.Generator().manual_seed(1)
+            for _ in range(3):
+                tokens = torch.randint(258, (2, 17), generator=generator).to(device)
+                model(tokens[:, :-1], tokens[:, 1:]).backward()
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                states = [value for inner in optimizer.optimizers for state in inner.state.values()
+                          for value in state.values() if torch.is_tensor(value)]
+                self.assertTrue(states)
+                self.assertTrue(all(value.device.type == ("cpu" if offload else "cuda") for value in states))
+            optimizer.state_dict()
+            weights.append({name: value.detach().clone() for name, value in model.named_parameters()})
+        for name, value in weights[0].items():
+            torch.testing.assert_close(weights[1][name], value)
+
     def quality_corpus(self, sources, counting=False):
         """The test corpus, marked as written in quality order by the sources, each a language and its training tokens.
 
