@@ -166,7 +166,7 @@ class PretrainingTests(unittest.TestCase):
         self.run_training("continuous")
         partial = self.run_training("resumed", max_steps=3)
         self.assertEqual(partial["step"], 3)
-        self.run_training("resumed", resume=self.root / "resumed" / "last.pt")
+        self.run_training("resumed")
         continuous = load_checkpoint(self.root / "continuous" / "last.pt")
         resumed = load_checkpoint(self.root / "resumed" / "last.pt")
         self.assertEqual(resumed["step"], 8)
@@ -176,6 +176,54 @@ class PretrainingTests(unittest.TestCase):
             torch.testing.assert_close(
                 parameter, resumed["model"][name], rtol=0, atol=0
             )
+
+    def test_training_run_again_continues_its_own_checkpoint_and_returns_once_finished(self):
+        """同じ出力でもう一度動かすと、初期化元ではなく自分のチェックポイントから続け、終わった段階はすぐに返る。"""
+        self.run_training("first")
+        partial = self.run_training("phase", max_steps=3, initialize_from=self.root / "first" / "last.pt")
+        self.assertEqual((partial["step"], partial["finished"]), (3, True))
+        continued = self.run_training("phase", initialize_from=self.root / "missing.pt")
+        self.assertEqual((continued["step"], continued["finished"]), (8, True))
+        again = self.run_training("phase")
+        self.assertEqual((again["step"], again["finished"]), (8, True))
+        self.assertEqual(again["validation"], continued["validation"])
+
+    def test_training_reports_its_progress_and_keeps_its_checkpoints_before_the_end(self):
+        """借りた機械の実行に、進み具合と、最後の前に保存したチェックポイントを渡す。"""
+        keep = self.root / "keep"
+        keep.mkdir()
+        environment = {"RENTAL_PROGRESS": str(self.root / "progress.json"), "RENTAL_KEEP": str(keep)}
+        with patch.dict("os.environ", environment), contextlib.chdir(self.root):
+            with contextlib.redirect_stdout(io.StringIO()):
+                train(self.data, Path("kept"), self.model_config, self.config(steps=12), torch.device("cpu"))
+        self.assertEqual(json.loads((self.root / "progress.json").read_text()), {"done": 12 * 4 * 2 * 16,
+                                                                                  "total": 12 * 4 * 2 * 16})
+        # Saved at steps 4, 8 and 12; the last is the phase's output, so 8 is the newest kept.
+        self.assertEqual([path.name for path in keep.iterdir()], ["kept%2Flast.pt"])
+        self.assertEqual(load_checkpoint(keep / "kept%2Flast.pt")["step"], 8)
+
+    def test_training_stopped_early_keeps_where_it_stopped_and_is_not_finished(self):
+        """途中で止められた学習は、止めた所を保存して渡し、終わっていないと伝える。"""
+        keep = self.root / "keep"
+        keep.mkdir()
+        stops = iter([False, False, True])
+        with patch.dict("os.environ", {"RENTAL_KEEP": str(keep)}), contextlib.chdir(self.root):
+            with contextlib.redirect_stdout(io.StringIO()):
+                stopped = train(self.data, Path("stopped"), self.model_config, self.config(), torch.device("cpu"),
+                                stop_requested=lambda: next(stops, True))
+        self.assertFalse(stopped["finished"])
+        self.assertEqual(load_checkpoint(keep / "stopped%2Flast.pt")["step"], stopped["step"])
+
+    def test_evaluation_whose_record_is_written_already_does_nothing_when_run_again(self):
+        """記録を書き終えた評価は、もう一度動かしても何もしない。"""
+        record = self.root / "benchmarks.json"
+        record.write_text("{}")
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            main(["benchmark", "--checkpoint", str(self.root / "missing.pt"), "--output", str(record),
+                  "--tasks", "hellaswag"])
+        self.assertEqual(json.loads(printed.getvalue())["event"], "done_already")
+        self.assertEqual(record.read_text(), "{}")
 
     def test_batched_greedy_continuations_match_generating_each_prompt_alone(self):
         """長さの違う入力をまとめて貪欲生成しても、1件ずつ生成したときと同じトークンを返す。"""
@@ -751,7 +799,7 @@ class PretrainingTests(unittest.TestCase):
         )
         self.run_training("modern-continuous")
         self.run_training("modern-resumed", max_steps=3)
-        self.run_training("modern-resumed", resume=self.root / "modern-resumed/last.pt")
+        self.run_training("modern-resumed")
         continuous, tokenizer, first = load_model(
             self.root / "modern-continuous/last.pt", torch.device("cpu")
         )
@@ -811,7 +859,6 @@ class PretrainingTests(unittest.TestCase):
                 self.model_config,
                 self.config(steps=12),
                 torch.device("cpu"),
-                resume=self.root / "phase-two/last.pt",
                 max_steps=2,
             )
         self.assertEqual(result["step"], 2)
@@ -1029,7 +1076,6 @@ class PretrainingTests(unittest.TestCase):
         self.run_training(
             "sequential-resumed",
             self.wsd_config(),
-            resume=self.root / "sequential-resumed/last.pt",
         )
         first, second = (
             load_checkpoint(self.root / name / "last.pt")
@@ -1455,7 +1501,7 @@ class PretrainingTests(unittest.TestCase):
             self.assertLess(after[language]["loss"], before[language]["loss"] * 0.8)
         self.run_training("muon-resumed", config, max_steps=10)
         self.run_training(
-            "muon-resumed", config, resume=self.root / "muon-resumed/last.pt"
+            "muon-resumed", config
         )
         first, second = (
             load_checkpoint(self.root / name / "last.pt")
@@ -1487,7 +1533,7 @@ class PretrainingTests(unittest.TestCase):
             self.assertLess(after[language]["loss"], before[language]["loss"] * 0.8)
         self.run_training("normuon-resumed", config, max_steps=10)
         self.run_training(
-            "normuon-resumed", config, resume=self.root / "normuon-resumed/last.pt"
+            "normuon-resumed", config
         )
         first, second = (
             load_checkpoint(self.root / name / "last.pt")
@@ -1620,7 +1666,7 @@ class PretrainingTests(unittest.TestCase):
             self.assertLess(after[language]["loss"], before[language]["loss"] * 0.8)
         self.run_training("hyperball-resumed", config, max_steps=10)
         self.run_training(
-            "hyperball-resumed", config, resume=self.root / "hyperball-resumed/last.pt"
+            "hyperball-resumed", config
         )
         first, second = (
             load_checkpoint(self.root / name / "last.pt")
@@ -1653,7 +1699,7 @@ class PretrainingTests(unittest.TestCase):
         for language in ("ja", "en"):
             self.assertLess(after[language]["loss"], before[language]["loss"] * 0.8)
         self.run_training("experts-resumed", config, max_steps=10)
-        self.run_training("experts-resumed", config, resume=self.root / "experts-resumed/last.pt")
+        self.run_training("experts-resumed", config)
         first, second = (
             load_checkpoint(self.root / name / "last.pt") for name in ("experts-continuous", "experts-resumed")
         )
@@ -1793,7 +1839,7 @@ class PretrainingTests(unittest.TestCase):
         )
         self.run_training("ordered-continuous", config)
         self.run_training("ordered-resumed", config, max_steps=4)
-        self.run_training("ordered-resumed", config, resume=self.root / "ordered-resumed/last.pt")
+        self.run_training("ordered-resumed", config)
         first, second = (
             load_checkpoint(self.root / name / "last.pt")
             for name in ("ordered-continuous", "ordered-resumed")
@@ -1877,7 +1923,6 @@ class PretrainingTests(unittest.TestCase):
                 self.model_config,
                 self.config(),
                 torch.device("cpu"),
-                resume=self.root / "original" / "last.pt",
             )
 
     def test_stop_request_saves_the_last_completed_update(self):
@@ -1893,7 +1938,7 @@ class PretrainingTests(unittest.TestCase):
         self.assertEqual(stopped["step"], 1)
         self.assertEqual(saved["step"], stopped["step"])
         self.assertEqual(saved["validation_step"], stopped["step"])
-        self.run_training("stopped", config, resume=self.root / "stopped" / "last.pt")
+        self.run_training("stopped", config)
         self.run_training("uninterrupted", config)
         resumed = load_checkpoint(self.root / "stopped" / "last.pt")
         continuous = load_checkpoint(self.root / "uninterrupted" / "last.pt")

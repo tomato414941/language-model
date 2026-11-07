@@ -10,6 +10,7 @@ from pathlib import Path
 import torch
 
 from .data import file_digest, open_corpus, prepare_data
+from .job import write_output
 from .training import (
     evaluate,
     evaluate_windows,
@@ -26,6 +27,15 @@ def main(argv=None):
         description="日本語・英語の言語モデルをゼロから学習する"
     )
     commands = parser.add_subparsers(dest="command", required=True)
+    rental = commands.add_parser(
+        "rental-run", help="レシピを、借りたGPUで最後まで運ぶ rental の実行として書く（spec.json と code.tar.gz）"
+    )
+    rental.add_argument(
+        "--settings", type=Path, required=True, help="レシピと借りる機械を書いた設定（configs/*-rental.toml）"
+    )
+    rental.add_argument("--built", type=Path, required=True, help="準備した学習データの目録がある場所")
+    rental.add_argument("--directory", type=Path, required=True, help="実行を書くディレクトリ（名前が実行の名前になる）")
+    rental.add_argument("--bucket", required=True, help="データと結果を置く R2 のバケット")
     recipe = commands.add_parser(
         "recipe",
         help="日英の学習計画を確認し、語彙・コーパス・指示学習の設定を準備する",
@@ -170,7 +180,6 @@ def main(argv=None):
         choices=("auto", "float32", "bfloat16", "float16"),
         default="auto",
     )
-    training.add_argument("--resume", type=Path, nargs="?", const=Path("last.pt"))
     training.add_argument(
         "--initialize-from",
         type=Path,
@@ -411,7 +420,11 @@ def main(argv=None):
         )
     args = parser.parse_args(argv)
     try:
-        if args.command == "recipe":
+        if args.command == "rental-run":
+            from .rental_run import write_run
+
+            print(json.dumps(write_run(args.settings, args.built, args.directory, args.bucket), ensure_ascii=False))
+        elif args.command == "recipe":
             from .recipe import (
                 inspect_recipe,
                 prepare_corpus,
@@ -746,11 +759,6 @@ def main(argv=None):
                 raise ValueError("threads must be positive")
             torch.set_num_threads(args.threads)
             model_config, config = read_config(args.config)
-            resume = (
-                args.output / "last.pt"
-                if args.resume == Path("last.pt")
-                else args.resume
-            )
             stopped = False
 
             def stop(signum, frame):
@@ -761,14 +769,13 @@ def main(argv=None):
                 s: signal.signal(s, stop) for s in (signal.SIGINT, signal.SIGTERM)
             }
             try:
-                train(
+                trained = train(
                     args.data,
                     args.output,
                     model_config,
                     config,
                     select_device(args.device),
                     args.precision,
-                    resume,
                     args.max_steps,
                     lambda: stopped,
                     args.initialize_from,
@@ -779,6 +786,9 @@ def main(argv=None):
             finally:
                 for s, handler in previous.items():
                     signal.signal(s, handler)
+            if not trained["finished"]:
+                # Stopped before its end, as a run on rented machines must hear.
+                raise SystemExit(128 + signal.SIGTERM)
             if args.hub_repo:
                 from .hub import publish_training_run
 
@@ -796,6 +806,10 @@ def main(argv=None):
                 if args.llm_jp_eval and args.limit is not None:
                     raise ValueError("llm-jp-eval asks every question")
                 torch.set_num_threads(args.threads)
+            if args.command in ("benchmark", "ruler") and args.output.exists():
+                # Its record is written whole at the end, so an evaluation run again has nothing left to do.
+                print(json.dumps({"event": "done_already", "output": str(args.output)}), flush=True)
+                return
             device = select_device(args.device)
             model, tokenizer, payload = load_model(args.checkpoint, device)
             if args.command == "benchmark":
@@ -849,10 +863,7 @@ def main(argv=None):
                     "parameters": sum(p.numel() for p in model.parameters()),
                     "precision": precision,
                 }
-                args.output.parent.mkdir(parents=True, exist_ok=True)
-                args.output.write_text(
-                    json.dumps(result, indent=2) + "\n", encoding="utf-8"
-                )
+                write_output(args.output, json.dumps(result, indent=2) + "\n")
                 # The file keeps every question; the summary is what to read.
                 summary = result["by_language"]
                 if "as_conversation" in result:
@@ -927,8 +938,7 @@ def main(argv=None):
                     "parameters": sum(p.numel() for p in model.parameters()),
                     "precision": precision,
                 }
-                args.output.parent.mkdir(parents=True, exist_ok=True)
-                args.output.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+                write_output(args.output, json.dumps(record, indent=2) + "\n")
                 print(json.dumps({"accuracy": record["accuracy"], "lengths": {
                     length: read["accuracy"] for length, read in record["lengths"].items()}}, indent=2))
             elif args.command == "core":

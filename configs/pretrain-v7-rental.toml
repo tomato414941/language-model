@@ -1,0 +1,30 @@
+# Where pretrain-v7 runs: one RTX 5090 rented through vast-rental, carried to
+# its end by the rental tool. `python -m pretrain rental-run` writes the run.
+recipe = "pretrain-v7.toml"
+
+[machine]
+kind = "vast"
+gpu = "RTX 5090"
+# The drivers must run the CUDA 13 build of PyTorch that the lock file pins.
+image = "nvidia/cuda:13.0.3-base-ubuntu24.04"
+# The data, the environment, five trainings' checkpoints with a second copy of
+# one held while it goes out, ten snapshots of 4.5 GB and the evaluations'
+# records: about 150 GB at the end.
+disk = 200
+max_price = 0.64
+# The evaluations fetch from GitHub and the Hub, which China blocks; the run
+# sends about 220 GB out and 35 GB in, so a gigabyte may cost two cents at most.
+query = { cuda_max_good = { gte = 13.0 }, reliability2 = { gte = 0.98 }, inet_down = { gte = 500 }, inet_up = { gte = 100 }, cpu_ram = { gte = 32000 }, cpu_cores_effective = { gte = 4 }, geolocation = { notin = ["CN"] }, inet_up_cost = { lte = 0.02 }, inet_down_cost = { lte = 0.02 } }
+
+# Tokens a second each training's settings went at in the smoke run, on an RTX
+# 5090 at 600 W, compiled in FP8 with the experts in bfloat16; instruction
+# tuning runs in bfloat16, which went 22% slower than FP8 on synthetic text.
+[rates]
+"configs/model-v7-patch.toml" = 162_500
+"configs/model-v7.toml" = 39_500
+"data/pretrain-v7/sft.toml" = 32_400
+
+[policy]
+# Dollars for machine time, those that failed the provider's checks included;
+# the provider bills traffic beside it.
+budget = 33.0

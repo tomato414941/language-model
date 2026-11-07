@@ -12,6 +12,7 @@ import torch
 from tokenizers import Tokenizer
 from torch.optim._muon import _adjust_lr, _zeropower_via_newtonschulz
 
+from . import job
 from .count import CountTable
 from .data import BOS, LANGUAGES, file_digest, open_corpus, to_device, token_bytes
 from .model import LanguageModel, ModelConfig
@@ -761,7 +762,6 @@ def train(
     config,
     device,
     precision="auto",
-    resume=None,
     max_steps=None,
     stop_requested=None,
     initialize_from=None,
@@ -769,20 +769,21 @@ def train(
     compiled=False,
     count_table=None,
 ):
-    """Train from scratch, or start from an earlier checkpoint.
+    """Train from scratch, or start from an earlier checkpoint; run again, continue where the output left off.
 
-    resume repeats an interrupted run exactly. initialize_from copies only the
-    weights into a new run. continue_from carries the weights, optimizer and
-    step into a new phase on other data, as long as the learning rate schedule
-    continues without a jump. compiled runs the model through torch.compile,
-    which fuses its small operations; checkpoints are the same either way.
-    A model that reads a count table takes it from the checkpoint it starts
-    from, or else from count_table, and keeps it in every checkpoint.
+    A phase whose output holds a checkpoint continues from it, repeating an
+    interrupted run exactly, and a finished one returns at once. Otherwise
+    initialize_from copies only the weights into a new run, and continue_from
+    carries the weights, optimizer and step into a new phase on other data, as
+    long as the learning rate schedule continues without a jump. compiled runs
+    the model through torch.compile, which fuses its small operations;
+    checkpoints are the same either way. A model that reads a count table takes
+    it from the checkpoint it starts from, or else from count_table, and keeps
+    it in every checkpoint. Its progress and the checkpoints it saves before
+    the end go to a run on rented machines, as pretrain.job says.
     """
-    if sum(item is not None for item in (resume, initialize_from, continue_from)) > 1:
-        raise ValueError(
-            "choose one of resume, initialize_from or continue_from for a training phase"
-        )
+    if initialize_from is not None and continue_from is not None:
+        raise ValueError("choose one of initialize_from or continue_from for a training phase")
     corpus = open_corpus(data)
     corpus.validate_context(read_length(model_config.context, config.patch_size))
     if config.sampling == "ordered" and not corpus.manifest.get("quality"):
@@ -791,10 +792,10 @@ def train(
     if config.fp8:
         check_fp8(device, precision, compiled)
     output = Path(output)
-    if resume is None and (output / "last.pt").exists():
-        raise ValueError(
-            "a checkpoint already exists; use --resume or select a new output directory"
-        )
+    resume = output / "last.pt" if (output / "last.pt").exists() else None
+    if resume is not None:
+        # Where the phase started from matters no more once it has a checkpoint of its own.
+        initialize_from = continue_from = None
     if max_steps is not None and (type(max_steps) is not int or max_steps <= 0):
         raise ValueError("max_steps must be a positive integer")
     torch.manual_seed(config.seed)
@@ -933,6 +934,8 @@ def train(
         model.compile(dynamic=False)
     target = min(config.steps, max_steps) if max_steps is not None else config.steps
     if target <= step:
+        if resume is not None:
+            return {"step": step, "tokens_seen": tokens_seen, "validation": saved["validation"], "finished": True}
         raise ValueError(
             "the requested stopping step must be greater than the checkpoint step"
         )
@@ -975,6 +978,7 @@ def train(
     tokens_per_step = (
         config.batch_size * config.accumulation_steps * model_config.context * config.patch_size
     )
+    job.progress(tokens_seen, target * tokens_per_step)
     print(
         json.dumps(
             {
@@ -1052,6 +1056,7 @@ def train(
             expert_share = model.finish_update()
             step += 1
             tokens_seen += tokens_per_step
+            job.progress(tokens_seen, target * tokens_per_step)
             stopping = bool(stop_requested and stop_requested())
             final = step == target or stopping
             record = {
@@ -1080,6 +1085,9 @@ def train(
             if step % config.save_every == 0 or final:
                 atomic_save(checkpoint(), output / "last.pt")
                 saved_step = step
+                # The phase's last checkpoint is its output, not one to keep on the way.
+                if step < target:
+                    job.keep(output / "last.pt")
             decayed = step - (config.steps - config.decay_steps)
             if config.snapshot_every and decayed > 0 and decayed % config.snapshot_every == 0:
                 atomic_save(
@@ -1102,8 +1110,11 @@ def train(
             )
             validation_step = step
         atomic_save(checkpoint(), output / "last.pt")
+        if step < target:
+            job.keep(output / "last.pt")
     return {
         "step": step,
         "tokens_seen": tokens_seen,
         "validation": validation,
+        "finished": step == target,
     }

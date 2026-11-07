@@ -222,7 +222,7 @@ class CountTableTests(unittest.TestCase):
         output = self.root / "run"
         with contextlib.redirect_stdout(io.StringIO()):
             train(self.data, output, self.config(), config, torch.device("cpu"), max_steps=2, count_table=table)
-            train(self.data, output, self.config(), config, torch.device("cpu"), resume=output / "last.pt")
+            train(self.data, output, self.config(), config, torch.device("cpu"))
         saved = load_checkpoint(output / "last.pt")
         self.assertEqual(saved["step"], 4)
         model, _, _ = load_model(output / "last.pt", torch.device("cpu"))

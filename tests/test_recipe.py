@@ -863,7 +863,6 @@ class RecipeTests(unittest.TestCase):
                 model,
                 config,
                 torch.device("cpu"),
-                resume=self.root / "resumed/last.pt",
                 max_steps=3,
             )
         first, second = (
