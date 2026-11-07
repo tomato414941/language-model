@@ -9,8 +9,11 @@ the small files of the data the preparation built, and the evaluations'
 questions, the same bytes for the same commit and data. The data's packed files
 stay in the store at the paths the plan reads them from, and are checked against
 the recipe before a run is written. Each machine sets up the environment that
-the lock file pins, and passes the tests that only a CUDA GPU runs, before any
-step: a machine whose GPU computes the model wrongly fails its setup.
+the lock file pins, then passes its check, the tests that only a CUDA GPU runs,
+before any step: a machine whose GPU computes the model wrongly fails it. The
+check runs again whenever a step fails, so that a machine that broke under the
+step, as one that lost its GPU, takes the blame, and a step that fails on a
+sound machine does not blame it.
 """
 
 import gzip
@@ -29,7 +32,8 @@ GPU_TESTS = (
     "tests.test_pretrain.PretrainingTests.test_GPUでは文書ごとの注意をマスクと同じ結果で速い計算に任せる",
     "tests.test_pretrain.PretrainingTests.test_trains_and_evaluates_on_cuda",
 )
-SETUP = [["bash", "scripts/setup_environment.sh"], [PYTHON, "-m", "unittest", *GPU_TESTS]]
+SETUP = [["bash", "scripts/setup_environment.sh"]]
+CHECK = [[PYTHON, "-m", "unittest", *GPU_TESTS]]
 # The benchmarks read the tasks' questions from the code's own cache, and llm-jp-eval keeps its checkout beside it;
 # RULER fetches its essays and questions itself.
 ENVIRONMENTS = {
@@ -168,6 +172,7 @@ def write_run(settings_path, built, directory, bucket, questions=QUESTIONS):
         "store": {"kind": "r2", "bucket": bucket, "prefix": f"stages/{config.stem}/{directory.name}"},
         "code": {"path": "code.tar.gz"},
         "setup": SETUP,
+        "check": CHECK,
         "files": files,
         "steps": experiment.steps,
         "policy": settings.get("policy", {}),

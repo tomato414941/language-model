@@ -58,9 +58,14 @@ class RulerTests(unittest.TestCase):
                 loaded = AutoTokenizer.from_pretrained(metadata["tokenizer"])
                 seen["encoded"] = loaded("abc")["input_ids"]
 
-        def evaluate(model, tasks, task_manager, limit, log_samples, apply_chat_template):
-            seen.update(tasks=tasks, conversation=apply_chat_template, limit=limit)
-            return {"samples": logged_samples(lambda task, length, index: 1.0, questions=limit)}
+        def evaluate(model, tasks, task_manager, log_samples, apply_chat_template, limit=None, samples=None):
+            # As the harness does: of each task's questions, the first `limit` or those `samples` names.
+            seen.update(tasks=tasks, conversation=apply_chat_template)
+            every = logged_samples(lambda task, length, index: 1.0)
+            return {"samples": {task: [sample for sample in every[task]
+                                       if (samples is None and (limit is None or sample["doc_id"] < limit))
+                                       or (samples is not None and sample["doc_id"] in samples[task])]
+                                for task in tasks}}
 
         for conversation in (True, False):
             with patch("lm_eval.tasks.TaskManager", Manager), patch("lm_eval.evaluator.simple_evaluate", evaluate):
@@ -71,6 +76,9 @@ class RulerTests(unittest.TestCase):
             self.assertEqual(seen["conversation"], conversation)
             self.assertEqual(record["procedure"]["scope"], "smoke")
             self.assertEqual(record["accuracy"], 1.0)
+            # A smoke run asks the same few questions at every length.
+            self.assertEqual({length: read["tasks"]["ruler_cwe"]["questions"] for length, read in record["lengths"].items()},
+                             {str(length): 2 for length in LENGTHS})
             self.assertFalse(Path(seen["metadata"]["tokenizer"]).exists())
 
 

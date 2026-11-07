@@ -293,7 +293,7 @@ def main(argv=None):
         "--llm-jp-eval",
         nargs="+",
         default=[],
-        help="llm-jp-evalで全問を評価する日本語のデータセット名",
+        help="llm-jp-evalで評価する日本語のデータセット名",
     )
     benchmark.add_argument(
         "--also-as-conversation",
@@ -382,7 +382,7 @@ def main(argv=None):
     )
     ruler.add_argument("--output", type=Path, required=True, help="問題ごとの点を含む記録のJSONファイル")
     ruler.add_argument("--batch-tokens", type=int, default=65536, help="一度に読むトークン数の上限")
-    ruler.add_argument("--limit", type=int, help="動作確認で各課題に使う問題数（正式な評価は全問）")
+    ruler.add_argument("--limit", type=int, help="動作確認で各課題に長さごとに使う問題数（正式な評価は全問）")
     ruler.add_argument("--plain", action="store_true", help="会話形式ではなく印のない文章で問う（事前学習の後のモデル）")
     official = commands.add_parser(
         "score-m-ifeval",
@@ -803,8 +803,6 @@ def main(argv=None):
             if args.command == "benchmark":
                 if args.threads <= 0:
                     raise ValueError("threads must be positive")
-                if args.llm_jp_eval and args.limit is not None:
-                    raise ValueError("llm-jp-eval asks every question")
                 torch.set_num_threads(args.threads)
             if args.command in ("benchmark", "ruler") and args.output.exists():
                 # Its record is written whole at the end, so an evaluation run again has nothing left to do.
@@ -854,6 +852,7 @@ def main(argv=None):
                             args.llm_jp_eval,
                             args.output.parent / f"{args.output.stem}-llm-jp-eval",
                             also_as_conversation=args.also_as_conversation,
+                            limit=args.limit,
                         )
                 result["checkpoint"] = {
                     "checkpoint": str(args.checkpoint),

@@ -36,6 +36,8 @@ class LlmJpEvalTest(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
+        # How many questions of each dataset every run of the tool's dump or evaluation was set to read.
+        self.limits = []
 
     def tool_home(self):
         """The parts of a llm-jp-eval checkout that its settings are written from."""
@@ -73,6 +75,8 @@ class LlmJpEvalTest(unittest.TestCase):
         prepared = set()
 
         def run(_home, script, *arguments):
+            if script == "scripts/evaluate_llm.py":
+                self.limits.append(yaml.safe_load(Path(arguments[-1]).read_text())["max_num_samples"])
             if script == "scripts/preprocess_dataset.py":
                 prepared.add((arguments[1], arguments[3]))
                 return
@@ -143,6 +147,14 @@ class LlmJpEvalTest(unittest.TestCase):
         self.assertEqual(read, ["2"])
         self.assertEqual(output["evaluation"]["scores"], {"exact_match": 0.25})
         self.assertNotIn("whole_reply_scores", output)
+        self.assertEqual((self.limits, output["evaluation_scope"]), ([-1, -1], "full"))
+
+    def test_動作確認では各データセットの先頭の問いだけを問い記録にそう書く(self):
+        """Asks and scores the first questions of each dataset in a smoke run, and says so in the record."""
+        output, _ = self.evaluated("mif_eval_ja", "前置き", [{"strict": 0.1}, {"strict": 0.4}], limit=2)
+        # The prompts, their scores and the scores of the whole replies keep to the first two questions alike.
+        self.assertEqual(self.limits, [2, 2, 2])
+        self.assertEqual(output["evaluation_scope"], "smoke")
 
     def test_指示学習のモデルには続きを書かせる形に加えて会話形式でも問う(self):
         """Scores the plain form first, and then the same task in the conversation format."""

@@ -7,7 +7,8 @@ task's answer prefix at the start of the reply, and a question longer than the m
 the harness's own backends do. The model runs as the project's code builds it, so parts that read the tokens before
 each step, such as a count table, work as they do in training.
 
-The score is the mean of each length's 13-task mean.
+The score is the mean of each length's 13-task mean. A smoke run asks the first questions of each task at every
+length.
 """
 
 import statistics
@@ -23,9 +24,19 @@ LENGTHS = (8192, 16384)
 QUESTIONS_PER_TASK = 500
 
 
+def smoke_samples(limit):
+    """The first `limit` questions of each task at every length, as the harness's samples option names them: it lists
+    each length's questions in turn, QUESTIONS_PER_TASK of them."""
+    if not 0 < limit <= QUESTIONS_PER_TASK:
+        raise ValueError(f"limit must be between 1 and {QUESTIONS_PER_TASK}")
+    return {task: [order * QUESTIONS_PER_TASK + index for order in range(len(LENGTHS)) for index in range(limit)]
+            for task in TASKS}
+
+
 def ruler_record(samples, conversation, limit=None):
     """The record of one model's RULER replies, from the harness's logged samples: each length's tasks with their
     questions' scores and replies, each length's mean over the tasks, and the mean over the lengths."""
+    expected = QUESTIONS_PER_TASK if limit is None else limit
     lengths = {}
     for task in TASKS:
         by_length = {}
@@ -35,8 +46,8 @@ def ruler_record(samples, conversation, limit=None):
         if sorted(by_length) != sorted(LENGTHS):
             raise ValueError(f"{task} holds lengths {sorted(by_length)}, not {sorted(LENGTHS)}")
         for length, answered in by_length.items():
-            if limit is None and len(answered) != QUESTIONS_PER_TASK:
-                raise ValueError(f"{task} at {length} holds {len(answered)} replies, not {QUESTIONS_PER_TASK}")
+            if len(answered) != expected:
+                raise ValueError(f"{task} at {length} holds {len(answered)} replies, not {expected}")
             scores, replies = [score for score, _ in answered], [reply for _, reply in answered]
             read = lengths.setdefault(str(length), {"tasks": {}})
             read["tasks"][task] = {
@@ -70,7 +81,7 @@ def evaluate_ruler(model, tokenizer, device, precision="bfloat16", batch_tokens=
             model=NativeLM(model, tokenizer, device, precision, batch_tokens),
             tasks=list(TASKS),
             task_manager=manager,
-            limit=limit,
+            samples=None if limit is None else smoke_samples(limit),
             log_samples=True,
             apply_chat_template=conversation,
         )

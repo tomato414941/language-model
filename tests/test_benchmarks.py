@@ -1094,7 +1094,7 @@ class BenchmarkTests(unittest.TestCase):
             self.assertTrue(0 <= metrics["acc,none"] <= 1)
 
     def test_benchmark_command_records_llm_jp_eval_scores_when_datasets_are_given(self):
-        """データセットを指定すると、llm-jp-evalで全問を評価した結果もベンチマークの結果に記録する。"""
+        """データセットを指定すると、llm-jp-evalで評価した結果もベンチマークの結果に記録し、動作確認の問題数はllm-jp-evalにも渡す。"""
         self.train_checkpoint()
         output = self.root / "results.json"
         scored = {"scores": {"kuci": 0.25}, "framework": {"name": "llm-jp-eval", "version": "v2.1.5"}}
@@ -1109,16 +1109,17 @@ class BenchmarkTests(unittest.TestCase):
                     "--threads", "1", "--output", str(output), "--llm-jp-eval", "kuci", "--tasks", "arc_easy",
                 ]
             )
-            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()) as refused:
-                main(
-                    [
-                        "benchmark", "--checkpoint", str(self.root / "run/last.pt"), "--device", "cpu",
-                        "--output", str(output), "--llm-jp-eval", "kuci", "--tasks", "arc_easy", "--limit", "1",
-                    ]
-                )
-        self.assertIn("every question", refused.getvalue())
+            main(
+                [
+                    "benchmark", "--checkpoint", str(self.root / "run/last.pt"), "--device", "cpu",
+                    "--threads", "1", "--output", str(self.root / "smoke.json"), "--llm-jp-eval", "kuci",
+                    "--tasks", "arc_easy", "--limit", "1",
+                ]
+            )
         self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["llm_jp_eval"], scored)
-        self.assertEqual(asked.call_args.args[5:], (["kuci"], self.root / "results-llm-jp-eval"))
+        full, smoke = asked.call_args_list
+        self.assertEqual(full.args[5:], (["kuci"], self.root / "results-llm-jp-eval"))
+        self.assertEqual((full.kwargs["limit"], smoke.kwargs["limit"]), (None, 1))
 
     def test_inspection_saves_standard_benchmark_results_in_the_summary(self):
         """Exports the final checkpoint with its standard benchmark results."""

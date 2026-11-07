@@ -63,9 +63,9 @@ class RentalRunTests(unittest.TestCase):
                                                          for made in available), (step["name"], path))
             available.update(step.get("outputs", []))
 
-    def test_has_each_machine_pass_the_tests_only_a_cuda_gpu_runs_before_any_step(self):
+    def test_has_each_machine_pass_the_tests_only_a_cuda_gpu_runs_as_its_check(self):
         spec = self.run_spec()
-        self.assertEqual(spec["setup"][-1][-len(GPU_TESTS):], list(GPU_TESTS))
+        self.assertEqual(spec["check"], [[".venv/bin/python", "-m", "unittest", *GPU_TESTS]])
         loader = unittest.TestLoader()
         self.assertEqual(loader.loadTestsFromNames(GPU_TESTS).countTestCases(), len(GPU_TESTS))
         self.assertEqual(loader.errors, [])
