@@ -526,7 +526,20 @@ def data_fingerprint(path):
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
+def planned(name, kind, arguments, reads=(), leaves=(), training=None):
+    """A command of a recipe's plan, `python -m pretrain KIND ARGUMENTS`: the paths it reads that another command
+    leaves or that are there before, and the paths it leaves. A training also says its settings, and the step it
+    starts from and the one it stops at, None for its settings' last."""
+    command = {"name": name, "kind": kind, "argv": ["python", "-m", "pretrain", kind, *map(str, arguments)],
+               "reads": [str(item) for item in reads], "leaves": [str(item) for item in leaves]}
+    if training is not None:
+        command["training"] = training
+    return command
+
+
 def inspect_recipe(path, workdir):
+    """What a recipe builds and trains: its model, data and schedule, and the plan that carries it out, as the
+    commands that build the data, `preparation`, and those that train and evaluate on it, `experiment`."""
     recipe = read_recipe(path)
     model, training = read_config(
         Path(path).resolve().parent / recipe["training_config"]
@@ -541,235 +554,123 @@ def inspect_recipe(path, workdir):
     workdir = Path(workdir)
     corpora = corpus_paths(recipe, workdir)
     runs = run_paths(path, recipe)
-    config = str(Path(path).parent / recipe["training_config"])
-    tasks = recipe["evaluation"]["base_tasks"]
-    japanese = recipe["evaluation"].get("llm_jp_eval_tasks", [])
-    commands = [
-        [
-            "python",
-            "-m",
-            "pretrain",
-            "fetch-benchmarks",
-            "--output",
-            str(workdir / "benchmarks"),
-        ],
-        *[
-            [
-                "python",
-                "-m",
-                "pretrain",
-                "recipe",
-                "--config",
-                str(path),
-                "--workdir",
-                str(workdir),
-                "--stage",
-                stage,
-            ]
-            for stage in (
-                "tokenizer",
-                "corpus",
-                *(["select"] if len(streamed(recipe)) < len(recipe["corpora"]) else []),
-                "validate",
-            )
-        ],
-    ]
-
+    config = Path(path).parent / recipe["training_config"]
+    evaluation = recipe["evaluation"]
+    tasks = evaluation["base_tasks"]
+    japanese = evaluation.get("llm_jp_eval_tasks", [])
     compiled = ["--compile"] if recipe.get("compile") else []
+    benchmarks, tokenizer = workdir / "benchmarks", workdir / "tokenizer"
 
-    def train_command(name, settings=config):
-        command = [
-            "python",
-            "-m",
-            "pretrain",
-            "train",
-            "--config",
-            settings,
-            "--data",
-            str(corpora[name]),
-            "--output",
-            str(runs[name]),
-            "--device",
-            "cuda",
-            "--precision",
-            "bfloat16",
-            *compiled,
-        ]
-        return command
+    def stage(name, reads=(), leaves=()):
+        return planned(name, "recipe", ["--config", path, "--workdir", workdir, "--stage", name], reads, leaves)
 
-    def benchmark_output(checkpoint):
+    selected = [item for item in recipe["corpora"] if "select" in item]
+    preparation = [
+        planned("fetch-benchmarks", "fetch-benchmarks", ["--output", benchmarks], leaves=[benchmarks]),
+        stage("tokenizer", [benchmarks], [tokenizer]),
+        stage("corpus", [tokenizer, benchmarks], [corpora[item["name"]] for item in streamed(recipe)]),
+        *([stage("select", sorted({corpora[item["select"]["pool"]] for item in selected}),
+                 [corpora[item["name"]] for item in selected])] if selected else []),
+        stage("validate", list(corpora.values())),
+    ]
+    experiment = []
+
+    def train(output, settings, data, begin=None, start=0, end=None, snapshots=False):
+        """Train from `begin`, a checkpoint to continue or to initialize from, or from nothing, to the step `end`, or
+        to the settings' last step when None."""
+        arguments = ["--config", settings, "--data", data, "--output", output, "--device", "cuda",
+                     "--precision", "bfloat16", *compiled]
+        if begin is not None:
+            arguments += [begin[0], begin[1]]
+        if end is not None:
+            arguments += ["--max-steps", end]
+        experiment.append(planned(
+            output.name, "train", arguments, [data, *([begin[1]] if begin else [])],
+            [output / "last.pt", output / "metrics.jsonl", *([output / "snapshots"] if snapshots else [])],
+            {"settings": str(settings), "from_step": start, "to_step": end}))
+
+    def benchmark(checkpoint, selected, japanese, tuned=False):
         checkpoint = Path(checkpoint)
         suffix = "" if checkpoint.stem == "last" else f"-{checkpoint.stem}"
-        return checkpoint.parent / f"benchmarks{suffix}.json"
-
-    def benchmark_command(checkpoint, selected, japanese, tuned=False):
-        return [
-            "python",
-            "-m",
-            "pretrain",
-            "benchmark",
-            "--checkpoint",
-            str(checkpoint),
-            "--device",
-            "cuda",
-            "--output",
-            str(benchmark_output(checkpoint)),
-            *(["--also-as-conversation"] if tuned else []),
-            *(["--llm-jp-eval", *japanese] if japanese else []),
-            "--tasks",
-            *selected,
-        ]
+        output = checkpoint.parent / f"benchmarks{suffix}.json"
+        arguments = ["--checkpoint", checkpoint, "--device", "cuda", "--output", output,
+                     *(["--batch-tokens", evaluation["batch_tokens"]] if "batch_tokens" in evaluation else []),
+                     *(["--also-as-conversation"] if tuned else []),
+                     *(["--llm-jp-eval", *japanese] if japanese else []), "--tasks", *selected]
+        experiment.append(planned(f"benchmark-{checkpoint.parent.name}{suffix}", "benchmark", arguments,
+                                  [checkpoint], [output]))
 
     phases = [item for item in recipe["corpora"] if item["purpose"] == "phase"]
     tokens_per_step = training.batch_size * training.accumulation_steps * model.context
     start = continued_step(recipe)
     patches = [item for item in recipe["corpora"] if item["purpose"] == "patch"]
-    patch_run = None
-    if patches:
-        patch_path = Path(path).parent / recipe["patch_config"]
-        commands.append(
-            train_command(patches[0]["name"], str(patch_path))
-        )
-        patch_run = runs[patches[0]["name"]]
+    final = None
     if phases:
-        previous = None
+        if patches:
+            train(runs[patches[0]["name"]], Path(path).parent / recipe["patch_config"], corpora[patches[0]["name"]])
+            begin = ("--initialize-from", runs[patches[0]["name"]] / "last.pt")
+        elif "continue_from" in recipe:
+            begin = ("--continue-from", recipe["continue_from"]["checkpoint"])
+        elif "initialize_from" in recipe:
+            begin = ("--initialize-from", recipe["initialize_from"])
+        else:
+            begin = None
+        step = start
         for item, end in zip(phases, phase_ends(phases, tokens_per_step, start)):
-            command = train_command(item["name"])
-            if previous is not None:
-                command += ["--continue-from", str(previous / "last.pt")]
-            elif patch_run is not None:
-                command += ["--initialize-from", str(patch_run / "last.pt")]
-            elif "continue_from" in recipe:
-                command += ["--continue-from", recipe["continue_from"]["checkpoint"]]
-            elif "initialize_from" in recipe:
-                command += ["--initialize-from", recipe["initialize_from"]]
-            if end != training.steps:
-                command += ["--max-steps", str(end)]
-            commands.append(command)
-            previous = runs[item["name"]]
-        commands.append(benchmark_command(previous / "last.pt", tasks, japanese))
+            last = end == training.steps
+            train(runs[item["name"]], config, corpora[item["name"]], begin, step, None if last else end,
+                  snapshots=bool(training.snapshot_every) and last)
+            begin, step = ("--continue-from", runs[item["name"]] / "last.pt"), end
+        final = runs[phases[-1]["name"]]
+        benchmark(final / "last.pt", tasks, japanese)
         if training.snapshot_every:
             # The weights kept through the decay, averaged, are scored beside the last.
-            averaged = previous / "averaged.pt"
-            commands += [
-                [
-                    "python",
-                    "-m",
-                    "pretrain",
-                    "average",
-                    "--run",
-                    str(previous),
-                    "--count",
-                    str(training.decay_steps // training.snapshot_every),
-                    "--output",
-                    str(averaged),
-                ],
-                benchmark_command(averaged, tasks, japanese),
-            ]
+            averaged = final / "averaged.pt"
+            experiment.append(planned(
+                f"average-{final.name}", "average",
+                ["--run", final, "--count", training.decay_steps // training.snapshot_every, "--output", averaged],
+                [final / "last.pt", final / "snapshots"], [averaged]))
+            benchmark(averaged, tasks, japanese)
     else:
-        evaluations = [
-            corpora[item["name"]]
-            for item in recipe["corpora"]
-            if item["purpose"] == "evaluation"
-        ]
+        evaluations = [corpora[item["name"]] for item in recipe["corpora"] if item["purpose"] == "evaluation"]
         for item in recipe["corpora"]:
             if item["purpose"] != "alternative":
                 continue
-            command = train_command(item["name"])
-            if "initialize_from" in recipe:
-                command += ["--initialize-from", recipe["initialize_from"]]
-            commands.append(command)
-            checkpoint = runs[item["name"]] / "last.pt"
+            output = runs[item["name"]]
+            begin = ("--initialize-from", recipe["initialize_from"]) if "initialize_from" in recipe else None
+            train(output, config, corpora[item["name"]], begin)
             for data in evaluations:
-                commands.append(
-                    [
-                        "python",
-                        "-m",
-                        "pretrain",
-                        "evaluate",
-                        "--checkpoint",
-                        str(checkpoint),
-                        "--data",
-                        str(data),
-                        "--other-data",
-                    ]
-                )
-            commands.append(benchmark_command(checkpoint, tasks, japanese))
+                experiment.append(planned(
+                    f"evaluate-{output.name}-{data.name}", "evaluate",
+                    ["--checkpoint", output / "last.pt", "--data", data, "--other-data"], [output / "last.pt", data]))
+            benchmark(output / "last.pt", tasks, japanese)
     if phases and "sft" in recipe:
-        pretrained = previous / "last.pt"
         stem = Path(path).stem
-        instruction_output = Path("runs") / (
-            stem.replace("pretrain-", "instructions-", 1)
-            if stem.startswith("pretrain-")
-            else "instructions-" + stem
+        tuned = Path("runs") / (
+            stem.replace("pretrain-", "instructions-", 1) if stem.startswith("pretrain-") else "instructions-" + stem
         )
-        commands += [
-            [
-                "python",
-                "-m",
-                "pretrain",
-                "fetch-instructions",
-                "--output",
-                str(workdir / "instruction-source"),
-            ],
-            [
-                "python",
-                "-m",
-                "pretrain",
-                "prepare-instructions",
-                "--source",
-                str(workdir / "instruction-source"),
-                "--tokenizer",
-                str(workdir / "tokenizer/tokenizer.json"),
-                "--output",
-                str(workdir / "instructions"),
-                "--context",
-                str(model.context),
-                "--validation-conversations",
-                str(recipe["sft"]["validation_conversations_per_language"]),
-                "--max-reply-tokens",
-                str(recipe["sft"]["max_reply_tokens"]),
-                "--benchmarks",
-                str(workdir / "benchmarks"),
-            ],
-            [
-                "python",
-                "-m",
-                "pretrain",
-                "recipe",
-                "--config",
-                str(path),
-                "--workdir",
-                str(workdir),
-                "--stage",
-                "sft-config",
-            ],
-            [
-                "python",
-                "-m",
-                "pretrain",
-                "train",
-                "--config",
-                str(workdir / "sft.toml"),
-                "--data",
-                str(workdir / "instructions"),
-                "--output",
-                str(instruction_output),
-                "--initialize-from",
-                str(pretrained),
-                "--device",
-                "cuda",
-                "--precision",
-                "bfloat16",
-                *compiled,
-            ],
-            benchmark_command(
-                instruction_output / "last.pt",
-                [*tasks, *recipe["evaluation"]["instruction_tasks"]],
-                [*japanese, *recipe["evaluation"].get("llm_jp_eval_instruction_tasks", [])],
-                tuned=True,
-            ),
+        source, instructions, settings = workdir / "instruction-source", workdir / "instructions", workdir / "sft.toml"
+        preparation += [
+            planned("fetch-instructions", "fetch-instructions", ["--output", source], leaves=[source]),
+            planned("prepare-instructions", "prepare-instructions", [
+                "--source", source, "--tokenizer", tokenizer / "tokenizer.json", "--output", instructions,
+                "--context", model.context,
+                "--validation-conversations", recipe["sft"]["validation_conversations_per_language"],
+                "--max-reply-tokens", recipe["sft"]["max_reply_tokens"], "--benchmarks", benchmarks,
+            ], [source, tokenizer, benchmarks], [instructions]),
+            stage("sft-config", [instructions, tokenizer], [settings]),
         ]
+        train(tuned, settings, instructions, ("--initialize-from", final / "last.pt"))
+        # The tuning's settings come from the preparation, as its data does.
+        experiment[-1]["reads"].append(str(settings))
+        benchmark(tuned / "last.pt", [*tasks, *evaluation["instruction_tasks"]],
+                  [*japanese, *evaluation.get("llm_jp_eval_instruction_tasks", [])], tuned=True)
+        final = tuned
+    if evaluation.get("ruler") and final is not None:
+        # RULER at 8,192 and 16,384 tokens for the last model, for reference.
+        experiment.append(planned(f"ruler-{final.name}", "ruler",
+                                  ["--checkpoint", final / "last.pt", "--device", "cuda",
+                                   "--output", final / "ruler.json"], [final / "last.pt"], [final / "ruler.json"]))
     sources = sources_by_id(recipe)
     return {
         "data_fingerprint": data_fingerprint(path),
@@ -813,7 +714,8 @@ def inspect_recipe(path, workdir):
         "checkpoint_bytes_approximate": parameters * 12,
         "evaluation": recipe["evaluation"],
         "sft": recipe.get("sft"),
-        "commands": commands,
+        "preparation": preparation,
+        "experiment": experiment,
     }
 
 

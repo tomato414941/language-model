@@ -1,14 +1,16 @@
-"""A recipe as a run for the rental tool, which carries it to its end on rented GPUs.
+"""A recipe's experiment as a run for the rental tool, which carries it to its end on rented GPUs.
 
 A rental settings file, such as configs/pretrain-v7-rental.toml, names the
-recipe and says where it runs: the machine to rent, the rates its trainings
-were measured at there, and the run's policy. write_run turns the recipe's plan
-into the run's steps, from GPU tests through the trainings, the average and the
-benchmarks to RULER, each with the files it reads and leaves, and writes
-spec.json with code.tar.gz beside it: the committed tree, the built data's small
-files and the evaluations' questions, the same bytes for the same commit and data.
-The packed data stays in the store at the paths the plan reads it from, and is
-checked against the recipe before a run is written.
+recipe and says where its experiment runs: the machine to rent, the rate each
+training went at there, and the run's policy. write_run takes the experiment's
+commands from the recipe's plan as the run's steps, each with the files it reads
+and leaves, and writes spec.json with code.tar.gz beside it: the committed tree,
+the small files of the data the preparation built, and the evaluations'
+questions, the same bytes for the same commit and data. The data's packed files
+stay in the store at the paths the plan reads them from, and are checked against
+the recipe before a run is written. Each machine sets up the environment that
+the lock file pins, and passes the tests that only a CUDA GPU runs, before any
+step: a machine whose GPU computes the model wrongly fails its setup.
 """
 
 import gzip
@@ -22,14 +24,20 @@ from pathlib import Path
 from .recipe import data_fingerprint, inspect_recipe, read_config
 
 PYTHON = ".venv/bin/python"
-GPU_TESTS = [PYTHON, "-m", "unittest", "-v", "-k", "文書ごとの注意", "-k", "on_cuda", "tests.test_pretrain"]
-# The benchmarks read the tasks' questions from the code's cache, and llm-jp-eval keeps its checkout beside it.
-EVALUATION = {"HF_HOME": "huggingface", "HF_DATASETS_OFFLINE": "1", "LLM_JP_EVAL_HOME": "llm-jp-eval-home"}
-QUESTIONS = Path("data/evaluation-v5/huggingface")
-
-
-def option(command, flag):
-    return command[command.index(flag) + 1] if flag in command else None
+# Document attention's fast path against the dense mask, and a short training.
+GPU_TESTS = (
+    "tests.test_pretrain.PretrainingTests.test_GPUでは文書ごとの注意をマスクと同じ結果で速い計算に任せる",
+    "tests.test_pretrain.PretrainingTests.test_trains_and_evaluates_on_cuda",
+)
+SETUP = [["bash", "scripts/setup_environment.sh"], [PYTHON, "-m", "unittest", *GPU_TESTS]]
+# The benchmarks read the tasks' questions from the code's own cache, and llm-jp-eval keeps its checkout beside it;
+# RULER fetches its essays and questions itself.
+ENVIRONMENTS = {
+    "benchmark": {"HF_HOME": "huggingface", "HF_DATASETS_OFFLINE": "1", "LLM_JP_EVAL_HOME": "llm-jp-eval-home"},
+    "ruler": {"HF_HOME": "huggingface"},
+}
+# The questions every recipe's evaluations read, as Hugging Face keeps them.
+QUESTIONS = Path("data/evaluation-questions")
 
 
 def data_files(directory, path):
@@ -62,68 +70,68 @@ def check_built(config, built, names):
             raise ValueError(f"{name} belongs to another recipe or tokenizer")
 
 
-def run_steps(plan, rates, built, workdir):
-    """The plan's trainings, average and benchmarks as steps, with the GPU tests first and RULER last."""
-    def local(path):
-        # The plan reads its data and the tuning's settings under the workdir; they were built elsewhere.
-        return built / Path(path).relative_to(workdir) if Path(path).is_relative_to(workdir) else Path(path)
+class Experiment:
+    """The experiment's commands as the run's steps, and what they read of the data built under workdir, here in built:
+    the packed files, which the store holds, and the small files, which travel in the code."""
 
-    steps, files, ends, tuned = [{"name": "gpu-tests", "command": GPU_TESTS}], [], {}, None
-    for command in plan["commands"]:
-        kind, rest = command[3], command[4:]
-        if kind == "train":
-            settings, data, output = option(command, "--config"), option(command, "--data"), option(command, "--output")
-            model, training = read_config(local(settings))
-            begun = option(command, "--continue-from")
-            start = ends[str(Path(begun).parent)] if begun else 0
-            ends[output] = target = int(option(command, "--max-steps") or training.steps)
-            outputs = [f"{output}/last.pt", f"{output}/metrics.jsonl"]
-            if training.snapshot_every and target == training.steps:
-                # The decay's snapshots, which the average reads.
-                outputs.append(f"{output}/snapshots")
-            read = data_files(local(data), data)
-            files += read
-            steps.append({
-                "name": Path(output).name, "command": [PYTHON, "-m", "pretrain", "train", *rest, "--threads", "4"],
-                "inputs": [item["path"] for item in read] + [path for path in (
-                    option(command, "--initialize-from"), begun) if path],
-                "outputs": outputs, "rate": rates[settings],
-                "units": (target - start) * training.batch_size * training.accumulation_steps * model.context
-                * training.patch_size,
-            })
-            tuned = output
-        elif kind == "average":
-            run, output = option(command, "--run"), option(command, "--output")
-            steps.append({"name": "average", "command": [PYTHON, "-m", "pretrain", "average", *rest],
-                          "inputs": [f"{run}/last.pt", f"{run}/snapshots"], "outputs": [output]})
-        elif kind == "benchmark":
-            checkpoint = Path(option(command, "--checkpoint"))
-            label = checkpoint.parent.name + ("" if checkpoint.stem == "last" else f"-{checkpoint.stem}")
-            steps.append({
-                "name": f"benchmark-{label}",
-                "command": [PYTHON, "-m", "pretrain", "benchmark", *rest, "--batch-tokens", "16384", "--threads", "4"],
-                "environment": EVALUATION, "inputs": [str(checkpoint)], "outputs": [option(command, "--output")],
-            })
-    # RULER at 8k and 16k for the tuned model, for reference; it fetches its own essays and questions.
-    steps.append({"name": "ruler", "command": [PYTHON, "-m", "pretrain", "ruler", "--checkpoint", f"{tuned}/last.pt",
-                                               "--device", "cuda", "--output", f"{tuned}/ruler.json"],
-                  "environment": {"HF_HOME": "huggingface"}, "inputs": [f"{tuned}/last.pt"],
-                  "outputs": [f"{tuned}/ruler.json"]})
-    return steps, files
+    def __init__(self, plan, rates, built, workdir):
+        self.built, self.workdir = built, workdir
+        self.steps, self.files, self.small, made = [], {}, {}, set()
+        trainings = {command["name"] for command in plan["experiment"] if "training" in command}
+        if set(rates) != trainings:
+            raise ValueError(f"the settings give rates for {sorted(rates)}, and the trainings are {sorted(trainings)}")
+        for command in plan["experiment"]:
+            inputs = []
+            for path in command["reads"]:
+                if any(path == other or path.startswith(f"{other}/") for other in made):
+                    inputs.append(path)
+                else:
+                    inputs += self.read_built(command["name"], path)
+            step = {"name": command["name"], "command": [PYTHON, *command["argv"][1:]], "inputs": inputs,
+                    "outputs": command["leaves"]}
+            if command["kind"] in ENVIRONMENTS:
+                step["environment"] = ENVIRONMENTS[command["kind"]]
+            if "training" in command:
+                step["rate"], step["units"] = rates[command["name"]], self.tokens(command["training"])
+            self.steps.append(step)
+            made.update(command["leaves"])
+
+    def local(self, path):
+        """Where built data the plan reads at path is here."""
+        if not Path(path).is_relative_to(self.workdir):
+            raise ValueError(f"{path} is neither built data nor what an earlier step leaves")
+        return self.built / Path(path).relative_to(self.workdir)
+
+    def read_built(self, name, path):
+        """The store's files a step reads at path: packed data's files, or none for a small file, which the code has."""
+        local = self.local(path)
+        if local.is_file():
+            self.small[path] = local
+            return []
+        files = data_files(local, path)
+        self.files.update((item["path"], item) for item in files)
+        for small in ("manifest.json", "tokenizer.json"):
+            if (local / small).exists():
+                self.small[f"{path}/{small}"] = local / small
+        return [item["path"] for item in files]
+
+    def tokens(self, training):
+        """The tokens a training goes through, in which it reports its progress."""
+        settings = Path(training["settings"])
+        model, config = read_config(self.local(settings) if settings.is_relative_to(self.workdir) else settings)
+        steps = (training["to_step"] or config.steps) - training["from_step"]
+        return steps * config.batch_size * config.accumulation_steps * model.context * config.patch_size
 
 
-def write_code(path, built, workdir, names, questions=QUESTIONS):
+def write_code(path, small, questions=QUESTIONS):
     """The committed tree, the built data's small files and the questions, as a tarball of the same bytes each time."""
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
                             check=True).stdout.strip()
     when = int(subprocess.run(["git", "show", "-s", "--format=%ct", "HEAD"], capture_output=True, text=True,
                               check=True).stdout)
     tree = subprocess.run(["git", "archive", "--format=tar", "HEAD"], capture_output=True, check=True).stdout
-    extra = [(f"{workdir}/{name}/{small}", built / name / small) for name in names
-             for small in ("manifest.json", "tokenizer.json") if (built / name / small).exists()]
-    extra.append((f"{workdir}/sft.toml", built / "sft.toml"))
-    extra += [(f"huggingface/{item.relative_to(questions)}", item)
-              for item in sorted(questions.rglob("*")) if item.is_file()]
+    extra = sorted([*small.items(), *((f"huggingface/{item.relative_to(questions)}", item)
+                                      for item in questions.rglob("*") if item.is_file())])
 
     def entry(name, size):
         info = tarfile.TarInfo(name)
@@ -137,34 +145,33 @@ def write_code(path, built, workdir, names, questions=QUESTIONS):
                 bundle.addfile(member, source.extractfile(member) if member.isfile() else None)
         marker = f"{commit}\n".encode()
         bundle.addfile(entry("SOURCE_COMMIT", len(marker)), io.BytesIO(marker))
-        for name, local in sorted(extra):
+        for name, local in extra:
             with open(local, "rb") as source:
                 bundle.addfile(entry(name, local.stat().st_size), source)
     return commit
 
 
 def write_run(settings_path, built, directory, bucket, questions=QUESTIONS):
-    """Write spec.json and code.tar.gz for the recipe the settings name, from its data built in built."""
+    """Write spec.json and code.tar.gz for the experiment of the recipe the settings name, on the data built in built."""
     settings_path, built, directory = Path(settings_path), Path(built), Path(directory)
     settings = tomllib.loads(settings_path.read_text())
     config = settings_path.parent / settings["recipe"]
     workdir = Path("data") / config.stem
-    plan = inspect_recipe(config, workdir)
-    steps, files = run_steps(plan, settings["rates"], built, workdir)
-    names = sorted({Path(item["path"]).parent.name for item in files})
-    check_built(config, built, names)
+    experiment = Experiment(inspect_recipe(config, workdir), settings["rates"], built, workdir)
+    check_built(config, built, sorted({Path(item["path"]).parent.name for item in experiment.files.values()}))
     directory.mkdir(parents=True, exist_ok=True)
-    commit = write_code(directory / "code.tar.gz", built, workdir, names, questions)
+    commit = write_code(directory / "code.tar.gz", experiment.small, questions)
+    files = list(experiment.files.values())
     spec = {
         "name": f"language-model-{directory.name}",
         "provider": settings["machine"],
         "store": {"kind": "r2", "bucket": bucket, "prefix": f"stages/{config.stem}/{directory.name}"},
         "code": {"path": "code.tar.gz"},
-        "setup": [["bash", "scripts/setup_environment.sh"]],
+        "setup": SETUP,
         "files": files,
-        "steps": steps,
+        "steps": experiment.steps,
         "policy": settings.get("policy", {}),
     }
     (directory / "spec.json").write_text(json.dumps(spec, indent=1, ensure_ascii=False) + "\n")
-    return {"spec": str(directory / "spec.json"), "commit": commit, "steps": [step["name"] for step in steps],
+    return {"spec": str(directory / "spec.json"), "commit": commit, "steps": [step["name"] for step in experiment.steps],
             "files": len(files), "gigabytes": round(sum(item["bytes"] for item in files) / 1e9, 1)}

@@ -53,6 +53,10 @@ instruction_tasks = ["ifeval", "mmlu"]
 # commercial use.
 llm_jp_eval_tasks = ["kuci", "jmmlu"]
 llm_jp_eval_instruction_tasks = ["mif_eval_ja"]
+# Tokens a benchmark batch holds on the GPU, as every GPU evaluation so far.
+batch_tokens = 16_384
+# RULER at 8,192 and 16,384 tokens for the last model, for reference.
+ruler = true
 
 # Instruction tuning as v6's, until v7's is planned, at the rate of the v6
 # tuning that was chosen: of its two rates, 0.0006 gave the higher sum of the

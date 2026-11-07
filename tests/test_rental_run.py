@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from pretrain.recipe import data_fingerprint
-from pretrain.rental_run import write_run
+from pretrain.rental_run import GPU_TESTS, write_run
 
 SETTINGS = Path("configs/pretrain-v7-rental.toml")
 CORPORA = ("corpus-patch", "corpus-stable", "corpus-late", "corpus-decay")
@@ -46,22 +46,37 @@ class RentalRunTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(value))
 
-    def run_spec(self, name="run"):
-        write_run(SETTINGS, self.built, self.root / name, "bucket", self.questions)
+    def run_spec(self, name="run", settings=SETTINGS):
+        write_run(settings, self.built, self.root / name, "bucket", self.questions)
         return json.loads((self.root / name / "spec.json").read_text())
 
-    def test_turns_the_plan_into_steps_each_reading_only_files_or_what_earlier_steps_left(self):
+    def test_turns_the_experiment_into_steps_each_reading_only_files_or_what_earlier_steps_left(self):
         spec = self.run_spec()
         self.assertEqual([step["name"] for step in spec["steps"]], [
-            "gpu-tests", "pretrain-v7-patch", "pretrain-v7-stable", "pretrain-v7-late", "pretrain-v7-decay",
-            "benchmark-pretrain-v7-decay", "average", "benchmark-pretrain-v7-decay-averaged", "instructions-v7",
-            "benchmark-instructions-v7", "ruler"])
+            "pretrain-v7-patch", "pretrain-v7-stable", "pretrain-v7-late", "pretrain-v7-decay",
+            "benchmark-pretrain-v7-decay", "average-pretrain-v7-decay", "benchmark-pretrain-v7-decay-averaged",
+            "instructions-v7", "benchmark-instructions-v7", "ruler-instructions-v7"])
         available = {item["path"] for item in spec["files"]}
         for step in spec["steps"]:
             for path in step.get("inputs", []):
                 self.assertTrue(path in available or any(path.startswith(f"{made}/") or path == made
                                                          for made in available), (step["name"], path))
             available.update(step.get("outputs", []))
+
+    def test_has_each_machine_pass_the_tests_only_a_cuda_gpu_runs_before_any_step(self):
+        spec = self.run_spec()
+        self.assertEqual(spec["setup"][-1][-len(GPU_TESTS):], list(GPU_TESTS))
+        loader = unittest.TestLoader()
+        self.assertEqual(loader.loadTestsFromNames(GPU_TESTS).countTestCases(), len(GPU_TESTS))
+        self.assertEqual(loader.errors, [])
+
+    def test_refuses_settings_whose_rates_do_not_name_the_trainings(self):
+        recipe = (SETTINGS.parent / "pretrain-v7.toml").resolve()
+        changed = self.root / "rental.toml"
+        changed.write_text(SETTINGS.read_text().replace('recipe = "pretrain-v7.toml"', f'recipe = "{recipe}"')
+                           .replace("pretrain-v7-late = 39_500\n", ""))
+        with self.assertRaisesRegex(ValueError, "the trainings are"):
+            self.run_spec(settings=changed)
 
     def test_reads_every_corpus_the_trainings_name_the_late_one_with_them(self):
         spec = self.run_spec()
@@ -76,11 +91,12 @@ class RentalRunTests(unittest.TestCase):
         steps = {step["name"]: step for step in self.run_spec()["steps"]}
         self.assertIn("runs/pretrain-v7-decay/snapshots", steps["pretrain-v7-decay"]["outputs"])
         self.assertNotIn("runs/pretrain-v7-late/snapshots", steps["pretrain-v7-late"]["outputs"])
-        self.assertIn("runs/pretrain-v7-decay/snapshots", steps["average"]["inputs"])
+        self.assertIn("runs/pretrain-v7-decay/snapshots", steps["average-pretrain-v7-decay"]["inputs"])
 
     def test_gives_the_benchmarks_their_questions_and_the_trainings_their_expected_rates(self):
         steps = {step["name"]: step for step in self.run_spec()["steps"]}
         self.assertEqual(steps["benchmark-instructions-v7"]["environment"]["HF_DATASETS_OFFLINE"], "1")
+        self.assertIn("--batch-tokens", steps["benchmark-instructions-v7"]["command"])
         self.assertEqual((steps["pretrain-v7-patch"]["rate"], steps["pretrain-v7-stable"]["rate"],
                           steps["instructions-v7"]["rate"]), (162_500, 39_500, 32_400))
         # The token phases share one schedule: each counts the updates it adds to the last.

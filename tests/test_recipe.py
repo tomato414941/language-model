@@ -64,6 +64,11 @@ from pretrain.training import load_checkpoint, read_config, train
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def commands(plan, kind):
+    """The argument lists of the plan's experiment commands of one kind."""
+    return [command["argv"] for command in plan["experiment"] if command["kind"] == kind]
+
+
 def nested(name, value):
     for part in reversed(name.split(".")[1:]):
         value = {part: value}
@@ -204,7 +209,7 @@ class RecipeTests(unittest.TestCase):
             15_000_000_000,
         )
         self.assertEqual(
-            plan["commands"][-1][-13:],
+            plan["experiment"][-1]["argv"][-13:],
             [
                 "--llm-jp-eval",
                 "kuci",
@@ -237,34 +242,68 @@ class RecipeTests(unittest.TestCase):
     def test_日本語の課題をllm_jp_evalで評価する手順を事前学習と指示学習の評価に加える(self):
         """llm-jp-evalのデータセットを、事前学習の評価に渡し、指示学習の評価には指示の課題も加えて渡す。"""
         plan = inspect_recipe(ROOT / "configs/pretrain-v5.toml", "data/pretrain-v5")
-        benchmarks = [command for command in plan["commands"] if command[3] == "benchmark"]
+        benchmarks = commands(plan, "benchmark")
         asked = [command[command.index("--llm-jp-eval") + 1 : command.index("--tasks")] for command in benchmarks]
         self.assertEqual(asked[0], ["kuci", "jmmlu"])
         self.assertEqual(asked[-1], ["kuci", "jmmlu", "mif_eval_ja"])
 
     def test_指示学習の評価だけを会話形式でも問う手順にする(self):
         plan = inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6")
-        benchmarks = [command for command in plan["commands"] if command[3] == "benchmark"]
+        benchmarks = commands(plan, "benchmark")
         self.assertEqual(["--also-as-conversation" in command for command in benchmarks], [False, False, True])
 
     def test_減衰の間に残した重みの平均も最後の重みと別に評価する手順にする(self):
         plan = inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6")
-        commands = plan["commands"]
-        benchmarks = [command for command in commands if command[3] == "benchmark"]
+        experiment = [command["argv"] for command in plan["experiment"]]
+        benchmarks = commands(plan, "benchmark")
         last, averaged = (command[command.index("--output") + 1] for command in benchmarks[:2])
         self.assertEqual(last, "runs/pretrain-v6-decay/benchmarks.json")
         self.assertEqual(averaged, "runs/pretrain-v6-decay/benchmarks-averaged.json")
-        [average] = [command for command in commands if command[3] == "average"]
+        [average] = commands(plan, "average")
         self.assertEqual(average[average.index("--run") + 1], "runs/pretrain-v6-decay")
         self.assertEqual(average[average.index("--count") + 1], "10")
         self.assertEqual(benchmarks[1][benchmarks[1].index("--checkpoint") + 1], average[average.index("--output") + 1])
-        self.assertLess(commands.index(average), commands.index(benchmarks[1]))
-        tuning = [command for command in commands if command[3] == "train" and "sft.toml" in command[command.index("--config") + 1]]
+        self.assertLess(experiment.index(average), experiment.index(benchmarks[1]))
+        tuning = [command for command in commands(plan, "train") if "sft.toml" in command[command.index("--config") + 1]]
         self.assertEqual(tuning[0][tuning[0].index("--initialize-from") + 1], "runs/pretrain-v6-decay/last.pt")
+
+    def test_実験の各手順は前の手順か準備が残したものだけを読む(self):
+        """実験の手順が読むものは、準備が残したデータか、それより前の手順が残したものに限る。"""
+        plan = inspect_recipe(ROOT / "configs/pretrain-v7.toml", "data/pretrain-v7")
+        left = {path for command in plan["preparation"] for path in command["leaves"]}
+        for command in plan["experiment"]:
+            for path in command["reads"]:
+                self.assertTrue(any(path == made or path.startswith(f"{made}/") for made in left),
+                                (command["name"], path))
+            left.update(command["leaves"])
+        self.assertEqual(len({command["name"] for command in plan["experiment"]}), len(plan["experiment"]))
+
+    def test_学習の手順は設定と始めと終わりの段を示す(self):
+        """続けて学ぶ段階は前の段階の終わりの段から始め、最後の段階は設定の最後の段まで学ぶ。"""
+        plan = inspect_recipe(ROOT / "configs/pretrain-v7.toml", "data/pretrain-v7")
+        trainings = {command["name"]: command["training"] for command in plan["experiment"] if "training" in command}
+        stable, late, decay = (trainings[f"pretrain-v7-{name}"] for name in ("stable", "late", "decay"))
+        self.assertEqual((stable["from_step"], late["from_step"], decay["from_step"]),
+                         (0, stable["to_step"], late["to_step"]))
+        self.assertIsNone(decay["to_step"])
+        self.assertEqual(trainings["instructions-v7"]["settings"], "data/pretrain-v7/sft.toml")
+
+    def test_長い文脈の評価を求める計画は最後のモデルのRULERを最後に測る(self):
+        plan = inspect_recipe(ROOT / "configs/pretrain-v7.toml", "data/pretrain-v7")
+        last = plan["experiment"][-1]
+        self.assertEqual((last["kind"], last["reads"]), ("ruler", ["runs/instructions-v7/last.pt"]))
+        self.assertFalse(commands(inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6"), "ruler"))
+
+    def test_評価のまとまりの大きさを決めた計画はベンチマークにそれを渡す(self):
+        plan = inspect_recipe(ROOT / "configs/pretrain-v7.toml", "data/pretrain-v7")
+        for command in commands(plan, "benchmark"):
+            self.assertEqual(command[command.index("--batch-tokens") + 1], "16384")
+        plan = inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6")
+        self.assertFalse(any("--batch-tokens" in command for command in commands(plan, "benchmark")))
 
     def test_重みを残さない計画は平均を作らない(self):
         plan = inspect_recipe(ROOT / "configs/pretrain-v5.toml", "data/pretrain-v5")
-        self.assertFalse([command for command in plan["commands"] if command[3] == "average"])
+        self.assertFalse(commands(plan, "average"))
 
     def test_縮小した学習計画を既定として学習量と保存先を表示する(self):
         output = io.StringIO()
@@ -280,7 +319,7 @@ class RecipeTests(unittest.TestCase):
             7_500_000_000,
         )
         self.assertEqual(plan["model"]["context"], 4096)
-        training = [command for command in plan["commands"] if command[3] == "train"]
+        training = commands(plan, "train")
         self.assertEqual(
             training[0][training[0].index("--config") + 1],
             "configs/bilingual-500m.toml",
@@ -304,7 +343,7 @@ class RecipeTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             main(["recipe", "--config", str(ROOT / "configs/pretrain-1b.toml")])
         plan = json.loads(output.getvalue())
-        training = [command for command in plan["commands"] if command[3] == "train"]
+        training = commands(plan, "train")
         self.assertEqual(
             training[0][training[0].index("--data") + 1], "data/pretrain-1b/corpus"
         )
@@ -318,16 +357,16 @@ class RecipeTests(unittest.TestCase):
 
     def test_コンパイルする計画は指示学習を含むすべての学習をコンパイルする(self):
         plan = inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6")
-        training = [command for command in plan["commands"] if command[3] == "train"]
+        training = commands(plan, "train")
         self.assertEqual(["--compile" in command for command in training], [True, True, True, True])
 
     def test_コンパイルを指定しない計画はコンパイルしない(self):
         plan = inspect_recipe(ROOT / "configs/pretrain-v5.toml", "data/pretrain-v5")
-        self.assertFalse(any("--compile" in command for command in plan["commands"]))
+        self.assertFalse(any("--compile" in command["argv"] for command in [*plan["preparation"], *plan["experiment"]]))
 
     def test_パッチで読む段階の重みから次の段階を始める(self):
         plan = inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6")
-        patches, stable, decay = [command for command in plan["commands"] if command[3] == "train"][:3]
+        patches, stable, decay = commands(plan, "train")[:3]
         self.assertTrue(patches[patches.index("--config") + 1].endswith("model-v6-patch.toml"))
         self.assertEqual(patches[patches.index("--data") + 1], "data/pretrain-v6/corpus-patch")
         self.assertEqual(
@@ -1159,21 +1198,17 @@ mix = {{ ja-hq = 25, ja-wiki = 25, en-web = 25, en-wiki = 25 }}
             self.assertNotIn(
                 "duplicates", manifests["decay"]["sources"][source]["statistics"]
             )
-        commands = [
-            command
-            for command in inspect_recipe(recipe, self.root / "phased")["commands"]
-            if command[3] == "train"
-        ]
+        trainings = commands(inspect_recipe(recipe, self.root / "phased"), "train")
         self.assertEqual(
-            commands[0][commands[0].index("--initialize-from") + 1],
+            trainings[0][trainings[0].index("--initialize-from") + 1],
             "runs/base/model.pt",
         )
-        self.assertEqual(commands[0][commands[0].index("--max-steps") + 1], "4")
+        self.assertEqual(trainings[0][trainings[0].index("--max-steps") + 1], "4")
         self.assertEqual(
-            commands[1][commands[1].index("--continue-from") + 1],
+            trainings[1][trainings[1].index("--continue-from") + 1],
             "runs/phased-stable/last.pt",
         )
-        self.assertNotIn("--max-steps", commands[1])
+        self.assertNotIn("--max-steps", trainings[1])
 
     def test_保存したチェックポイントから段階を続け終了位置をその続きから数える(self):
         recipe = self.phase_recipe(
@@ -1182,17 +1217,15 @@ mix = {{ ja-hq = 25, ja-wiki = 25, en-web = 25, en-wiki = 25 }}
         config = self.root / "phases.toml"
         config.write_text(config.read_text().replace("\nsteps=6\n", "\nsteps=16\n"))
         inspected = inspect_recipe(recipe, self.root / "phased")
-        commands = [
-            command for command in inspected["commands"] if command[3] == "train"
-        ]
+        trainings = commands(inspected, "train")
         self.assertEqual(
-            commands[0][commands[0].index("--continue-from") + 1],
+            trainings[0][trainings[0].index("--continue-from") + 1],
             "runs/earlier-stable/last.pt",
         )
-        self.assertNotIn("--initialize-from", commands[0])
-        self.assertEqual(commands[0][commands[0].index("--max-steps") + 1], "14")
+        self.assertNotIn("--initialize-from", trainings[0])
+        self.assertEqual(trainings[0][trainings[0].index("--max-steps") + 1], "14")
         self.assertEqual(
-            commands[1][commands[1].index("--continue-from") + 1],
+            trainings[1][trainings[1].index("--continue-from") + 1],
             "runs/phased-stable/last.pt",
         )
         self.assertEqual(inspected["scheduled_training_tokens"], 6 * 256)

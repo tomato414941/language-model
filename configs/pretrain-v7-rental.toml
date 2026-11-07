@@ -16,13 +16,15 @@ max_price = 0.64
 # sends about 220 GB out and 35 GB in, so a gigabyte may cost two cents at most.
 query = { cuda_max_good = { gte = 13.0 }, reliability2 = { gte = 0.98 }, inet_down = { gte = 500 }, inet_up = { gte = 100 }, cpu_ram = { gte = 32000 }, cpu_cores_effective = { gte = 4 }, geolocation = { notin = ["CN"] }, inet_up_cost = { lte = 0.02 }, inet_down_cost = { lte = 0.02 } }
 
-# Tokens a second each training's settings went at in the smoke run, on an RTX
-# 5090 at 600 W, compiled in FP8 with the experts in bfloat16; instruction
-# tuning runs in bfloat16, which went 22% slower than FP8 on synthetic text.
+# Tokens a second each training went at in the smoke run, on an RTX 5090 at
+# 600 W, compiled in FP8 with the experts in bfloat16; instruction tuning runs
+# in bfloat16, which went 22% slower than FP8 on synthetic text.
 [rates]
-"configs/model-v7-patch.toml" = 162_500
-"configs/model-v7.toml" = 39_500
-"data/pretrain-v7/sft.toml" = 32_400
+pretrain-v7-patch = 162_500
+pretrain-v7-stable = 39_500
+pretrain-v7-late = 39_500
+pretrain-v7-decay = 39_500
+instructions-v7 = 32_400
 
 [policy]
 # Dollars for machine time, those that failed the provider's checks included;
