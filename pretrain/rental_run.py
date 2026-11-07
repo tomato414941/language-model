@@ -156,7 +156,7 @@ def write_run(settings_path, built, directory, bucket, questions=QUESTIONS):
     directory.mkdir(parents=True, exist_ok=True)
     commit = write_code(directory / "code.tar.gz", built, workdir, names, questions)
     spec = {
-        "name": f"language-model-{config.stem}-{directory.name}",
+        "name": f"language-model-{directory.name}",
         "provider": settings["machine"],
         "store": {"kind": "r2", "bucket": bucket, "prefix": f"stages/{config.stem}/{directory.name}"},
         "code": {"path": "code.tar.gz"},
