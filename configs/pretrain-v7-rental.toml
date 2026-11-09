@@ -29,7 +29,7 @@ instructions-v7 = 32_400
 [policy]
 # Dollars for machine time, those that failed the provider's checks included;
 # the provider bills traffic beside it.
-budget = 33.0
+budget = 36.0
 # Each training compiles and validates for 10 to 20 minutes before its first
 # step on the smoke run's 16-core CPU, and longer on a slower one; its rate is
 # judged only an hour after it started.
