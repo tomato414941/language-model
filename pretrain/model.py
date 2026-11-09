@@ -349,27 +349,42 @@ def kernel_delta_rule(query, key, value, decay, beta, state=None, keep_state=Fal
     )
 
 
-def groupable(tensor, *sides):
-    """Whether grouped products take rows of these sides: in bfloat16, starting 16 bytes apart."""
-    return tensor.dtype == torch.bfloat16 and all(side * tensor.element_size() % 16 == 0 for side in sides)
+def loaded(inputs, rows, gates, scores, precision):
+    """The rows the experts' products read, as expert_products loads them:
+    each sorted row's input row, made the expert's hidden units scaled by the
+    row's score when scores are given."""
+    if rows is not None:
+        inputs, gates = inputs[rows], None if gates is None else gates[rows]
+    if scores is None:
+        return inputs.to(precision)
+    units = expert_units(inputs.float(), None if gates is None else gates.float())
+    return (units * scores[:, None].float()).to(precision)
 
 
-def grouped(inputs, matrices, ends):
-    """Each expert's rows of inputs times its matrix: the rows come sorted by
-    expert, and ends holds where each expert's rows end."""
-    if groupable(inputs, *matrices.shape[-2:]):
-        return F.grouped_mm(inputs, matrices, offs=ends)
-    # Otherwise, as in single precision or with the small sides of test
-    # models, one expert at a time.
+def grouped(inputs, matrices, ends, rows=None, gates=None, scores=None):
+    """Each sorted row times its expert's matrix: the rows come sorted by
+    expert, and ends holds where each expert's rows end. rows, gates and
+    scores load the rows as expert_products does."""
+    if inputs.is_cuda:
+        from .expert_products import expert_products
+
+        return expert_products(inputs, matrices, ends, rows, gates, scores)
+    inputs = loaded(inputs, rows, gates, scores, matrices.dtype)
     bounds = [0, *ends.tolist()]
     return torch.cat([inputs[start:end] @ matrix for start, end, matrix in zip(bounds, bounds[1:], matrices)])
 
 
-def grouped_outer(inputs, gradients, ends):
-    """Each expert's rows of inputs, transposed, times its rows of gradients:
-    the gradient of each expert's matrix."""
-    if groupable(inputs, inputs.shape[-1], gradients.shape[-1]):
-        return F.grouped_mm(inputs.t(), gradients, offs=ends)
+def grouped_outer(inputs, gradients, ends, input_rows=None, gradient_rows=None, gates=None, scores=None):
+    """For each expert, its sorted rows of inputs, transposed, times its rows
+    of gradients: the gradient of its matrix, in single precision. The inputs'
+    rows load as in grouped, and gradient_rows picks each sorted row's
+    gradient row."""
+    if inputs.is_cuda:
+        from .expert_products import expert_outer_products
+
+        return expert_outer_products(inputs, gradients, ends, input_rows, gradient_rows, gates, scores)
+    inputs = loaded(inputs, input_rows, gates, scores, gradients.dtype).float()
+    gradients = (gradients if gradient_rows is None else gradients[gradient_rows]).float()
     bounds = [0, *ends.tolist()]
     return torch.stack([inputs[start:end].t() @ gradients[start:end] for start, end in zip(bounds, bounds[1:])])
 
@@ -394,24 +409,22 @@ class ExpertProducts(torch.autograd.Function):
 
     The experts multiply the tokens' copies sorted by expert: sources holds
     each row's token, ranks each copy's row, and ends where each expert's rows
-    end. The backward pass keeps only the tokens and the first products, as
-    SonicMoE does (Guo et al., arXiv:2512.14080): it gathers the copies again,
-    and it never needs the experts' outputs, since the scores weight the
-    hidden units rather than the outputs. So what a layer keeps does not grow
-    with the experts each token goes to.
+    end. The products gather each copy as they read it, and the backward pass
+    keeps only the tokens and the first products, as SonicMoE does (Guo et
+    al., arXiv:2512.14080): it never needs the experts' outputs, since the
+    scores weight the hidden units rather than the outputs. So what a layer
+    keeps does not grow with the experts each token goes to.
     """
 
     @staticmethod
     def forward(ctx, tokens, gate, up, down, scores, sources, ranks, ends):
         precision = tokens.dtype
         # Everything stays in the tokens' precision: autocast would square in
-        # float32 on a GPU, and grouped products take no mixed types.
+        # float32 on a GPU, and the products take no mixed types.
         with torch.autocast(tokens.device.type, enabled=False):
-            copies = tokens[sources]
-            raised = grouped(copies, up.to(precision), ends)
-            gated = None if gate is None else grouped(copies, gate.to(precision), ends)
-            units = expert_units(raised, gated) * scores[:, None].to(precision)
-            outputs = grouped(units, down.to(precision), ends)
+            raised = grouped(tokens, up.to(precision), ends, rows=sources)
+            gated = None if gate is None else grouped(tokens, gate.to(precision), ends, rows=sources)
+            outputs = grouped(raised, down.to(precision), ends, gates=gated, scores=scores)
             mixed = outputs[ranks].view(tokens.shape[0], -1, tokens.shape[1]).sum(1, dtype=torch.float32)
         ctx.save_for_backward(tokens, gate, up, down, scores, sources, ranks, ends, raised, gated)
         return mixed
@@ -421,28 +434,22 @@ class ExpertProducts(torch.autograd.Function):
         tokens, gate, up, down, scores, sources, ranks, ends, raised, gated = ctx.saved_tensors
         precision = tokens.dtype
         with torch.autocast(tokens.device.type, enabled=False):
-            weights = scores[:, None].to(precision)
-            # Each row's output went to its token, so each row takes its
-            # token's gradient, gathered together with the token's copy:
-            # PyTorch's compiler never recomputes for this pass what a product
-            # here reads, so copies gathered from the tokens alone would be
-            # gathered in the forward pass and kept.
-            width = tokens.shape[1]
-            gathered = torch.cat([tokens, gradient.to(precision)], 1)[sources]
-            copies, received = gathered[:, :width], gathered[:, width:]
-            units = expert_units(raised, gated)
+            # Each row's output went to its token, so each row takes its token's gradient.
+            gradient = gradient.to(precision)
             # The matrices' half-precision copies are made by other operations
             # than the forward pass's, which a compiler would otherwise merge
             # with these and keep.
-            unit_gradient = grouped(received, down.transpose(-2, -1).to(precision), ends)
-            score_gradient = (unit_gradient.float() * units.float()).sum(-1)
-            down_gradient = grouped_outer(units * weights, received, ends)
-            raised_gradient, gated_gradient = expert_unit_gradients(raised, gated, unit_gradient * weights)
-            up_gradient = grouped_outer(copies, raised_gradient, ends)
+            unit_gradient = grouped(gradient, down.transpose(-2, -1).to(precision), ends, rows=sources)
+            score_gradient = (unit_gradient.float() * expert_units(raised, gated).float()).sum(-1)
+            down_gradient = grouped_outer(raised, gradient, ends, gradient_rows=sources, gates=gated, scores=scores)
+            raised_gradient, gated_gradient = expert_unit_gradients(
+                raised, gated, unit_gradient * scores[:, None].to(precision)
+            )
+            up_gradient = grouped_outer(tokens, raised_gradient, ends, input_rows=sources)
             copy_gradient = grouped(raised_gradient, up.transpose(-2, -1).to(precision), ends)
             gate_gradient = None
             if gate is not None:
-                gate_gradient = grouped_outer(copies, gated_gradient, ends).to(gate.dtype)
+                gate_gradient = grouped_outer(tokens, gated_gradient, ends, input_rows=sources).to(gate.dtype)
                 copy_gradient = copy_gradient + grouped(gated_gradient, gate.transpose(-2, -1).to(precision), ends)
             token_gradient = copy_gradient[ranks].view(tokens.shape[0], -1, tokens.shape[1]).sum(
                 1, dtype=torch.float32

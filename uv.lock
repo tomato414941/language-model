@@ -1268,6 +1268,7 @@ train-cpu = [
     { name = "torch", version = "2.14.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'extra-14-language-model-train-cpu') or (extra == 'extra-14-language-model-train' and extra == 'extra-14-language-model-train-cpu')" },
     { name = "torch", version = "2.14.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-14-language-model-train-cpu') or (extra == 'extra-14-language-model-train' and extra == 'extra-14-language-model-train-cpu')" },
     { name = "torchao" },
+    { name = "triton", marker = "sys_platform == 'linux'" },
 ]
 
 [package.dev-dependencies]
@@ -1299,6 +1300,7 @@ requires-dist = [
     { name = "torchao", marker = "extra == 'train'", specifier = "==0.18.0" },
     { name = "torchao", marker = "extra == 'train-cpu'", specifier = "==0.18.0" },
     { name = "transformers", marker = "extra == 'serve-huggingface'", specifier = ">=5.20,<6" },
+    { name = "triton", marker = "sys_platform == 'linux' and extra == 'train-cpu'", specifier = ">=3.8,<4" },
     { name = "uvicorn", specifier = ">=0.54.0" },
     { name = "zstandard", marker = "extra == 'corpus'", specifier = ">=0.23,<1" },
 ]
