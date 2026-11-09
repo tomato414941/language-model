@@ -192,7 +192,7 @@ class PretrainingTests(unittest.TestCase):
         """借りた機械の実行に、進み具合と、最後の前に保存したチェックポイントを渡す。"""
         keep = self.root / "keep"
         keep.mkdir()
-        environment = {"RENTAL_PROGRESS": str(self.root / "progress.json"), "RENTAL_KEEP": str(keep)}
+        environment = {"JOB_RUNNER_PROGRESS": str(self.root / "progress.json"), "JOB_RUNNER_KEEP": str(keep)}
         with patch.dict("os.environ", environment), contextlib.chdir(self.root):
             with contextlib.redirect_stdout(io.StringIO()):
                 train(self.data, Path("kept"), self.model_config, self.config(steps=12), torch.device("cpu"))
@@ -207,7 +207,7 @@ class PretrainingTests(unittest.TestCase):
         keep = self.root / "keep"
         keep.mkdir()
         stops = iter([False, False, True])
-        with patch.dict("os.environ", {"RENTAL_KEEP": str(keep)}), contextlib.chdir(self.root):
+        with patch.dict("os.environ", {"JOB_RUNNER_KEEP": str(keep)}), contextlib.chdir(self.root):
             with contextlib.redirect_stdout(io.StringIO()):
                 stopped = train(self.data, Path("stopped"), self.model_config, self.config(), torch.device("cpu"),
                                 stop_requested=lambda: next(stops, True))

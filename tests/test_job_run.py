@@ -7,14 +7,14 @@ import unittest
 from pathlib import Path
 
 from pretrain.recipe import data_fingerprint
-from pretrain.rental_run import GPU_TESTS, write_run
+from pretrain.job_run import GPU_TESTS, write_run
 
-SETTINGS = Path("configs/pretrain-v7-rental.toml")
+SETTINGS = Path("configs/pretrain-v7-job.toml")
 CORPORA = ("corpus-patch", "corpus-stable", "corpus-late", "corpus-decay")
 
 
 class RentalRunTests(unittest.TestCase):
-    """v7 written as a run for the rental tool, from data built elsewhere, as the preparation leaves it."""
+    """v7 written as a run for job-runner, from data built elsewhere, as the preparation leaves it."""
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -72,7 +72,7 @@ class RentalRunTests(unittest.TestCase):
 
     def test_refuses_settings_whose_rates_do_not_name_the_trainings(self):
         recipe = (SETTINGS.parent / "pretrain-v7.toml").resolve()
-        changed = self.root / "rental.toml"
+        changed = self.root / "job.toml"
         changed.write_text(SETTINGS.read_text().replace('recipe = "pretrain-v7.toml"', f'recipe = "{recipe}"')
                            .replace("pretrain-v7-late = 39_500\n", ""))
         with self.assertRaisesRegex(ValueError, "the trainings are"):

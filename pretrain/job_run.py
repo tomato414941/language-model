@@ -1,6 +1,6 @@
-"""A recipe's experiment as a run for the rental tool, which carries it to its end on rented GPUs.
+"""A recipe's experiment as a run for job-runner, which carries it to its end on rented GPUs.
 
-A rental settings file, such as configs/pretrain-v7-rental.toml, names the
+A run's settings file, such as configs/pretrain-v7-job.toml, names the
 recipe and says where its experiment runs: the machine to rent, the rate each
 training went at there, and the run's policy. write_run takes the experiment's
 commands from the recipe's plan as the run's steps, each with the files it reads

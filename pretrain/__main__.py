@@ -27,15 +27,15 @@ def main(argv=None):
         description="日本語・英語の言語モデルをゼロから学習する"
     )
     commands = parser.add_subparsers(dest="command", required=True)
-    rental = commands.add_parser(
-        "rental-run", help="レシピを、借りたGPUで最後まで運ぶ rental の実行として書く（spec.json と code.tar.gz）"
+    job_run = commands.add_parser(
+        "job-run", help="レシピを、借りたGPUで最後まで運ぶ job-runner の実行として書く（spec.json と code.tar.gz）"
     )
-    rental.add_argument(
-        "--settings", type=Path, required=True, help="レシピと借りる機械を書いた設定（configs/*-rental.toml）"
+    job_run.add_argument(
+        "--settings", type=Path, required=True, help="レシピと借りる機械を書いた設定（configs/*-job.toml）"
     )
-    rental.add_argument("--built", type=Path, required=True, help="準備した学習データの目録がある場所")
-    rental.add_argument("--directory", type=Path, required=True, help="実行を書くディレクトリ（名前が実行の名前になる）")
-    rental.add_argument("--bucket", required=True, help="データと結果を置く R2 のバケット")
+    job_run.add_argument("--built", type=Path, required=True, help="準備した学習データの目録がある場所")
+    job_run.add_argument("--directory", type=Path, required=True, help="実行を書くディレクトリ（名前が実行の名前になる）")
+    job_run.add_argument("--bucket", required=True, help="データと結果を置く R2 のバケット")
     recipe = commands.add_parser(
         "recipe",
         help="日英の学習計画を確認し、語彙・コーパス・指示学習の設定を準備する",
@@ -420,8 +420,8 @@ def main(argv=None):
         )
     args = parser.parse_args(argv)
     try:
-        if args.command == "rental-run":
-            from .rental_run import write_run
+        if args.command == "job-run":
+            from .job_run import write_run
 
             print(json.dumps(write_run(args.settings, args.built, args.directory, args.bucket), ensure_ascii=False))
         elif args.command == "recipe":
