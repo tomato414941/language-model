@@ -1381,6 +1381,30 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(unmatched["languages"]["en"]["not_compared"], ["hellaswag"])
         self.assertFalse(unmatched["passed"])
 
+    def test_合格の線は比べる相手が問うていない課題を参考として並べる(self):
+        """Lists a task the base never asked with its score apart from the means, and judges the line without it."""
+
+        def evaluation(english, japanese):
+            asked = {
+                "by_language": {
+                    "en": {name: {"accuracy": score} for name, score in english.items()},
+                    "ja": {"ja_leaderboard_jsquad": {"accuracy": japanese}},
+                },
+                "n-samples": {name: {"effective": 10000} for name in [*english, "ja_leaderboard_jsquad"]},
+                "group_subtasks": {},
+            }
+            return {**asked, "results": {}, "as_conversation": asked}
+
+        result = pass_line(evaluation({"hellaswag": 0.3}, 0.3), evaluation({"hellaswag": 0.4, "boolq": 0.6}, 0.4))
+        english = result["languages"]["en"]
+        self.assertEqual(english["reference"], {"boolq": 0.6})
+        self.assertEqual(set(english["tasks"]), {"hellaswag"})
+        self.assertTrue(result["passed"])
+        # A task the newer evaluation lacks leaves the comparison incomplete.
+        missing = pass_line(evaluation({"hellaswag": 0.3, "boolq": 0.6}, 0.3), evaluation({"hellaswag": 0.4}, 0.4))
+        self.assertEqual(missing["languages"]["en"]["not_compared"], ["boolq"])
+        self.assertFalse(missing["passed"])
+
     def test_合格の線はRULERの結果を渡すと英語の平均に1課題として入れる(self):
         """Adds RULER to the English mean as one task asked in the conversation format, from the records given."""
 

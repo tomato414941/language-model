@@ -7,7 +7,7 @@
 - A way of measuring that is confirmed to be wrong is dropped, even if results then can no longer be compared with the past.
 - When the way of measuring changes, earlier generations' models are not measured again (decided on 2026-11-05). A task without a score for the model to compare with is reference only for that generation, and enters the pass line from the next generation.
 - Evaluate every question.
-- The tools are lm-evaluation-harness and llm-jp-eval v2.1.5. The tasks are in `evaluation` in `configs/pretrain-v6.toml`. Each task is checked against its provider's definition in `research/experiments/test-forms.md`. RULER is also measured with lm-evaluation-harness's version (see "Long context (RULER)" below).
+- The tools are lm-evaluation-harness and llm-jp-eval v2.1.5. The tasks are in the `evaluation` table of each generation's recipe in `configs/`. Each task is checked against its provider's definition in `research/experiments/test-forms.md`. RULER is also measured with lm-evaluation-harness's version (see "Long context (RULER)" below).
 - Remove evaluation questions from the training data.
 
 ## How models are asked
@@ -31,7 +31,7 @@ Added on 2026-11-05, so that long-context ability earns some score too.
   - The lengths will not necessarily stay the same. v7 is measured at these two, and v8 is measured at the same two for comparison. They change only when a later generation's pass line is decided. They are also reviewed when a model's context exceeds 16,384.
 - **Score:** the 13 tasks are averaged at each length, and the lengths are then averaged. The record keeps each question's score for every task.
 - **Models asked:** models after instruction tuning, in the conversation format. Each task's answer prefix (such as "The special magic number is") is placed at the start of the reply, as the harness defines, and the model continues it.
-- **Pass line:** measured from v7, but reference only in v7, because there is no v5 score to compare with and v5 is not measured again. From v8 it enters the pass line as one task in the English mean, compared with v7. The judgment passes `--ruler-base` and `--ruler-other` to `python -m pretrain pass-line`. The 0.451 that v5's 32k model scored under the authors' procedure is measured differently and is not used as a base.
+- **Pass line:** measured from v7, but reference only in v7, because neither v5 nor v6 has a score to compare with, and they are not measured again. From v8 it enters the pass line as one task in the English mean, compared with v7. The judgment passes `--ruler-base` and `--ruler-other` to `python -m pretrain pass-line`. The 0.451 that v5's 32k model scored under the authors' procedure is measured differently and is not used as a base.
 - **Training data:** RULER's QA tasks use SQuAD and HotpotQA questions. From v7, these questions are also removed from the training data.
 
 ## Cautions when reading results
@@ -44,19 +44,19 @@ Added on 2026-11-05, so that long-context ability earns some score too.
 
 ## Pass line
 
-Decided for v6 before seeing the results. The cost line was set to evaluate v6's improvement, and is not a requirement for moving to a new generation.
+Decided for v7 before seeing its results.
 
-- **Cost:** from data preparation through instruction tuning and evaluation, less than v5's $30.97. Trials are not counted, and only the one chosen instruction-tuning run is counted.
-- **Scores:** the model after instruction tuning is compared with v5 at the same stage, asked the same way (the conversation format above). The means of the Japanese tasks and of the English tasks must both rise by more than the readable difference (about .013 for Japanese and about .009 for English, from v5's scores). The judgment is computed by `python -m pretrain pass-line`. The base is v5's 8k version, with the same context as v6; after the main run it was measured again with the same command as v6 after instruction tuning, including MMLU in its authors' form and M-IFEval-Ja's official scoring. The 8k version's plain-text means are .242 for Japanese and .354 for English (`results.md`), and the readable differences were computed from these scores.
-- **Tasks in the means:** every task measured in its provider's form for both v5 and v6. Japanese: JCommonsenseQA, xWinograd, JNLI, JSQuAD, MGSM, KUCI, JMMLU and M-IFEval-Ja (strict). English: the 12 tasks in `results.md` and MMLU in its authors' form. RULER joins the English tasks from v8's line (see "Long context (RULER)" above).
+- **Bases:** v5 and v6 after instruction tuning, asked the same way (the conversation format above); v5 is its 8k version, with v7's context of 8,192 tokens. v7 must pass against each.
+  - v6 did not pass against v5: its English mean fell, and five tasks fell too far. Against v6 alone, v7 could pass while below v5 in English.
+  - Against v5 alone, the Japanese line would be lenient. The instruction data v6 and v7 share teaches KUCI's and JMMLU's answer form: v6's Japanese mean rose .043 over v5's, but fell .027 without these two.
+  - v6 is the better of two instruction-tuning runs, chosen on the same questions, so the comparison with v6 is slightly strict.
+- **Scores:** the means of the Japanese tasks and of the English tasks must both rise by more than the readable difference, two standard errors of the difference between the means. `python -m pretrain pass-line` judges against one base at a time.
+- **Tasks in the means:** every task both models were asked in its provider's form. Japanese: JCommonsenseQA, xWinograd, JNLI, JSQuAD, MGSM, KUCI, JMMLU and M-IFEval-Ja (strict). English: the 12 tasks in `results.md` and MMLU in its authors' form. OpenBookQA, WinoGrande and BoolQ are reference only, because neither base was asked them after instruction tuning; `pass-line` lists them apart from the means. RULER is also reference only (see "Long context (RULER)" above).
 - **Falling tasks:** no task may fall by more than three standard errors of the difference between the two models. At two, some task would cross it about four times in ten even if nothing had changed (`research/experiments/readable-differences.md`).
-
-## Choosing between the two instruction-tuning runs
-
-Of the two runs with learning rates 0.00016 and 0.0006, the one with the higher sum of the pass line's two means becomes v6. Because the choice is made on the same questions before comparing with v5, the comparison is slightly lenient.
+- **Cost:** recorded in `results.md`, not judged. v7's budget was given to raise the scores, not to cost less.
 
 ## Comparison with outside models
 
 Models after pretraining are measured without examples on the same seven tasks as HobbyLM's table (arXiv 2610.34582) and listed beside it. The tasks are HellaSwag, OpenBookQA, WinoGrande, ARC-Challenge, ARC-Easy, BoolQ and PIQA, with the table's metrics: acc for WinoGrande and BoolQ, and acc_norm for the others. The comparison is in `research/topics/outside-comparison.md`.
 
-OpenBookQA, WinoGrande and BoolQ are not part of v6's pass line or the choice between the two runs, because the line was decided before seeing the results. Whether to include them is decided when the next generation's line is set. Questions from these three tasks were not removed from v5's and v6's training data; whether to remove them is decided when the next generation's data is built. Review by: 2026-11-15.
+From v7, OpenBookQA, WinoGrande and BoolQ are also asked after instruction tuning; they are reference only in v7's pass line. Their questions are not removed from the training data up to v7; whether to remove them is decided when v8's data is built.

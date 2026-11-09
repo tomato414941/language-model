@@ -165,11 +165,13 @@ def score_error(score, questions):
 def pass_line(base, other, ruler=None):
     """Whether other passes docs/evaluation.md's pass line on scores against base.
 
-    Only tasks both evaluations read in the same form count. The rest are listed,
-    and leave the line unmet: the comparison is then incomplete. ruler, when
-    given, holds the RULER records (pretrain.ruler) that stand for base and
-    other, which may come from other models of their generations: RULER enters
-    the English mean as one task, asked in the conversation format.
+    Only tasks both evaluations read in the same form count. A task base never
+    asked has no score to compare with, so other's score is listed as reference
+    only. The rest are listed, and leave the line unmet: the comparison is then
+    incomplete. ruler, when given, holds the RULER records (pretrain.ruler) that
+    stand for base and other, which may come from other models of their
+    generations: RULER enters the English mean as one task, asked in the
+    conversation format.
     """
     first, second = generation_scores(base), generation_scores(other)
     if ruler is not None:
@@ -189,9 +191,12 @@ def pass_line(base, other, ruler=None):
             tasks[name] = {"base": old, "other": new, "difference": new - old, "fall_limit": TASK_ERRORS * math.sqrt(spread)}
             if new - old < -tasks[name]["fall_limit"]:
                 dropped.append(name)
-        not_compared = sorted((set(first[language]) | set(second[language])) - set(names))
+        reference = {name: second[language][name][0] for name in sorted(set(second[language]) - set(first[language]))}
+        not_compared = sorted((set(first[language]) | set(second[language])) - set(names) - set(reference))
         if not names:
-            languages[language] = {"rose": False, "dropped": [], "not_compared": not_compared, "tasks": {}}
+            languages[language] = {
+                "rose": False, "dropped": [], "not_compared": not_compared, "reference": reference, "tasks": {},
+            }
             continue
         mean = lambda kept, side: statistics.fmean(tasks[name][side] for name in kept)
         difference = mean(names, "other") - mean(names, "base")
@@ -205,6 +210,7 @@ def pass_line(base, other, ruler=None):
             "rose": difference > MEAN_ERRORS * math.sqrt(variance) / len(names),
             "dropped": dropped,
             "not_compared": not_compared,
+            "reference": reference,
             "tasks": tasks,
         }
     return {
