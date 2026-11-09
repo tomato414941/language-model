@@ -28,12 +28,16 @@ OUTER_BLOCKS = {"cuda": (128, 128, 64, 8, 3), "cpu": (16, 16, 16, 1, 1)}
 @triton.jit
 def _hidden_units(raised, gated, scores, UNITS: tl.constexpr):
     """The experts' hidden units of the loaded rows, scaled by their scores, in single precision."""
+    # Each form in its own branch: Triton compiles only the branch a constant picks, but
+    # compiles what follows a return in it, where the squared ReLU has no gate.
     raised = raised.to(tl.float32)
     if UNITS == 1:
         raised = tl.maximum(raised, 0.0)
-        return raised * raised * scores
-    gated = gated.to(tl.float32)
-    return gated * tl.sigmoid(gated) * raised * scores
+        units = raised * raised
+    else:
+        gated = gated.to(tl.float32)
+        units = gated * tl.sigmoid(gated) * raised
+    return units * scores
 
 
 @triton.jit
