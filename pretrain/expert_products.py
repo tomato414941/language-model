@@ -20,9 +20,12 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
-# Rows, columns and inner steps of a block, warps and pipeline stages.
-PRODUCT_BLOCKS = {"cuda": (128, 128, 64, 8, 3), "cpu": (16, 16, 16, 1, 1)}
-OUTER_BLOCKS = {"cuda": (128, 128, 64, 8, 3), "cpu": (16, 16, 16, 1, 1)}
+# Rows, columns and inner steps of a block, warps and pipeline stages. On an RTX
+# 5090 at v7's experts (12 of 1,024 units, 3 chosen, 8,192 tokens), these took the
+# least time over a layer's four products and two outer products of the nine
+# shapes tried, 8% and 3% less than (128, 128, 64, 8, 3).
+PRODUCT_BLOCKS = {"cuda": (64, 128, 64, 4, 3), "cpu": (16, 16, 16, 1, 1)}
+OUTER_BLOCKS = {"cuda": (64, 64, 64, 4, 4), "cpu": (16, 16, 16, 1, 1)}
 
 
 @triton.jit

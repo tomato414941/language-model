@@ -27,10 +27,12 @@ from pretrain import expert_products as kernels
 pointers = {"inputs": "*bf16", "rows": "*i64", "input_rows": "*i64", "gradient_rows": "*i64", "gates": "*bf16",
             "scores": "*fp32", "matrices": "*bf16", "gradients": "*bf16", "ends": "*i32"}
 failures = []
-for kernel, out, constants in (
-    (kernels._products_kernel, "*bf16", {"EXPERTS": 12, "BLOCK_ROWS": 128, "BLOCK_COLUMNS": 128, "BLOCK_INNER": 64}),
-    (kernels._outer_kernel, "*fp32", {"BLOCK_WIDTH": 128, "BLOCK_COLUMNS": 128, "BLOCK_ROWS": 64}),
+for kernel, out, names, blocks in (
+    (kernels._products_kernel, "*bf16", ("BLOCK_ROWS", "BLOCK_COLUMNS", "BLOCK_INNER"), kernels.PRODUCT_BLOCKS["cuda"]),
+    (kernels._outer_kernel, "*fp32", ("BLOCK_WIDTH", "BLOCK_COLUMNS", "BLOCK_ROWS"), kernels.OUTER_BLOCKS["cuda"]),
 ):
+    constants = {**dict(zip(names, blocks)), **({"EXPERTS": 12} if "EXPERTS" in kernel.arg_names else {})}
+    warps, stages = blocks[3:]
     for units in (0, 1, 2):
         for gather in (False, True):
             forms = {"UNITS": units, **({"GATHER": gather} if "GATHER" in kernel.arg_names else
@@ -41,7 +43,7 @@ for kernel, out, constants in (
                          for name in kernel.arg_names}
             try:
                 triton.compile(triton.compiler.ASTSource(fn=kernel, signature=signature, constexprs=given),
-                               target=GPUTarget("cuda", 120, 32), options={"num_warps": 8, "num_stages": 3})
+                               target=GPUTarget("cuda", 120, 32), options={"num_warps": warps, "num_stages": stages})
             except Exception as error:
                 failures.append(f"{kernel.__name__} {forms}: {type(error).__name__}: {str(error)[:300]}")
 print("\\n".join(failures))
