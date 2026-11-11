@@ -1,5 +1,5 @@
-# Where pretrain-v7 runs: one RTX 5090 rented through vast-rental, carried to
-# its end by job-runner. `python -m pretrain job-run` writes the run.
+# Where pretrain-v7 runs: one RTX 5090 from Vast.ai, rented and carried to its
+# end by job-runner. `python -m pretrain job-run` writes the run.
 recipe = "pretrain-v7.toml"
 
 [machine]
