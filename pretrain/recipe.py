@@ -1970,6 +1970,15 @@ def write_sft_config(recipe_path, data, tokenizer_directory, output):
         * min(len(corpus.rows["train"][language][0]) for language in LANGUAGES)
     )
     steps = max(2, math.ceil(sft["epochs"] * balanced_tokens / tokens_per_step))
+    # The recipe may tune with pretraining's optimizer and read every conversation
+    # once per epoch instead of drawing them at random.
+    tuning = {key: sft[key] for key in ("optimizer", "hyperball_rate", "sampling") if key in sft}
+    # A model whose pretraining held its matrices at their norms is tuned the same
+    # way unless the recipe says otherwise: without it, NorMuon moves the matrices
+    # by another rule and AdamW takes the experts', and tuning undid what v7's
+    # pretraining had learned.
+    if "hyperball_rate" not in sft and pretraining.hyperball_rate:
+        tuning["hyperball_rate"] = pretraining.hyperball_rate
     config = TrainConfig(
         steps=steps,
         batch_size=sft["batch_size"],
@@ -1983,10 +1992,7 @@ def write_sft_config(recipe_path, data, tokenizer_directory, output):
         eval_batches=sft.get("eval_batches", 16),
         log_every=max(1, steps // 100),
         seed=recipe["seed"],
-        # The recipe may tune with pretraining's optimizer, Hyperball included,
-        # and read every conversation once per epoch instead of drawing them
-        # at random.
-        **{key: sft[key] for key in ("optimizer", "hyperball_rate", "sampling") if key in sft},
+        **tuning,
     )
     text = ""
     for section, values in (("model", asdict(model)), ("training", asdict(config))):

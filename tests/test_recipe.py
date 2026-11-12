@@ -914,15 +914,13 @@ class RecipeTests(unittest.TestCase):
                 first["model"][name], second["model"][name], rtol=0, atol=0
             )
 
-    def test_指示データの量から同じモデルの追加学習設定を作成する(self):
+    def tune(self, sft):
+        """Build instruction data for the recipe, with sft added to its [sft] table, and write its tuning settings."""
         # The conversation format marks turns with reserved tokens.
         self.recipe_path.write_text(
             self.recipe_path.read_text()
             .replace("vocabulary_size = 258", "vocabulary_size = 266\nreserved_tokens = 8")
-            .replace(
-                "[sft]\n",
-                '[sft]\noptimizer = "normuon"\nhyperball_rate = 10.0\nsampling = "sequential"\neval_batches = 3\n',
-            )
+            .replace("[sft]\n", "[sft]\n" + sft)
         )
         self.prepare()
         source = self.root / "instruction-source"
@@ -956,7 +954,12 @@ class RecipeTests(unittest.TestCase):
             self.root / "tokenizer",
             self.root / "sft.toml",
         )
-        model, config = read_config(self.root / "sft.toml")
+        return (result, *read_config(self.root / "sft.toml"))
+
+    def test_指示データの量から同じモデルの追加学習設定を作成する(self):
+        result, model, config = self.tune(
+            'optimizer = "normuon"\nhyperball_rate = 10.0\nsampling = "sequential"\neval_batches = 3\n'
+        )
         self.assertEqual(model, read_config(self.root / "training.toml")[0])
         self.assertEqual(config.learning_rate, 0.00002)
         self.assertEqual(
@@ -987,6 +990,12 @@ class RecipeTests(unittest.TestCase):
         )
         self.assertGreaterEqual(result["scheduled_tokens"], target)
         self.assertEqual(config.steps, max(2, math.ceil(target / (4 * 8 * 128))))
+
+    def test_事前学習が行列の大きさを保つなら指示学習も同じ率で保つ(self):
+        training = self.root / "training.toml"
+        training.write_text(training.read_text() + 'optimizer="normuon"\nhyperball_rate=7.0\n')
+        _, _, config = self.tune('optimizer = "normuon"\n')
+        self.assertEqual((config.optimizer, config.hyperball_rate), ("normuon", 7.0))
 
     def test_リストの中の項目から本文を読む(self):
         rewritten = {"id": "rewritten", "text_field": "rollout_results.0.text"}
