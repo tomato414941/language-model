@@ -14,7 +14,7 @@ if any(
         "numpy",
         "torch",
         "tokenizers",
-        "ahocorasick",
+        "language_model_evaluation",
         "pyarrow",
         "huggingface_hub",
     )

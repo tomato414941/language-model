@@ -8,7 +8,7 @@ import unittest
 from dataclasses import asdict
 from pathlib import Path
 
-if any(importlib.util.find_spec(name) is None for name in ("numpy", "torch", "tokenizers", "ahocorasick")):
+if any(importlib.util.find_spec(name) is None for name in ("numpy", "torch", "tokenizers", "language_model_evaluation")):
     raise unittest.SkipTest("Install training and corpus dependencies")
 
 import numpy as np

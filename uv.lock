@@ -1234,7 +1234,7 @@ dependencies = [
 [package.optional-dependencies]
 corpus = [
     { name = "huggingface-hub" },
-    { name = "pyahocorasick" },
+    { name = "language-model-evaluation" },
     { name = "pyarrow" },
     { name = "zstandard" },
 ]
@@ -1286,11 +1286,11 @@ requires-dist = [
     { name = "huggingface-hub", marker = "extra == 'hub'", specifier = ">=0.35,<2" },
     { name = "ja-sentence-segmenter", marker = "extra == 'eval'", specifier = "==0.0.2" },
     { name = "janome", marker = "extra == 'eval'", specifier = "==0.5.0" },
+    { name = "language-model-evaluation", marker = "extra == 'corpus'", url = "https://github.com/tomato414941/language-model-evaluation/archive/cc4d3f469bf018933739968685ab3f757d53f53c.zip" },
     { name = "lm-eval", extras = ["hf", "ifeval", "ruler"], marker = "extra == 'eval'", specifier = "==0.4.13" },
     { name = "modal", marker = "extra == 'deploy'", specifier = ">=1.6.1,<2" },
     { name = "numpy", marker = "extra == 'train'", specifier = ">=2.2,<3" },
     { name = "numpy", marker = "extra == 'train-cpu'", specifier = ">=2.2,<3" },
-    { name = "pyahocorasick", marker = "extra == 'corpus'", specifier = ">=2.3,<3" },
     { name = "pyarrow", marker = "extra == 'corpus'", specifier = ">=21,<30" },
     { name = "pydantic", specifier = ">=2.13.5" },
     { name = "tokenizers", marker = "extra == 'train'", specifier = ">=0.22,<1" },
@@ -1311,6 +1311,25 @@ dev = [
     { name = "httpx2", specifier = ">=2.13.1" },
     { name = "openai", specifier = ">=2,<4" },
 ]
+
+[[package]]
+name = "language-model-evaluation"
+version = "0.2.0"
+source = { url = "https://github.com/tomato414941/language-model-evaluation/archive/cc4d3f469bf018933739968685ab3f757d53f53c.zip" }
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "pyahocorasick" },
+]
+sdist = { hash = "sha256:7aa6a37b8bd0811ddd429fd69b014ec181dc07f3e6474c61b0695e003ec18ec7" }
+
+[package.metadata]
+requires-dist = [
+    { name = "huggingface-hub", marker = "extra == 'fetch'" },
+    { name = "numpy" },
+    { name = "pyahocorasick", specifier = ">=2.1" },
+]
+provides-extras = ["fetch"]
 
 [[package]]
 name = "lm-eval"

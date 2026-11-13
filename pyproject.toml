@@ -16,7 +16,9 @@ train-cpu = [
     "numpy>=2.2,<3", "tokenizers>=0.22,<1", "torch>=2.14,<3", "torchao==0.18.0",
     "triton>=3.8,<4; sys_platform == 'linux'",
 ]
-corpus = ["huggingface-hub>=0.35,<2", "pyarrow>=21,<30", "pyahocorasick>=2.3,<3", "zstandard>=0.23,<1"]
+# language-model-evaluation tells the text that holds a benchmark question,
+# by the rule the language-model projects share.
+corpus = ["huggingface-hub>=0.35,<2", "pyarrow>=21,<30", "language-model-evaluation", "zstandard>=0.23,<1"]
 hub = ["huggingface-hub>=0.35,<2"]
 serve-huggingface = ["accelerate>=1,<2", "transformers>=5.20,<6"]
 deploy = ["modal>=1.6.1,<2"]
@@ -33,6 +35,7 @@ conflicts = [[{ extra = "train" }, { extra = "train-cpu" }]]
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu", extra = "train-cpu" }]
+language-model-evaluation = { url = "https://github.com/tomato414941/language-model-evaluation/archive/cc4d3f469bf018933739968685ab3f757d53f53c.zip" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

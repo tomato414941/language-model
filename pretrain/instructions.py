@@ -197,15 +197,6 @@ SOURCES = {
         },
     },
 }
-# Text containing a benchmark question is dropped. A question is found by the
-# middle of its normalized text, about as long as the 13-gram overlap that
-# decontamination commonly checks, or by all of it when it is shorter; a
-# question shorter than the minimum is too short to tell from ordinary text.
-KEY_WIDTH = {"ja": 32, "en": 64}
-KEY_MINIMUM = {"ja": 12, "en": 24}
-QUESTION_WRAPPER = re.compile(r"^(?:Question:|質問：)\s*|\s*(?:Answer:|回答：)$")
-
-
 def normalize_turn(message):
     """Return a turn's normalized fields, or None if it is malformed or empty.
 
@@ -539,45 +530,29 @@ def fetch_instructions(output):
             shutil.rmtree(staging)
 
 
-def contamination_text(text):
-    return re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", text).casefold())
-
-
-def benchmark_keys(path):
-    sources = json.loads((Path(path) / "sources.json").read_text(encoding="utf-8"))
-    keys = {language: set() for language in LANGUAGES}
-    for name, items in load_benchmarks(path).items():
-        language = sources["tasks"][name]["language"]
-        for item in items:
-            text = contamination_text(QUESTION_WRAPPER.sub("", item["context"]))
-            if len(text) >= KEY_MINIMUM[language]:
-                width = min(len(text), KEY_WIDTH[language])
-                middle = (len(text) - width) // 2
-                keys[language].add(text[middle : middle + width])
-    return keys
-
-
 class BenchmarkFilter:
-    """Find the benchmark questions in a text of the given language."""
+    """Find the benchmark questions in a text of the given language.
+
+    Text containing a benchmark question is dropped. How a question is found
+    is language-model-evaluation's rule, which the language-model projects
+    share: by the middle of its letters and digits, as wide as its language's.
+    """
 
     def __init__(self, path):
-        import ahocorasick
+        from language_model_evaluation import overlap
 
-        self.automata = {}
-        for language, keys in benchmark_keys(path).items():
-            automaton = ahocorasick.Automaton()
-            for key in keys:
-                automaton.add_word(key, True)
-            if keys:
-                automaton.make_automaton()
-                self.automata[language] = automaton
+        sources = json.loads((Path(path) / "sources.json").read_text(encoding="utf-8"))
+        questions = {language: [] for language in LANGUAGES}
+        for name, items in load_benchmarks(path).items():
+            questions[sources["tasks"][name]["language"]] += [item["context"] for item in items]
+        self.found = {
+            language: overlap.Overlap(overlap.keys_of(asked, language), b"")
+            for language, asked in questions.items()
+        }
 
     def matches(self, text, language):
-        automaton = self.automata.get(language)
-        return (
-            automaton is not None
-            and next(automaton.iter(contamination_text(text)), None) is not None
-        )
+        found = self.found.get(language)
+        return found is not None and found.holds_question(text)
 
 
 def contaminated(messages, benchmarks, language):
