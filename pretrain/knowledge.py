@@ -4,10 +4,12 @@ evaluation.
 The definition (knowledge-ja-en-1) holds OLMES's English questions and Japanese ones, and Paloma's English text and
 Japanese text. A model is measured by the bits per byte of each question's correct answer and of each text's
 documents, which move with what it knows rather than with how it answers; the definition divides them into categories
-and compares two models by the mean of each language's mean rate of improvement. The definition names its data by
-what they hold, and `measure` reads them from a directory that holds them under those names, as the definition's
-`make` and `make_japanese` leave them.
+and compares two models by the mean of each language's mean rate of improvement. A result keeps each question's and
+each document's measurement too, from which the comparison's standard errors come (pretrain.comparison). The
+definition names its data by what they hold, and `measure` reads them from a directory that holds them under those
+names, as the definition's `make` and `make_japanese` leave them.
 """
+import math
 from pathlib import Path
 
 from .data import BOS, EOS
@@ -37,33 +39,37 @@ def reader(model, tokenizer, device, precision, batch_tokens):
 
 
 def answers(read, encode, bos, selection):
-    """Each task's bits per byte of a selection's correct answers, and the groups that the tasks are averaged in."""
+    """Each task's questions' bits per byte of their correct answers, and the groups that the tasks are averaged in."""
     import olmes_measure
 
     groups, _, questions = olmes_measure.read_selection(selection)
     rows = olmes_measure.encode_rows(encode, bos, olmes_measure.pairs(questions))
-    tasks, _ = olmes_measure.score(selection, read, rows)
-    return tasks, groups
+    return olmes_measure.values(selection, read, rows), groups
 
 
 def text(read, encode, bos, artifact, context):
-    """The bits per byte of each domain of an artifact of text, {SOURCE/DOMAIN: BPB}: each document read by itself
-    after the BOS token, in pieces of the model's context."""
+    """Each document's bits and bytes, by domain ({SOURCE/DOMAIN: [[bits, bytes]]}): each document read by itself
+    after the BOS token, in pieces of the model's context. Documents without text are left out."""
     from language_model_evaluation import paloma
 
-    sizes = {f"{source}/{name}": sum(len(document.encode("utf-8")) for document in paloma.documents(paths))
-             for (source, name), paths in paloma.files(artifact).items()}
     domains = {}
-    for alias, rows in paloma.rows(artifact, encode, bos, context):
-        name = alias.removeprefix(paloma.ALIAS)
-        if rows:
-            domains[name] = paloma.bits_per_byte(sum(read(rows)[0]), sizes[name])
+    for alias, documents in paloma.document_rows(artifact, encode, bos, context):
+        documents = [(size, rows) for size, rows in documents if size]
+        if not documents:
+            continue
+        totals, at, found = read([row for _, rows in documents for row in rows])[0], 0, []
+        for size, rows in documents:
+            found.append([-sum(totals[at:at + len(rows)]) / math.log(2), size])
+            at += len(rows)
+        domains[alias.removeprefix(paloma.ALIAS)] = found
     return domains
 
 
 def measure(model, tokenizer, device, precision, artifacts, batch_tokens=16384, chosen=DEFINITION):
-    """A model's scores by a definition (its name, or one already loaded): each category's bits per byte, and each
-    task's and each domain's that make them, from the definition's artifacts in the directory `artifacts`."""
+    """A model's scores by a definition (its name, or one already loaded): each category's bits per byte, each task's
+    and each domain's that make them, and the measurement item by item from which they come, each question's bits per
+    byte and each document's bits and bytes (`items`, with the selections' `groups`), from the definition's artifacts
+    in the directory `artifacts`."""
     import olmes_measure
     from language_model_evaluation import definition
 
@@ -73,26 +79,20 @@ def measure(model, tokenizer, device, precision, artifacts, batch_tokens=16384, 
         olmes_measure.check(artifacts / name)
     model.eval()
     read, encode, bos = reader(model, tokenizer, device, precision, batch_tokens)
-    tasks, groups, domains = {}, {}, {}
+    items, groups = {}, {}
     for section in ("olmes", "japanese"):
         if section in chosen:
             found, grouped = answers(read, encode, bos, artifacts / chosen[section]["selection"])
-            tasks, groups = {**tasks, **found}, {**groups, **grouped}
+            items.setdefault("questions", {}).update(found)
+            groups |= grouped
     for section in ("paloma", "japanese_text"):
         if section in chosen:
-            domains |= text(read, encode, bos, artifacts / chosen[section]["text"], model.config.context)
-    categories = {**definition.answered(chosen, groups, tasks), **definition.read(chosen, domains)}
+            items.setdefault("documents", {}).update(
+                text(read, encode, bos, artifacts / chosen[section]["text"], model.config.context))
+    questions, documents = items.get("questions", {}), items.get("documents", {})
     return {"definition": chosen["name"], "artifacts": artifacts_of(chosen),
-            "categories": {name: categories[name] for name in definition.categories(chosen)},
-            "tasks": tasks, "domains": domains}
-
-
-def improvement(result, standing):
-    """By how much one model's result improves on another's by their definition's rule: positive when it is the
-    better."""
-    from language_model_evaluation import definition
-
-    if result["definition"] != standing["definition"]:
-        raise ValueError("results of different definitions do not compare")
-    return definition.improvement(definition.load(result["definition"]), result["categories"],
-                                  standing["categories"])
+            "categories": definition.scored(chosen, items, groups),
+            "tasks": {task: sum(values) / len(values) for task, values in questions.items()},
+            "domains": {name: sum(bits for bits, _ in found) / sum(size for _, size in found)
+                        for name, found in documents.items()},
+            "groups": groups, "items": items}

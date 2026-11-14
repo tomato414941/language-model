@@ -5,6 +5,10 @@ the correct answer's bits per byte. The comparison reads each task's accuracy
 as the standard reads it now, so a revised choice needs no new evaluation.
 Pairing the same questions removes their difficulty from the difference, so
 a smaller difference stands out from the noise.
+
+Two results by a definition of language-model-evaluation (pretrain.knowledge,
+pretrain.following) compare by the definition's rule, and a difference is read
+when it is beyond READABLE_ERRORS of its standard errors (`compare_results`).
 """
 
 import math
@@ -19,6 +23,11 @@ from .evaluation import STANDARD_TASKS, result_keys, task_reading
 # by chance alone; at two, one of them would about four times in ten.
 MEAN_ERRORS = 2
 TASK_ERRORS = 3
+# A difference between two results by a definition is read beyond this many of
+# its standard errors, which come from the questions, documents and prompts
+# drawn again: of two models that differ in nothing, about one comparison in
+# twenty shows a difference beyond it.
+READABLE_ERRORS = 2
 # These tasks score a reply only when it is a choice's symbol alone: a model
 # that answers in sentences scores near zero, and one that answers with a symbol
 # reaches a guess's quarter without knowing more. A language's mean is also
@@ -216,4 +225,33 @@ def pass_line(base, other, ruler=None):
     return {
         "passed": all(read["rose"] and not read["dropped"] and not read["not_compared"] for read in languages.values()),
         "languages": languages,
+    }
+
+
+def compare_results(base, other):
+    """How one model's result by a definition of language-model-evaluation compares with another's (`base`): the
+    definition's improvement and each category's rate, positive when `other` is the better, each with its standard
+    error and whether it is readable, beyond READABLE_ERRORS of them (None for a category whose score does not vary
+    with the items measured). `base` may be a result's chance, {"definition", "categories", "items"}."""
+    from language_model_evaluation import definition
+
+    if base["definition"] != other["definition"]:
+        raise ValueError("results of different definitions do not compare")
+    chosen = definition.load(other["definition"])
+    found = definition.compared(chosen, other["items"], base["items"], other.get("groups"))
+    readable = lambda value, error: None if error is None else abs(value) > READABLE_ERRORS * error
+    return {
+        "definition": chosen["name"],
+        "improvement": found["improvement"],
+        "standard_error": found["standard_error"],
+        "readable": readable(found["improvement"], found["standard_error"]),
+        "categories": {
+            category: {
+                "base": base["categories"][category],
+                "other": other["categories"][category],
+                **compared,
+                "readable": readable(compared["rate"], compared["standard_error"]),
+            }
+            for category, compared in found["categories"].items()
+        },
     }

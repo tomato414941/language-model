@@ -393,6 +393,16 @@ def main(argv=None):
     )
     comparison.add_argument("--base", type=Path, required=True, help="比べる元の結果")
     comparison.add_argument("--other", type=Path, required=True, help="比べる先の結果")
+    improvement = commands.add_parser(
+        "improvement",
+        help="共有の評価の定義で測った二つの結果を比べ、改善の度合いと標準誤差、読める差かを区分ごとに示す",
+    )
+    improvement.add_argument("--other", type=Path, required=True, help="比べる先の結果")
+    against = improvement.add_mutually_exclusive_group(required=True)
+    against.add_argument("--base", type=Path, help="比べる元の結果")
+    against.add_argument(
+        "--chance", action="store_true", help="指示の結果を、同じ返答を他の問題に付け替えたときの点と比べる"
+    )
     passing = commands.add_parser(
         "pass-line",
         help="前の世代と比べて、点が合格の線を超えるかを判定する",
@@ -644,6 +654,17 @@ def main(argv=None):
                 json.loads(args.other.read_text(encoding="utf-8")),
             )
             print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "improvement":
+            from .comparison import compare_results
+
+            other = json.loads(args.other.read_text(encoding="utf-8"))
+            if args.chance:
+                if "chance" not in other:
+                    raise ValueError(f"{args.other} holds no chance to compare with")
+                base = {"definition": other["definition"], **other["chance"]}
+            else:
+                base = json.loads(args.base.read_text(encoding="utf-8"))
+            print(json.dumps(compare_results(base, other), ensure_ascii=False, indent=2))
         elif args.command == "pass-line":
             from .comparison import pass_line
 
