@@ -363,6 +363,30 @@ def main(argv=None):
     averaging.add_argument("--run", type=Path, required=True, help="snapshot_everyで学習した出力先")
     averaging.add_argument("--count", type=int, default=10, help="最後から平均する数")
     averaging.add_argument("--output", type=Path, required=True, help="平均したチェックポイント")
+    knowledge = commands.add_parser(
+        "knowledge",
+        help="保存したモデルが知っていることを、共有の評価の定義（正解の bits per byte）で測る",
+    )
+    knowledge.add_argument(
+        "--artifacts", type=Path, required=True, help="定義が名指しする問題と文章の成果物を、その名前で置いた場所"
+    )
+    knowledge.add_argument("--definition", default="knowledge-ja-en-1", help="language-model-evaluation の定義の名前")
+    knowledge.add_argument("--batch-tokens", type=int, default=16384)
+    knowledge.add_argument(
+        "--output", type=Path, required=True, help="区分・課題・文章ごとの点を書く JSON ファイル"
+    )
+    following = commands.add_parser(
+        "instructions",
+        help="保存したモデルが指示に従う力を、共有の評価の定義（作者の採点コード）で測る",
+    )
+    following.add_argument(
+        "--work", type=Path, required=True, help="作者の採点コードとその環境を置く場所"
+    )
+    following.add_argument("--definition", default="instructions-ja-en-1", help="language-model-evaluation の定義の名前")
+    following.add_argument("--batch-tokens", type=int, default=16384)
+    following.add_argument(
+        "--output", type=Path, required=True, help="区分と言語ごとの点、返答と採点を書く JSON ファイル"
+    )
     comparison = commands.add_parser(
         "compare-benchmarks",
         help="二つの標準評価の結果を、同じ問題ごとに言語別に比べる",
@@ -411,7 +435,7 @@ def main(argv=None):
             "--output", type=Path, required=True, help="問題ごとの正誤を含む結果のJSONファイル"
         )
     core_hub.add_argument("--device", choices=("cpu", "cuda", "auto"), default="auto")
-    for command in (evaluation, generation, benchmark, core, ruler):
+    for command in (evaluation, generation, benchmark, core, ruler, knowledge, following):
         command.add_argument(
             "--checkpoint", type=Path, default=Path("runs/bilingual/last.pt")
         )
@@ -804,7 +828,7 @@ def main(argv=None):
                 if args.threads <= 0:
                     raise ValueError("threads must be positive")
                 torch.set_num_threads(args.threads)
-            if args.command in ("benchmark", "ruler") and args.output.exists():
+            if args.command in ("benchmark", "ruler", "knowledge", "instructions") and args.output.exists():
                 # Its record is written whole at the end, so an evaluation run again has nothing left to do.
                 print(json.dumps({"event": "done_already", "output": str(args.output)}), flush=True)
                 return
@@ -964,6 +988,30 @@ def main(argv=None):
                 args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
                 print(json.dumps({"core": result["core"], **{
                     label: round(task["centered"], 4) for label, task in result["tasks"].items()}}, indent=2))
+            elif args.command in ("knowledge", "instructions"):
+                precision = select_precision(device)
+                if args.command == "knowledge":
+                    from .knowledge import measure
+
+                    result = measure(
+                        model, tokenizer, device, precision, args.artifacts, args.batch_tokens, args.definition
+                    )
+                else:
+                    from .following import measure
+
+                    result = measure(
+                        model, tokenizer, device, precision, args.work, args.batch_tokens, args.definition
+                    )
+                result["checkpoint"] = {
+                    "checkpoint": str(args.checkpoint),
+                    "sha256": file_digest(args.checkpoint),
+                    "step": payload["step"],
+                    "tokens_seen": payload["tokens_seen"],
+                    "parameters": sum(p.numel() for p in model.parameters()),
+                    "precision": precision,
+                }
+                write_output(args.output, json.dumps(result, indent=2) + "\n")
+                print(json.dumps(result["categories"], indent=2))
             else:
                 print(
                     model.generate(
