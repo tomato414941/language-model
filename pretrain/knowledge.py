@@ -39,12 +39,12 @@ def reader(model, tokenizer, device, precision, batch_tokens):
 
 
 def answers(read, encode, bos, selection):
-    """Each task's questions' bits per byte of their correct answers, and the groups that the tasks are averaged in."""
+    """Each task's questions' bits per byte of their correct answers, as each task scores them, and the groups that
+    the tasks are averaged in."""
     import olmes_measure
 
-    groups, _, questions = olmes_measure.read_selection(selection)
-    rows = olmes_measure.encode_rows(encode, bos, olmes_measure.pairs(questions))
-    return olmes_measure.values(selection, read, rows), groups
+    groups, _, _ = olmes_measure.read_selection(selection)
+    return olmes_measure.values(selection, read, olmes_measure.selection_rows(selection, encode, bos)), groups
 
 
 def text(read, encode, bos, artifact, context):
