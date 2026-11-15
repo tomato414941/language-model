@@ -383,7 +383,9 @@ def main(argv=None):
         "--work", type=Path, required=True, help="作者の採点コードとその環境を置く場所"
     )
     following.add_argument("--definition", default="instructions-ja-en-1", help="language-model-evaluation の定義の名前")
-    following.add_argument("--batch-tokens", type=int, default=16384)
+    # A reply may run to the definition's 2,048 tokens, so 16,384 tokens wrote seven replies at a time and left an
+    # RTX 5090 about 85% idle; at this many, about 57 at a time, the cache of a 300M model is about 13 GB.
+    following.add_argument("--batch-tokens", type=int, default=131072)
     following.add_argument(
         "--output", type=Path, required=True, help="区分と言語ごとの点、返答と採点を書く JSON ファイル"
     )
