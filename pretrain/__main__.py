@@ -370,7 +370,7 @@ def main(argv=None):
     knowledge.add_argument(
         "--artifacts", type=Path, required=True, help="定義が名指しする問題と文章の成果物を、その名前で置いた場所"
     )
-    knowledge.add_argument("--definition", default="knowledge-ja-en-1", help="language-model-evaluation の定義の名前")
+    knowledge.add_argument("--definition", default="knowledge-ja-en-part-1", help="language-model-evaluation の定義の名前")
     knowledge.add_argument("--batch-tokens", type=int, default=16384)
     knowledge.add_argument(
         "--output", type=Path, required=True, help="区分・課題・文章ごとの点を書く JSON ファイル"

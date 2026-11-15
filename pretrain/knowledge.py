@@ -1,13 +1,15 @@
 """What a model knows, measured by a definition of language-model-evaluation, the language-model projects' shared
 evaluation.
 
-The definition (knowledge-ja-en-1) holds OLMES's English questions and Japanese ones, and Paloma's English text and
-Japanese text. A model is measured by the bits per byte of each question's correct answer and of each text's
-documents, which move with what it knows rather than with how it answers; the definition divides them into categories
-and compares two models by the mean of each language's mean rate of improvement. A result keeps each question's and
-each document's measurement too, from which the comparison's standard errors come (pretrain.comparison). The
-definition names its data by what they hold, and `measure` reads them from a directory that holds them under those
-names, as the definition's `make` and `make_japanese` leave them.
+The definition (knowledge-ja-en-part-1) is a part of knowledge-ja-en-1, which holds OLMES's English questions and
+Japanese ones, and Paloma's English text and Japanese text: at most 3,000 questions of each task and 1 MB of each
+source of text, as much as keeps a comparison nearly as sure as one by the whole. A model is measured by the bits per
+byte of each question's correct answer and of each text's documents, which move with what it knows rather than with
+how it answers; the definition divides them into categories and compares two models by the mean of each language's
+mean rate of improvement. A result keeps each question's and each document's measurement too, from which the
+comparison's standard errors come (pretrain.comparison). The definition names its data by what they hold, and
+`measure` reads them from a directory that holds them under those names, as the definition's `make` and
+`make_japanese` leave them.
 """
 import math
 from pathlib import Path
@@ -15,7 +17,7 @@ from pathlib import Path
 from .data import BOS, EOS
 from .training import autocast
 
-DEFINITION = "knowledge-ja-en-1"
+DEFINITION = "knowledge-ja-en-part-1"
 
 
 def artifacts_of(chosen):
