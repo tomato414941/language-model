@@ -1286,7 +1286,7 @@ requires-dist = [
     { name = "huggingface-hub", marker = "extra == 'hub'", specifier = ">=0.35,<2" },
     { name = "ja-sentence-segmenter", marker = "extra == 'eval'", specifier = "==0.0.2" },
     { name = "janome", marker = "extra == 'eval'", specifier = "==0.5.0" },
-    { name = "language-model-evaluation", url = "https://github.com/tomato414941/language-model-evaluation/archive/1d67b43c89dd5fb1044c78f2a651ae7e0901d9ff.zip" },
+    { name = "language-model-evaluation", url = "https://github.com/tomato414941/language-model-evaluation/archive/6bd3eb49d0571b48cb714fe4c31727f693e26bd6.zip" },
     { name = "lm-eval", extras = ["hf", "ifeval", "ruler"], marker = "extra == 'eval'", specifier = "==0.4.13" },
     { name = "modal", marker = "extra == 'deploy'", specifier = ">=1.6.1,<2" },
     { name = "numpy", marker = "extra == 'train'", specifier = ">=2.2,<3" },
@@ -1315,13 +1315,13 @@ dev = [
 [[package]]
 name = "language-model-evaluation"
 version = "0.2.0"
-source = { url = "https://github.com/tomato414941/language-model-evaluation/archive/1d67b43c89dd5fb1044c78f2a651ae7e0901d9ff.zip" }
+source = { url = "https://github.com/tomato414941/language-model-evaluation/archive/6bd3eb49d0571b48cb714fe4c31727f693e26bd6.zip" }
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pyahocorasick" },
 ]
-sdist = { hash = "sha256:c36b05dca4c7ba83497c124dae6f7df60f5a1055dba005ff650677e41688ac8d" }
+sdist = { hash = "sha256:6ab1ffbcab62539a7901733fb4c66062e7f2db1549cbf307c902a0eb78b81365" }
 
 [package.metadata]
 requires-dist = [
