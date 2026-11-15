@@ -2,10 +2,8 @@
 
 ## Rules
 
-- Use only public, widely used evaluations. Do not create our own.
 - Run each test in the form its provider defines. The provider is the test's author when the author defines an evaluation procedure, and otherwise a widely used public tool. Do not change a test's form to suit a model's performance. When scores are too low to separate models, add an easier test that someone else provides.
 - A way of measuring that is confirmed to be wrong is dropped, even if results then can no longer be compared with the past.
-- When the way of measuring changes, earlier generations' models are not measured again (decided on 2026-11-05). A task without a score for the model to compare with is reference only for that generation, and enters the pass line from the next generation.
 - Evaluate every question.
 - The tools are lm-evaluation-harness and llm-jp-eval v2.1.5. The tasks are in the `evaluation` table of each generation's recipe in `configs/`. Each task is checked against its provider's definition in `research/experiments/test-forms.md`. RULER is also measured with lm-evaluation-harness's version (see "Long context (RULER)" below).
 - Remove evaluation questions from the training data.
