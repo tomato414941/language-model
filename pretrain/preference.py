@@ -30,7 +30,8 @@ from torch.nn import functional as F
 
 from .conversation import conversation_text, require_markers
 from .data import BOS, EOS, LANGUAGES, TOKEN_DTYPE, file_digest
-from .instructions import MASK_DTYPE, BenchmarkFilter, contaminated, normalize_messages
+from .instructions import MASK_DTYPE, contaminated, normalize_messages
+from .overlap import EvaluationOverlap
 from .training import atomic_save, autocast, load_checkpoint, load_model, select_precision
 
 SIDES = ("chosen", "rejected")
@@ -109,12 +110,12 @@ def pair_turns(record):
 
 
 def prepare_preferences(
-    source, output, tokenizer_path, context=2048, validation_pairs=500, benchmarks=None, seed=42
+    source, output, tokenizer_path, context=2048, validation_pairs=500, evaluation=None, seed=42
 ):
     """Encode each language's pairs into fixed-width rows, holding out validation pairs.
 
-    Pairs that repeat an earlier one, contain a benchmark question or do not
-    fit the context are left out.
+    Pairs that repeat an earlier one, overlap the evaluation (pretrain.overlap)
+    in their prompt or either reply, or do not fit the context are left out.
     """
     for name, value in (("context", context), ("validation_pairs", validation_pairs)):
         if type(value) is not int or value <= 0:
@@ -127,7 +128,7 @@ def prepare_preferences(
         raise ValueError("the tokenizer needs BOS and EOS tokens")
     eos = tokenizer.token_to_id(EOS)
     width = context + 1
-    questions = BenchmarkFilter(benchmarks) if benchmarks is not None else None
+    questions = EvaluationOverlap(evaluation) if evaluation is not None else None
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output.name}-", dir=output.parent))
     try:
@@ -143,9 +144,7 @@ def prepare_preferences(
             "sources": {
                 language: file_digest(source / f"{language}.jsonl") for language in LANGUAGES
             },
-            "benchmarks_sha256": file_digest(Path(benchmarks) / "sources.json")
-            if benchmarks is not None
-            else None,
+            "evaluation": questions.made_from if questions is not None else None,
             "pairs": {},
             "files": {},
         }
@@ -165,7 +164,7 @@ def prepare_preferences(
                         stats["duplicates"] += 1
                         continue
                     seen.add(digest)
-                    if contaminated(sides[0][:-1], questions, language):
+                    if contaminated([*sides[0], sides[1][-1]], questions):
                         stats["contaminated"] += 1
                         continue
                     pair = [encode_reply(tokenizer, turns) for turns in sides]

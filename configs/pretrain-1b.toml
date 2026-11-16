@@ -12,16 +12,6 @@ validation_fraction = 0.001
 minimum_characters = 300
 maximum_characters = 100000
 
-[evaluation]
-framework = "lm-eval"
-version = "0.4.13"
-base_tasks = [
-    "hellaswag", "arc_easy", "ja_leaderboard_jcommonsenseqa", "sciq", "piqa",
-    "lambada_openai", "blimp", "ja_leaderboard_xwinograd", "ja_leaderboard_jnli",
-]
-instruction_tasks = ["ifeval"]
-llm_jp_eval_tasks = ["kuci"]
-
 [sft]
 epochs = 2
 learning_rate = 0.00002

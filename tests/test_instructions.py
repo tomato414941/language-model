@@ -25,7 +25,6 @@ from tokenizers import Tokenizer
 from pretrain.conversation import CALL_END, CALL_START, THINK_END, TOOLS_END, TOOLS_START, TURN_END, TURN_START
 from pretrain.data import LANGUAGES, file_digest, prepare_data
 from pretrain.instructions import (
-    BenchmarkFilter,
     InstructionCorpus,
     chat_prompt,
     conversation_text,
@@ -36,9 +35,11 @@ from pretrain.instructions import (
     prepare_instructions,
     source_messages,
 )
+from pretrain.overlap import EvaluationOverlap
 from pretrain.model import ModelConfig
 from pretrain.training import TrainConfig, evaluate, load_model, train
 from responses_api import ResponseRequest
+from tests.helpers import evaluation
 
 
 def exchange(question, answer):
@@ -360,49 +361,19 @@ class InstructionTests(unittest.TestCase):
             self.assertTrue(train_texts)
             self.assertTrue(validation.isdisjoint(train_texts))
 
-    def test_preparation_drops_duplicates_benchmark_questions_and_long_conversations(
+    def test_preparation_drops_duplicates_evaluation_questions_and_long_conversations(
         self,
     ):
-        """重複した会話、ベンチマークの問題を含む会話、文脈長に収まらない会話を除く。"""
+        """重複した会話、評価の問題を含む会話、文脈長に収まらない会話を除く。"""
         question = "電車に乗るときに必要なものはどれでしょう"
-        benchmarks = self.root / "benchmarks"
-        benchmarks.mkdir()
-        items = benchmarks / "jcommonsenseqa.jsonl"
-        items.write_text(
-            json.dumps(
-                {
-                    "id": "1",
-                    "context": f"質問：{question}\n回答：",
-                    "choices": ["切符", "傘"],
-                    "label": 0,
-                },
-                ensure_ascii=False,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        (benchmarks / "sources.json").write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "tasks": {
-                        "jcommonsenseqa": {
-                            "language": "ja",
-                            "filename": items.name,
-                            "sha256": file_digest(items),
-                        }
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
+        found = evaluation(self, self.root / "evaluation", {"ja": [f"質問：{question}\n回答："]})
         items = conversations()
         items["ja"] += [
             items["ja"][0],
             exchange(f"次の問題に答えて。{question}？", "切符です。"),
             exchange("長い答えをください。", "とても" * 40),
         ]
-        corpus = InstructionCorpus(self.prepare(items, benchmarks=benchmarks))
+        corpus = InstructionCorpus(self.prepare(items, evaluation=found))
         stats = corpus.manifest["conversations"]["ja"]
         self.assertEqual(
             (stats["duplicates"], stats["contaminated"], stats["too_long"]), (1, 1, 1)
@@ -418,43 +389,11 @@ class InstructionTests(unittest.TestCase):
         )
 
     def test_評価の問題を含む文は見つけ問題の一部と重なるだけの文は見逃す(self):
-        """Finds a benchmark question by most of its text, not by a phrase it shares."""
+        """Finds an evaluation question by most of its text, not by a phrase it shares."""
         question = "Which tool would best help a student measure how far a small toy car rolls down a ramp?"
-        benchmarks = self.root / "benchmarks"
-        benchmarks.mkdir()
-        items = benchmarks / "arc_easy.jsonl"
-        items.write_text(
-            json.dumps(
-                {
-                    "id": "1",
-                    "context": f"Question: {question}\nAnswer:",
-                    "choices": ["a tape measure", "a thermometer"],
-                    "label": 0,
-                }
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        (benchmarks / "sources.json").write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "tasks": {
-                        "arc_easy": {
-                            "language": "en",
-                            "filename": items.name,
-                            "sha256": file_digest(items),
-                        }
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
-        questions = BenchmarkFilter(benchmarks)
-        self.assertTrue(questions.matches(f"Homework: {question.upper()} Explain.", "en"))
-        self.assertFalse(
-            questions.matches("Teachers help a student measure how far a small toy car can go.", "en")
-        )
+        questions = EvaluationOverlap(evaluation(self, self.root / "evaluation", {"en": [f"Question: {question}\nAnswer:"]}))
+        self.assertTrue(questions.holds(f"Homework: {question.upper()} Explain."))
+        self.assertFalse(questions.holds("Teachers help a student measure how far a small toy car can go."))
 
     def test_preparation_drops_conversations_with_a_reply_over_the_limit(self):
         """どれか1つの回答でも上限のトークン数を超える会話は除き、上限以内の会話は残す。"""

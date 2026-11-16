@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 if any(importlib.util.find_spec(name) is None
-       for name in ("numpy", "torch", "tokenizers", "lm_eval", "language_model_evaluation")):
+       for name in ("numpy", "torch", "tokenizers", "language_model_evaluation")):
     raise unittest.SkipTest("Install training and evaluation dependencies")
 
 import torch

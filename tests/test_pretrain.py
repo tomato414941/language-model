@@ -216,12 +216,12 @@ class PretrainingTests(unittest.TestCase):
 
     def test_evaluation_whose_record_is_written_already_does_nothing_when_run_again(self):
         """記録を書き終えた評価は、もう一度動かしても何もしない。"""
-        record = self.root / "benchmarks.json"
+        record = self.root / "knowledge.json"
         record.write_text("{}")
         printed = io.StringIO()
         with contextlib.redirect_stdout(printed):
-            main(["benchmark", "--checkpoint", str(self.root / "missing.pt"), "--output", str(record),
-                  "--tasks", "hellaswag"])
+            main(["knowledge", "--checkpoint", str(self.root / "missing.pt"), "--artifacts", str(self.root),
+                  "--output", str(record)])
         self.assertEqual(json.loads(printed.getvalue())["event"], "done_already")
         self.assertEqual(record.read_text(), "{}")
 

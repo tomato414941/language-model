@@ -5,15 +5,15 @@ recipe and says where its experiment runs: the machine to rent, the rate each
 training went at there, and the run's policy. write_run takes the experiment's
 commands from the recipe's plan as the run's steps, each with the files it reads
 and leaves, and writes spec.json with code.tar.gz beside it: the committed tree,
-the small files of the data the preparation built, and the evaluations'
-questions, the same bytes for the same commit and data. The data's packed files
-stay in the store at the paths the plan reads them from, and are checked against
-the recipe before a run is written. Each machine sets up the environment that
-the lock file pins, then passes its check, the tests that only a CUDA GPU runs,
-before any step: a machine whose GPU computes the model wrongly fails it. The
-check runs again whenever a step fails, so that a machine that broke under the
-step, as one that lost its GPU, takes the blame, and a step that fails on a
-sound machine does not blame it.
+the small files of the data the preparation built, and the artifacts that the
+knowledge measure reads, the same bytes for the same commit and data. The data's
+packed files stay in the store at the paths the plan reads them from, and are
+checked against the recipe before a run is written. Each machine sets up the
+environment that the lock file pins, then passes its check, the tests that only
+a CUDA GPU runs, before any step: a machine whose GPU computes the model wrongly
+fails it. The check runs again whenever a step fails, so that a machine that
+broke under the step, as one that lost its GPU, takes the blame, and a step that
+fails on a sound machine does not blame it.
 """
 
 import gzip
@@ -24,6 +24,7 @@ import tarfile
 import tomllib
 from pathlib import Path
 
+from .overlap import EVALUATION
 from .recipe import data_fingerprint, inspect_recipe, read_config
 
 PYTHON = ".venv/bin/python"
@@ -34,14 +35,6 @@ GPU_TESTS = (
 )
 SETUP = [["bash", "scripts/setup_environment.sh"]]
 CHECK = [[PYTHON, "-m", "unittest", *GPU_TESTS]]
-# The benchmarks read the tasks' questions from the code's own cache, and llm-jp-eval keeps its checkout beside it;
-# RULER fetches its essays and questions itself.
-ENVIRONMENTS = {
-    "benchmark": {"HF_HOME": "huggingface", "HF_DATASETS_OFFLINE": "1", "LLM_JP_EVAL_HOME": "llm-jp-eval-home"},
-    "ruler": {"HF_HOME": "huggingface"},
-}
-# The questions every recipe's evaluations read, as Hugging Face keeps them.
-QUESTIONS = Path("data/evaluation-questions")
 
 
 def data_files(directory, path):
@@ -59,7 +52,7 @@ def data_files(directory, path):
 
 
 def check_built(config, built, names):
-    """Refuse built data that belongs to another recipe, tokenizer or set of benchmark exclusions."""
+    """Refuse built data that belongs to another recipe or tokenizer, or left out another evaluation's text."""
     fingerprint = data_fingerprint(config)
     tokenizer = json.loads((built / "tokenizer/manifest.json").read_text())
     if tokenizer["data_fingerprint"] != fingerprint:
@@ -67,9 +60,9 @@ def check_built(config, built, names):
     for name in names:
         manifest = json.loads((built / name / "manifest.json").read_text())
         if manifest.get("kind") == "instructions":
-            if (manifest["tokenizer_sha256"], manifest["benchmarks_sha256"]) != (
-                    tokenizer["tokenizer_sha256"], tokenizer["benchmarks_sha256"]):
-                raise ValueError(f"{name} uses another tokenizer or other benchmark exclusions")
+            if (manifest["tokenizer_sha256"], manifest.get("evaluation")) != (
+                    tokenizer["tokenizer_sha256"], tokenizer.get("evaluation")):
+                raise ValueError(f"{name} uses another tokenizer or left out another evaluation's text")
         elif manifest["data_fingerprint"] != fingerprint or manifest["tokenizer_sha256"] != tokenizer["tokenizer_sha256"]:
             raise ValueError(f"{name} belongs to another recipe or tokenizer")
 
@@ -93,8 +86,6 @@ class Experiment:
                     inputs += self.read_built(command["name"], path)
             step = {"name": command["name"], "command": [PYTHON, *command["argv"][1:]], "inputs": inputs,
                     "outputs": command["leaves"]}
-            if command["kind"] in ENVIRONMENTS:
-                step["environment"] = ENVIRONMENTS[command["kind"]]
             if "training" in command:
                 step["rate"], step["units"] = rates[command["name"]], self.tokens(command["training"])
             self.steps.append(step)
@@ -127,15 +118,25 @@ class Experiment:
         return steps * config.batch_size * config.accumulation_steps * model.context * config.patch_size
 
 
-def write_code(path, small, questions=QUESTIONS):
-    """The committed tree, the built data's small files and the questions, as a tarball of the same bytes each time."""
+def write_code(path, small, evaluation=EVALUATION):
+    """The committed tree, the built data's small files and the artifacts the knowledge measure reads, kept by their
+    names in `evaluation`, as a tarball of the same bytes each time."""
+    import olmes_measure
+    from language_model_evaluation import definition
+
+    from .knowledge import DEFINITION, artifacts_of
+
+    evaluation = Path(evaluation)
+    measured = [evaluation / name for name in artifacts_of(definition.load(DEFINITION))]
+    for artifact in measured:
+        olmes_measure.check(artifact)  # here and whole, before a machine is rented to read it
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
                             check=True).stdout.strip()
     when = int(subprocess.run(["git", "show", "-s", "--format=%ct", "HEAD"], capture_output=True, text=True,
                               check=True).stdout)
     tree = subprocess.run(["git", "archive", "--format=tar", "HEAD"], capture_output=True, check=True).stdout
-    extra = sorted([*small.items(), *((f"huggingface/{item.relative_to(questions)}", item)
-                                      for item in questions.rglob("*") if item.is_file())])
+    extra = sorted([*small.items(), *((str(EVALUATION / item.relative_to(evaluation)), item) for artifact in measured
+                                      for item in artifact.rglob("*") if item.is_file())])
 
     def entry(name, size):
         info = tarfile.TarInfo(name)
@@ -155,7 +156,7 @@ def write_code(path, small, questions=QUESTIONS):
     return commit
 
 
-def write_run(settings_path, built, directory, bucket, questions=QUESTIONS):
+def write_run(settings_path, built, directory, bucket, evaluation=EVALUATION):
     """Write spec.json and code.tar.gz for the experiment of the recipe the settings name, on the data built in built."""
     settings_path, built, directory = Path(settings_path), Path(built), Path(directory)
     settings = tomllib.loads(settings_path.read_text())
@@ -164,7 +165,7 @@ def write_run(settings_path, built, directory, bucket, questions=QUESTIONS):
     experiment = Experiment(inspect_recipe(config, workdir), settings["rates"], built, workdir)
     check_built(config, built, sorted({Path(item["path"]).parent.name for item in experiment.files.values()}))
     directory.mkdir(parents=True, exist_ok=True)
-    commit = write_code(directory / "code.tar.gz", experiment.small, questions)
+    commit = write_code(directory / "code.tar.gz", experiment.small, evaluation)
     files = list(experiment.files.values())
     spec = {
         "name": f"language-model-{directory.name}",

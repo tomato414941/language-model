@@ -5,11 +5,14 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from pretrain.recipe import data_fingerprint
 from pretrain.job_run import GPU_TESTS, write_run
 
 SETTINGS = Path("configs/pretrain-v7-job.toml")
+# What the built data left out of the evaluation, as their manifests record it.
+EVALUATION = {"overlap": ["overlap-0"], "instructions": "0"}
 CORPORA = ("corpus-patch", "corpus-stable", "corpus-late", "corpus-decay")
 
 
@@ -22,7 +25,7 @@ class RentalRunTests(unittest.TestCase):
         self.built = self.root / "built"
         fingerprint = data_fingerprint("configs/pretrain-v7.toml")
         self.write(self.built / "tokenizer/manifest.json", {
-            "data_fingerprint": fingerprint, "tokenizer_sha256": "t", "benchmarks_sha256": "b"})
+            "data_fingerprint": fingerprint, "tokenizer_sha256": "t", "evaluation": EVALUATION})
         for name in CORPORA:
             self.write(self.built / name / "manifest.json", {
                 "dtype": "<u2", "data_fingerprint": fingerprint, "tokenizer_sha256": "t",
@@ -31,12 +34,14 @@ class RentalRunTests(unittest.TestCase):
             (self.built / name / "tokenizer.json").write_text("{}")
         self.write(self.built / "instructions/manifest.json", {
             "kind": "instructions", "dtype": "<u4", "context": 8192, "tokenizer_sha256": "t",
-            "benchmarks_sha256": "b", "files": {"train_ja.bin": {"rows": 2, "sha256": "i"},
+            "evaluation": EVALUATION, "files": {"train_ja.bin": {"rows": 2, "sha256": "i"},
                                                 "train_ja_mask.bin": {"rows": 2, "sha256": "m"}}})
         shutil.copy("configs/model-v7.toml", self.built / "sft.toml")
-        self.questions = self.root / "questions"
-        (self.questions / "datasets").mkdir(parents=True)
-        (self.questions / "datasets/hellaswag.json").write_text("{}")
+        # An artifact in place of those the knowledge measure reads, kept by its name.
+        from language_model_evaluation import overlap
+
+        self.evaluation = self.root / "evaluation"
+        self.artifact = overlap.write(self.evaluation, [], b"").name
 
     def tearDown(self):
         self.directory.cleanup()
@@ -47,15 +52,16 @@ class RentalRunTests(unittest.TestCase):
         path.write_text(json.dumps(value))
 
     def run_spec(self, name="run", settings=SETTINGS):
-        write_run(settings, self.built, self.root / name, "bucket", self.questions)
+        with patch("pretrain.knowledge.artifacts_of", return_value=[self.artifact]):
+            write_run(settings, self.built, self.root / name, "bucket", self.evaluation)
         return json.loads((self.root / name / "spec.json").read_text())
 
     def test_turns_the_experiment_into_steps_each_reading_only_files_or_what_earlier_steps_left(self):
         spec = self.run_spec()
         self.assertEqual([step["name"] for step in spec["steps"]], [
             "pretrain-v7-patch", "pretrain-v7-stable", "pretrain-v7-late", "pretrain-v7-decay",
-            "benchmark-pretrain-v7-decay", "average-pretrain-v7-decay", "benchmark-pretrain-v7-decay-averaged",
-            "instructions-v7", "benchmark-instructions-v7", "ruler-instructions-v7"])
+            "knowledge-pretrain-v7-decay", "average-pretrain-v7-decay", "knowledge-pretrain-v7-decay-averaged",
+            "instructions-v7", "instructions-instructions-v7", "knowledge-instructions-v7"])
         available = {item["path"] for item in spec["files"]}
         for step in spec["steps"]:
             for path in step.get("inputs", []):
@@ -93,10 +99,8 @@ class RentalRunTests(unittest.TestCase):
         self.assertNotIn("runs/pretrain-v7-late/snapshots", steps["pretrain-v7-late"]["outputs"])
         self.assertIn("runs/pretrain-v7-decay/snapshots", steps["average-pretrain-v7-decay"]["inputs"])
 
-    def test_gives_the_benchmarks_their_questions_and_the_trainings_their_expected_rates(self):
+    def test_gives_the_trainings_their_expected_rates(self):
         steps = {step["name"]: step for step in self.run_spec()["steps"]}
-        self.assertEqual(steps["benchmark-instructions-v7"]["environment"]["HF_DATASETS_OFFLINE"], "1")
-        self.assertIn("--batch-tokens", steps["benchmark-instructions-v7"]["command"])
         self.assertEqual((steps["pretrain-v7-patch"]["rate"], steps["pretrain-v7-stable"]["rate"],
                           steps["instructions-v7"]["rate"]), (162_500, 39_500, 32_400))
         # The token phases share one schedule: each counts the updates it adds to the last.
@@ -118,8 +122,13 @@ class RentalRunTests(unittest.TestCase):
         with tarfile.open(self.root / "first/code.tar.gz") as bundle:
             names = set(bundle.getnames())
         self.assertLessEqual({"SOURCE_COMMIT", "data/pretrain-v7/corpus-late/manifest.json",
-                              "data/pretrain-v7/sft.toml", "huggingface/datasets/hellaswag.json",
+                              "data/pretrain-v7/sft.toml", f"data/evaluation/{self.artifact}/manifest.json",
                               "pretrain/training.py"}, names)
+
+    def test_refuses_to_write_a_run_without_the_artifacts_the_knowledge_measure_reads(self):
+        shutil.rmtree(self.evaluation / self.artifact)
+        with self.assertRaises(FileNotFoundError):
+            self.run_spec()
 
 
 if __name__ == "__main__":

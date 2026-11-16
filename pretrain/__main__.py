@@ -1,10 +1,7 @@
 import argparse
-import contextlib
 import json
-import logging
 import os
 import signal
-import sys
 from pathlib import Path
 
 import torch
@@ -74,11 +71,6 @@ def main(argv=None):
     web.add_argument("--shards-per-language", type=int, default=64)
     web.add_argument("--workers", type=int, default=4)
     web.add_argument("--seed", type=int, default=42)
-    benchmarks = commands.add_parser(
-        "fetch-benchmarks",
-        help="標準ベンチマークの問題を学習データの混入除去用に取得する",
-    )
-    benchmarks.add_argument("--output", type=Path, default=Path("data/benchmarks"))
     instructions = commands.add_parser(
         "fetch-instructions", help="日英の指示データを出典付きで取得する"
     )
@@ -98,7 +90,7 @@ def main(argv=None):
         "--tokens-per-language", type=int, help="各言語の学習用会話のトークン数の上限"
     )
     tuning.add_argument(
-        "--benchmarks", type=Path, help="このベンチマークの問題を含む会話を除く"
+        "--evaluation", type=Path, help="評価と重なる会話を除く。評価の成果物を名前で置いた場所（作者のコードもここに取ってくる）"
     )
     tuning.add_argument("--seed", type=int, default=42)
     tuning.add_argument(
@@ -115,7 +107,9 @@ def main(argv=None):
     preferences.add_argument("--output", type=Path, required=True)
     preferences.add_argument("--context", type=int, default=2048)
     preferences.add_argument("--validation-pairs", type=int, default=500)
-    preferences.add_argument("--benchmarks", type=Path, help="このベンチマークの問題を含む組を除く")
+    preferences.add_argument(
+        "--evaluation", type=Path, help="評価と重なる組を除く。評価の成果物を名前で置いた場所（作者のコードもここに取ってくる）"
+    )
     preferences.add_argument("--seed", type=int, default=42)
     optimization = commands.add_parser(
         "train-preferences",
@@ -278,79 +272,6 @@ def main(argv=None):
     generation.add_argument("--temperature", type=float, default=0.8)
     generation.add_argument("--top-k", type=int, default=50)
     generation.add_argument("--seed", type=int, default=42)
-    benchmark = commands.add_parser(
-        "benchmark", help="保存したモデルをLM Evaluation Harnessの標準タスクで評価する"
-    )
-    benchmark.add_argument(
-        "--tasks", nargs="+", help="評価するタスク名（既定は標準評価の全課題）"
-    )
-    benchmark.add_argument(
-        "--limit", type=int, help="動作確認で各タスクに使う問題数（正式な評価は全問）"
-    )
-    benchmark.add_argument("--batch-tokens", type=int, default=4096)
-    benchmark.add_argument("--threads", type=int, default=4)
-    benchmark.add_argument(
-        "--llm-jp-eval",
-        nargs="+",
-        default=[],
-        help="llm-jp-evalで評価する日本語のデータセット名",
-    )
-    benchmark.add_argument(
-        "--also-as-conversation",
-        action="store_true",
-        help="指示学習のモデルを、問いのある課題について会話形式でも評価する",
-    )
-    benchmark.add_argument(
-        "--output", type=Path, required=True, help="問題ごとの記録を含む結果のJSONファイル"
-    )
-    hub_benchmark = commands.add_parser(
-        "benchmark-hub", help="Hugging Face Hubのモデルを、標準評価と同じ課題と指標で評価する"
-    )
-    hub_benchmark.add_argument(
-        "--model", required=True, help="Hubのモデル名（例: openai-community/gpt2）か、書き出したモデルのディレクトリ"
-    )
-    hub_benchmark.add_argument("--revision", help="評価するモデルのコミット（Hubのモデルでは必須）")
-    hub_benchmark.add_argument(
-        "--trust-remote-code", action="store_true", help="モデルに付いているコードで読み込む"
-    )
-    hub_benchmark.add_argument(
-        "--add-bos-token", action="store_true", help="各文の先頭にBOSを付ける（BOSを付けて学習したモデル）"
-    )
-    hub_benchmark.add_argument(
-        "--tasks", nargs="+", help="評価するタスク名（既定は標準評価の全課題）"
-    )
-    hub_benchmark.add_argument(
-        "--limit", type=int, help="動作確認で各タスクに使う問題数（正式な評価は全問）"
-    )
-    hub_benchmark.add_argument("--batch-size", type=int, default=32)
-    hub_benchmark.add_argument("--threads", type=int, default=4)
-    hub_benchmark.add_argument("--device", choices=("cpu", "cuda", "auto"), default="auto")
-    hub_benchmark.add_argument(
-        "--output", type=Path, required=True, help="問題ごとの記録を含む結果のJSONファイル"
-    )
-    judging = commands.add_parser(
-        "judge", help="ELYZA-tasks-100と日本語MT-Benchの返答を、採点役のモデルに採点させる"
-    )
-    judged = judging.add_mutually_exclusive_group(required=True)
-    judged.add_argument("--checkpoint", type=Path, help="評価する自前のモデルの重み")
-    judged.add_argument("--model", help="評価するHubのモデル名（--revisionと使う）")
-    judging.add_argument("--revision", help="評価するHubのモデルのコミット")
-    judging.add_argument(
-        "--tasks", nargs="+", help="評価する課題（既定はelyza_tasks_100とja_mt_bench）"
-    )
-    judging.add_argument("--limit", type=int, help="動作確認で各課題に使う先頭からの問題数")
-    judging.add_argument(
-        "--sources", type=Path, default=Path("data/judging"), help="課題のファイルを置くディレクトリ"
-    )
-    judging.add_argument("--judge-model", default="openai/gpt-4o-2024-08-06")
-    judging.add_argument("--judge-url", default="https://openrouter.ai/api/v1")
-    judging.add_argument("--batch-tokens", type=int, default=4096)
-    judging.add_argument("--batch-size", type=int, default=8, help="Hubのモデルで一度に生成する数")
-    judging.add_argument("--threads", type=int, default=4)
-    judging.add_argument("--device", choices=("cpu", "cuda", "auto"), default="auto")
-    judging.add_argument(
-        "--output", type=Path, required=True, help="返答と採点を問題ごとに含む結果のJSONファイル"
-    )
     growth = commands.add_parser(
         "grow", help="学習したモデルの層を増やし、同じ予測から学習を始められる重みを作る"
     )
@@ -389,12 +310,6 @@ def main(argv=None):
     following.add_argument(
         "--output", type=Path, required=True, help="区分と言語ごとの点、返答と採点を書く JSON ファイル"
     )
-    comparison = commands.add_parser(
-        "compare-benchmarks",
-        help="二つの標準評価の結果を、同じ問題ごとに言語別に比べる",
-    )
-    comparison.add_argument("--base", type=Path, required=True, help="比べる元の結果")
-    comparison.add_argument("--other", type=Path, required=True, help="比べる先の結果")
     improvement = commands.add_parser(
         "improvement",
         help="共有の評価の定義で測った二つの結果を比べ、改善の度合いと標準誤差、読める差かを区分ごとに示す",
@@ -405,49 +320,7 @@ def main(argv=None):
     against.add_argument(
         "--chance", action="store_true", help="指示の結果を、同じ返答を他の問題に付け替えたときの点と比べる"
     )
-    passing = commands.add_parser(
-        "pass-line",
-        help="前の世代と比べて、点が合格の線を超えるかを判定する",
-    )
-    passing.add_argument("--base", type=Path, required=True, help="前の世代の評価の結果")
-    passing.add_argument("--other", type=Path, required=True, help="新しい世代の評価の結果")
-    passing.add_argument("--ruler-base", type=Path, help="前の世代の RULER の結果（--ruler-other と一緒に渡す）")
-    passing.add_argument("--ruler-other", type=Path, help="新しい世代の RULER の結果（--ruler-base と一緒に渡す）")
-    ruler = commands.add_parser(
-        "ruler", help="保存したモデルに、lm-evaluation-harness の RULER を 8k と 16k の長さで問う"
-    )
-    ruler.add_argument("--output", type=Path, required=True, help="問題ごとの点を含む記録のJSONファイル")
-    ruler.add_argument("--batch-tokens", type=int, default=65536, help="一度に読むトークン数の上限")
-    ruler.add_argument("--limit", type=int, help="動作確認で各課題に長さごとに使う問題数（正式な評価は全問）")
-    ruler.add_argument("--plain", action="store_true", help="会話形式ではなく印のない文章で問う（事前学習の後のモデル）")
-    official = commands.add_parser(
-        "score-m-ifeval",
-        help="保存した M-IFEval-Ja の返答を、作者の採点コードで採点する",
-    )
-    official.add_argument("--output", type=Path, required=True, help="点を書き出す先")
-    official.add_argument("--work", type=Path, required=True, help="作者のコードと環境を置く場所")
-    official.add_argument("records", nargs="+", help="モデルの名前=評価の結果")
-    core = commands.add_parser(
-        "core", help="保存したモデルを、nanochat と同じ測り方で DCLM の CORE の22課題で評価する"
-    )
-    core_hub = commands.add_parser(
-        "core-hub", help="Hugging Face Hub のモデルを、core と同じ測り方で評価する"
-    )
-    core_hub.add_argument("--model", required=True, help="Hub のリポジトリ")
-    core_hub.add_argument("--revision", required=True, help="Hub のコミット")
-    for command in (core, core_hub):
-        command.add_argument(
-            "--bundle", type=Path, default=Path("data/core"), help="nanochat の評価の束を置く場所（なければ取ってくる）"
-        )
-        command.add_argument(
-            "--limit", type=int, help="動作確認で各課題に使う問題数（正式な評価は全問）"
-        )
-        command.add_argument("--batch-tokens", type=int, default=16384)
-        command.add_argument(
-            "--output", type=Path, required=True, help="問題ごとの正誤を含む結果のJSONファイル"
-        )
-    core_hub.add_argument("--device", choices=("cpu", "cuda", "auto"), default="auto")
-    for command in (evaluation, generation, benchmark, core, ruler, knowledge, following):
+    for command in (evaluation, generation, knowledge, following):
         command.add_argument(
             "--checkpoint", type=Path, default=Path("runs/bilingual/last.pt")
         )
@@ -473,16 +346,10 @@ def main(argv=None):
             if args.stage == "inspect":
                 result = inspect_recipe(args.config, workdir)
             elif args.stage == "tokenizer":
-                result = prepare_tokenizer(
-                    args.config, workdir / "tokenizer", workdir / "benchmarks"
-                )
+                result = prepare_tokenizer(args.config, workdir / "tokenizer")
             elif args.stage == "corpus":
                 result = prepare_corpus(
-                    args.config,
-                    workdir / "tokenizer",
-                    workdir,
-                    workdir / "benchmarks",
-                    args.workers,
+                    args.config, workdir / "tokenizer", workdir, workers=args.workers
                 )
             elif args.stage == "select":
                 from .selection import select_corpora
@@ -525,119 +392,6 @@ def main(argv=None):
                 args.seed,
             )
             print(json.dumps(result, ensure_ascii=False, indent=2))
-        elif args.command == "fetch-benchmarks":
-            from .benchmarks import fetch_benchmarks
-
-            result = fetch_benchmarks(args.output)
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-        elif args.command == "core-hub":
-            from .core import evaluate_core, fetch_bundle, load_hub_model
-
-            device = select_device(args.device)
-            model, tokenizer, bos = load_hub_model(args.model, args.revision, device)
-            precision = select_precision(device)
-            result = evaluate_core(
-                model, tokenizer, device, precision, fetch_bundle(args.bundle), args.batch_tokens, args.limit, bos
-            )
-            result["model"] = {
-                "repository": args.model,
-                "revision": args.revision,
-                "parameters": sum(p.numel() for p in model.parameters()),
-                "precision": precision,
-            }
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-            print(json.dumps({"core": result["core"]}))
-        elif args.command == "benchmark-hub":
-            from lm_eval.utils import setup_logging
-
-            from .evaluation import evaluate_hub_benchmarks
-
-            if args.threads <= 0:
-                raise ValueError("threads must be positive")
-            if args.revision is None and not Path(args.model).is_dir():
-                raise ValueError("a Hub model needs --revision")
-            torch.set_num_threads(args.threads)
-            # Show each task's steps on stderr while a long evaluation runs.
-            setup_logging(logging.INFO)
-            device = select_device(args.device)
-            # The harness also prints notes; they join its log on stderr.
-            with contextlib.redirect_stdout(sys.stderr):
-                result = evaluate_hub_benchmarks(
-                    args.model,
-                    args.revision,
-                    device,
-                    select_precision(device),
-                    args.batch_size,
-                    args.tasks,
-                    args.limit,
-                    args.trust_remote_code,
-                    args.add_bos_token,
-                )
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-            print(json.dumps(result["by_language"], indent=2))
-        elif args.command == "judge":
-            from .judging import fetch_sources, judge_replies
-
-            if args.threads <= 0:
-                raise ValueError("threads must be positive")
-            if (args.model is None) != (args.revision is None):
-                raise ValueError("--model and --revision go together")
-            torch.set_num_threads(args.threads)
-            device = select_device(args.device)
-            precision = select_precision(device)
-            if args.model is None:
-                from .evaluation import NativeLM
-
-                model, tokenizer, payload = load_model(args.checkpoint, device)
-                backend = NativeLM(model, tokenizer, device, precision, args.batch_tokens)
-                evaluated = {
-                    "checkpoint": str(args.checkpoint),
-                    "sha256": file_digest(args.checkpoint),
-                    "step": payload["step"],
-                    "tokens_seen": payload["tokens_seen"],
-                    "parameters": sum(p.numel() for p in model.parameters()),
-                    "precision": precision,
-                }
-            else:
-                from lm_eval.models.huggingface import HFLM
-
-                backend = HFLM(
-                    pretrained=args.model,
-                    revision=args.revision,
-                    device=str(device),
-                    dtype=precision,
-                    batch_size=args.batch_size,
-                )
-                evaluated = {
-                    "repository": args.model,
-                    "revision": args.revision,
-                    "parameters": sum(p.numel() for p in backend.model.parameters()),
-                    "precision": precision,
-                }
-            fetch_sources(args.sources)
-            with contextlib.redirect_stdout(sys.stderr):
-                result = judge_replies(
-                    backend,
-                    args.sources,
-                    args.tasks or None,
-                    args.limit,
-                    args.judge_model,
-                    args.judge_url,
-                )
-            result["evaluated"] = evaluated
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(
-                json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-            )
-            print(
-                json.dumps(
-                    {name: {k: v for k, v in task.items() if k != "items"} for name, task in result["tasks"].items()},
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
         elif args.command == "grow":
             from .growth import grow_checkpoint
 
@@ -647,14 +401,6 @@ def main(argv=None):
             from .training import average_snapshots
 
             result = average_snapshots(args.run, args.count, args.output)
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-        elif args.command == "compare-benchmarks":
-            from .comparison import compare_benchmarks
-
-            result = compare_benchmarks(
-                json.loads(args.base.read_text(encoding="utf-8")),
-                json.loads(args.other.read_text(encoding="utf-8")),
-            )
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command == "improvement":
             from .comparison import compare_results
@@ -667,31 +413,6 @@ def main(argv=None):
             else:
                 base = json.loads(args.base.read_text(encoding="utf-8"))
             print(json.dumps(compare_results(base, other), ensure_ascii=False, indent=2))
-        elif args.command == "pass-line":
-            from .comparison import pass_line
-
-            if (args.ruler_base is None) != (args.ruler_other is None):
-                raise ValueError("pass both RULER results or neither")
-            ruler = None
-            if args.ruler_base is not None:
-                ruler = {
-                    side: json.loads(path.read_text(encoding="utf-8"))
-                    for side, path in (("base", args.ruler_base), ("other", args.ruler_other))
-                }
-            result = pass_line(
-                json.loads(args.base.read_text(encoding="utf-8")),
-                json.loads(args.other.read_text(encoding="utf-8")),
-                ruler,
-            )
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-        elif args.command == "score-m-ifeval":
-            from .m_ifeval import official_scores, require_repeated
-
-            result = official_scores(dict(item.split("=", 1) for item in args.records), args.work)
-            written = json.dumps(result, ensure_ascii=False, indent=2)
-            args.output.write_text(written + "\n", encoding="utf-8")
-            print(written)
-            require_repeated(result)
         elif args.command == "fetch-instructions":
             from .instructions import fetch_instructions
 
@@ -707,7 +428,7 @@ def main(argv=None):
                 args.context,
                 args.validation_conversations,
                 args.tokens_per_language,
-                args.benchmarks,
+                args.evaluation,
                 args.seed,
                 args.max_reply_tokens,
             )
@@ -721,7 +442,7 @@ def main(argv=None):
                 args.tokenizer,
                 args.context,
                 args.validation_pairs,
-                args.benchmarks,
+                args.evaluation,
                 args.seed,
             )
             print(json.dumps(result["pairs"], ensure_ascii=False, indent=2))
@@ -847,75 +568,13 @@ def main(argv=None):
                     flush=True,
                 )
         else:
-            if args.command == "benchmark":
-                if args.threads <= 0:
-                    raise ValueError("threads must be positive")
-                torch.set_num_threads(args.threads)
-            if args.command in ("benchmark", "ruler", "knowledge", "instructions") and args.output.exists():
+            if args.command in ("knowledge", "instructions") and args.output.exists():
                 # Its record is written whole at the end, so an evaluation run again has nothing left to do.
                 print(json.dumps({"event": "done_already", "output": str(args.output)}), flush=True)
                 return
             device = select_device(args.device)
             model, tokenizer, payload = load_model(args.checkpoint, device)
-            if args.command == "benchmark":
-                from .evaluation import as_conversation_tasks, evaluate_benchmarks
-                from lm_eval.utils import setup_logging
-
-                # Show each task's steps on stderr while a long evaluation runs.
-                setup_logging(logging.INFO)
-                precision = select_precision(device)
-                # The harness also prints notes; they join its log on stderr.
-                with contextlib.redirect_stdout(sys.stderr):
-                    result = evaluate_benchmarks(
-                        model,
-                        tokenizer,
-                        device,
-                        precision,
-                        args.batch_tokens,
-                        args.tasks,
-                        args.limit,
-                    )
-                    asked = as_conversation_tasks(args.tasks) if args.also_as_conversation else []
-                    if asked:
-                        result["as_conversation"] = evaluate_benchmarks(
-                            model,
-                            tokenizer,
-                            device,
-                            precision,
-                            args.batch_tokens,
-                            asked,
-                            args.limit,
-                            conversation_tasks=asked,
-                        )
-                    if args.llm_jp_eval:
-                        from .llm_jp_eval import evaluate_llm_jp
-
-                        result["llm_jp_eval"] = evaluate_llm_jp(
-                            model,
-                            tokenizer,
-                            device,
-                            precision,
-                            args.batch_tokens,
-                            args.llm_jp_eval,
-                            args.output.parent / f"{args.output.stem}-llm-jp-eval",
-                            also_as_conversation=args.also_as_conversation,
-                            limit=args.limit,
-                        )
-                result["checkpoint"] = {
-                    "checkpoint": str(args.checkpoint),
-                    "sha256": file_digest(args.checkpoint),
-                    "step": payload["step"],
-                    "tokens_seen": payload["tokens_seen"],
-                    "parameters": sum(p.numel() for p in model.parameters()),
-                    "precision": precision,
-                }
-                write_output(args.output, json.dumps(result, indent=2) + "\n")
-                # The file keeps every question; the summary is what to read.
-                summary = result["by_language"]
-                if "as_conversation" in result:
-                    summary = {**summary, "as_conversation": result["as_conversation"]["by_language"]}
-                print(json.dumps(summary, indent=2))
-            elif args.command == "evaluate":
+            if args.command == "evaluate":
                 corpus = open_corpus(args.data, ("validation",))
                 corpus.validate_context(model.config.context)
                 if args.other_data:
@@ -967,50 +626,6 @@ def main(argv=None):
                     "batch_size": batch_size,
                 }
                 print(json.dumps(result, indent=2))
-            elif args.command == "ruler":
-                from .ruler import evaluate_ruler
-
-                precision = select_precision(device)
-                # The harness prints notes; they join its log on stderr.
-                with contextlib.redirect_stdout(sys.stderr):
-                    record = evaluate_ruler(
-                        model, tokenizer, device, precision, args.batch_tokens, not args.plain, args.limit
-                    )
-                record["checkpoint"] = {
-                    "checkpoint": str(args.checkpoint),
-                    "sha256": file_digest(args.checkpoint),
-                    "step": payload["step"],
-                    "tokens_seen": payload["tokens_seen"],
-                    "parameters": sum(p.numel() for p in model.parameters()),
-                    "precision": precision,
-                }
-                write_output(args.output, json.dumps(record, indent=2) + "\n")
-                print(json.dumps({"accuracy": record["accuracy"], "lengths": {
-                    length: read["accuracy"] for length, read in record["lengths"].items()}}, indent=2))
-            elif args.command == "core":
-                from .core import evaluate_core, fetch_bundle
-
-                result = evaluate_core(
-                    model,
-                    tokenizer,
-                    device,
-                    select_precision(device),
-                    fetch_bundle(args.bundle),
-                    args.batch_tokens,
-                    args.limit,
-                )
-                result["checkpoint"] = {
-                    "checkpoint": str(args.checkpoint),
-                    "sha256": file_digest(args.checkpoint),
-                    "step": payload["step"],
-                    "tokens_seen": payload["tokens_seen"],
-                    "parameters": sum(p.numel() for p in model.parameters()),
-                    "precision": select_precision(device),
-                }
-                args.output.parent.mkdir(parents=True, exist_ok=True)
-                args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-                print(json.dumps({"core": result["core"], **{
-                    label: round(task["centered"], 4) for label, task in result["tasks"].items()}}, indent=2))
             elif args.command in ("knowledge", "instructions"):
                 precision = select_precision(device)
                 if args.command == "knowledge":

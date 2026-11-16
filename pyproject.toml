@@ -7,9 +7,9 @@ dependencies = [
     "fastapi>=0.143.0",
     "pydantic>=2.13.5",
     "uvicorn>=0.54.0",
-    # The language-model projects' shared evaluation: what a model knows is measured
-    # by one of its definitions, and the text that holds a benchmark question is
-    # told by its rule.
+    # The language-model projects' shared evaluation: a generation is judged by
+    # its definitions, and the training text that overlaps them is told by its
+    # rule.
     "language-model-evaluation",
 ]
 
@@ -24,12 +24,6 @@ corpus = ["huggingface-hub>=0.35,<2", "pyarrow>=21,<30", "zstandard>=0.23,<1"]
 hub = ["huggingface-hub>=0.35,<2"]
 serve-huggingface = ["accelerate>=1,<2", "transformers>=5.20,<6"]
 deploy = ["modal>=1.6.1,<2"]
-eval = [
-    "lm-eval[hf,ifeval,ruler]==0.4.13",
-    # M-IFEval-Ja's checkers, at the versions M-IFEval pins.
-    "janome==0.5.0",
-    "ja-sentence-segmenter==0.0.2",
-]
 
 [tool.uv]
 package = false

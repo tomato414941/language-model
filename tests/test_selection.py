@@ -35,6 +35,7 @@ from pretrain.recipe import (
 )
 from pretrain.selection import document_losses, select_corpora, train_classifier
 from pretrain.training import TrainConfig, train
+from tests.helpers import evaluation
 
 ROOT = Path(__file__).resolve().parents[1]
 TEXTS = {
@@ -195,12 +196,6 @@ validation_fraction = 0.1
 minimum_characters = 20
 maximum_characters = 100000
 
-[evaluation]
-framework = "lm-eval"
-version = "0.4.13"
-base_tasks = ["hellaswag"]
-instruction_tasks = ["ifeval"]
-
 [selection]
 prior = {{ checkpoint = "{prior}", sha256 = "{file_digest(prior)}" }}
 conditional = {{ checkpoint = "{conditional}", sha256 = "{file_digest(conditional)}" }}
@@ -229,24 +224,7 @@ select = {{ pool = "pool", method = "learnable" }}
         return recipe
 
     def build_pool(self, recipe_path):
-        benchmarks = self.root / "benchmarks"
-        benchmarks.mkdir()
-        questions = benchmarks / "ifeval.jsonl"
-        questions.write_text(json.dumps({"id": "1", "context": "Describe snow."}) + "\n")
-        (benchmarks / "sources.json").write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "tasks": {
-                        "ifeval": {
-                            "language": "en",
-                            "filename": questions.name,
-                            "sha256": file_digest(questions),
-                        }
-                    },
-                }
-            )
-        )
+        found = evaluation(self, self.root / "evaluation", prompts={"en": ["Describe snow without using any commas."]})
         rows = {}
         for source in read_recipe(recipe_path)["sources"]:
             language = source["language"]
@@ -272,8 +250,8 @@ select = {{ pool = "pool", method = "learnable" }}
             ),
             contextlib.redirect_stdout(io.StringIO()),
         ):
-            prepare_tokenizer(recipe_path, self.root / "tokenizer", benchmarks)
-            prepare_corpus(recipe_path, self.root / "tokenizer", self.root, benchmarks)
+            prepare_tokenizer(recipe_path, self.root / "tokenizer", found)
+            prepare_corpus(recipe_path, self.root / "tokenizer", self.root, found)
 
     def rain_share(self, corpus):
         rows = [

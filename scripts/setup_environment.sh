@@ -12,7 +12,7 @@ if [[ ! -x "$project_root/.tools/uv" ]] || [[ $("$project_root/.tools/uv" --vers
     https://astral.sh/uv/0.13.4/install.sh --output "$installer"
   UV_INSTALL_DIR="$project_root/.tools" UV_NO_MODIFY_PATH=1 sh "$installer"
 fi
-"$project_root/.tools/uv" sync --frozen --extra train --extra hub --extra eval --extra corpus
+"$project_root/.tools/uv" sync --frozen --extra train --extra hub --extra corpus
 # torch.compile builds small C helpers for its Triton kernels, which need a C
 # compiler and Python's headers; CUDA's base images leave both out.
 if ! command -v cc >/dev/null || ! "$project_root/.tools/uv" run --no-sync python -c \

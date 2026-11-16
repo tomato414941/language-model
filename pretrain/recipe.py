@@ -33,8 +33,8 @@ from tokenizers import Regex, Tokenizer, decoders, models, pre_tokenizers, train
 
 from .conversation import conversation_text
 from .data import BOS, EOS, LANGUAGES, Corpus, file_digest, read_documents
-from .instructions import BenchmarkFilter
 from .model import LanguageModel
+from .overlap import EVALUATION, EvaluationOverlap, artifacts
 from .training import TrainConfig, read_config, read_length
 
 SOURCE_FORMATS = {
@@ -368,8 +368,6 @@ def read_recipe(path):
         if patch_training.steps != math.ceil(patches[0]["training_tokens"] / patch_tokens):
             raise ValueError("patch_config's steps must cover the patch corpus")
         check_order(patches[0], patch_training)
-    if recipe["evaluation"]["framework"] != "lm-eval":
-        raise ValueError("evaluation uses the standard lm-evaluation-harness tasks")
     if "sft" in recipe and (
         type(recipe["sft"]["epochs"]) is not int or recipe["sft"]["epochs"] <= 0
     ):
@@ -495,7 +493,6 @@ TRAINING_SETTINGS = (
     "training_config",
     "patch_config",
     "compile",
-    "evaluation",
     "sft",
     "initialize_from",
     "continue_from",
@@ -555,20 +552,18 @@ def inspect_recipe(path, workdir):
     corpora = corpus_paths(recipe, workdir)
     runs = run_paths(path, recipe)
     config = Path(path).parent / recipe["training_config"]
-    evaluation = recipe["evaluation"]
-    tasks = evaluation["base_tasks"]
-    japanese = evaluation.get("llm_jp_eval_tasks", [])
     compiled = ["--compile"] if recipe.get("compile") else []
-    benchmarks, tokenizer = workdir / "benchmarks", workdir / "tokenizer"
+    tokenizer = workdir / "tokenizer"
+    # What tells the text that overlaps the evaluation, kept by their names before the preparation (pretrain.overlap).
+    overlaps = [EVALUATION / name for name in artifacts()]
 
     def stage(name, reads=(), leaves=()):
         return planned(name, "recipe", ["--config", path, "--workdir", workdir, "--stage", name], reads, leaves)
 
     selected = [item for item in recipe["corpora"] if "select" in item]
     preparation = [
-        planned("fetch-benchmarks", "fetch-benchmarks", ["--output", benchmarks], leaves=[benchmarks]),
-        stage("tokenizer", [benchmarks], [tokenizer]),
-        stage("corpus", [tokenizer, benchmarks], [corpora[item["name"]] for item in streamed(recipe)]),
+        stage("tokenizer", overlaps, [tokenizer]),
+        stage("corpus", [tokenizer, *overlaps], [corpora[item["name"]] for item in streamed(recipe)]),
         *([stage("select", sorted({corpora[item["select"]["pool"]] for item in selected}),
                  [corpora[item["name"]] for item in selected])] if selected else []),
         stage("validate", list(corpora.values())),
@@ -589,15 +584,15 @@ def inspect_recipe(path, workdir):
             [output / "last.pt", output / "metrics.jsonl", *([output / "snapshots"] if snapshots else [])],
             {"settings": str(settings), "from_step": start, "to_step": end}))
 
-    def benchmark(checkpoint, selected, japanese, tuned=False):
+    def measure(kind, checkpoint):
+        """Measure a checkpoint by a definition that judges a generation (docs/evaluation.md), `knowledge` or
+        `instructions`, into a result beside it."""
         checkpoint = Path(checkpoint)
         suffix = "" if checkpoint.stem == "last" else f"-{checkpoint.stem}"
-        output = checkpoint.parent / f"benchmarks{suffix}.json"
-        arguments = ["--checkpoint", checkpoint, "--device", "cuda", "--output", output,
-                     *(["--batch-tokens", evaluation["batch_tokens"]] if "batch_tokens" in evaluation else []),
-                     *(["--also-as-conversation"] if tuned else []),
-                     *(["--llm-jp-eval", *japanese] if japanese else []), "--tasks", *selected]
-        experiment.append(planned(f"benchmark-{checkpoint.parent.name}{suffix}", "benchmark", arguments,
+        output = checkpoint.parent / f"{kind}{suffix}.json"
+        given = ["--artifacts", EVALUATION] if kind == "knowledge" else ["--work", Path("work") / "instructions"]
+        experiment.append(planned(f"{kind}-{checkpoint.parent.name}{suffix}", kind,
+                                  ["--checkpoint", checkpoint, "--device", "cuda", *given, "--output", output],
                                   [checkpoint], [output]))
 
     phases = [item for item in recipe["corpora"] if item["purpose"] == "phase"]
@@ -622,15 +617,15 @@ def inspect_recipe(path, workdir):
                   snapshots=bool(training.snapshot_every) and last)
             begin, step = ("--continue-from", runs[item["name"]] / "last.pt"), end
         final = runs[phases[-1]["name"]]
-        benchmark(final / "last.pt", tasks, japanese)
+        measure("knowledge", final / "last.pt")
         if training.snapshot_every:
-            # The weights kept through the decay, averaged, are scored beside the last.
+            # The weights kept through the decay, averaged, are measured beside the last.
             averaged = final / "averaged.pt"
             experiment.append(planned(
                 f"average-{final.name}", "average",
                 ["--run", final, "--count", training.decay_steps // training.snapshot_every, "--output", averaged],
                 [final / "last.pt", final / "snapshots"], [averaged]))
-            benchmark(averaged, tasks, japanese)
+            measure("knowledge", averaged)
     else:
         evaluations = [corpora[item["name"]] for item in recipe["corpora"] if item["purpose"] == "evaluation"]
         for item in recipe["corpora"]:
@@ -643,7 +638,7 @@ def inspect_recipe(path, workdir):
                 experiment.append(planned(
                     f"evaluate-{output.name}-{data.name}", "evaluate",
                     ["--checkpoint", output / "last.pt", "--data", data, "--other-data"], [output / "last.pt", data]))
-            benchmark(output / "last.pt", tasks, japanese)
+            measure("knowledge", output / "last.pt")
     if phases and "sft" in recipe:
         stem = Path(path).stem
         tuned = Path("runs") / (
@@ -656,21 +651,16 @@ def inspect_recipe(path, workdir):
                 "--source", source, "--tokenizer", tokenizer / "tokenizer.json", "--output", instructions,
                 "--context", model.context,
                 "--validation-conversations", recipe["sft"]["validation_conversations_per_language"],
-                "--max-reply-tokens", recipe["sft"]["max_reply_tokens"], "--benchmarks", benchmarks,
-            ], [source, tokenizer, benchmarks], [instructions]),
+                "--max-reply-tokens", recipe["sft"]["max_reply_tokens"], "--evaluation", EVALUATION,
+            ], [source, tokenizer, *overlaps], [instructions]),
             stage("sft-config", [instructions, tokenizer], [settings]),
         ]
         train(tuned, settings, instructions, ("--initialize-from", final / "last.pt"))
         # The tuning's settings come from the preparation, as its data does.
         experiment[-1]["reads"].append(str(settings))
-        benchmark(tuned / "last.pt", [*tasks, *evaluation["instruction_tasks"]],
-                  [*japanese, *evaluation.get("llm_jp_eval_instruction_tasks", [])], tuned=True)
-        final = tuned
-    if evaluation.get("ruler") and final is not None:
-        # RULER at 8,192 and 16,384 tokens for the last model, for reference.
-        experiment.append(planned(f"ruler-{final.name}", "ruler",
-                                  ["--checkpoint", final / "last.pt", "--device", "cuda",
-                                   "--output", final / "ruler.json"], [final / "last.pt"], [final / "ruler.json"]))
+        measure("instructions", tuned / "last.pt")
+        # What the tuned model still knows, which does not judge it.
+        measure("knowledge", tuned / "last.pt")
     sources = sources_by_id(recipe)
     return {
         "data_fingerprint": data_fingerprint(path),
@@ -712,7 +702,6 @@ def inspect_recipe(path, workdir):
             for item in recipe["corpora"]
         ),
         "checkpoint_bytes_approximate": parameters * 12,
-        "evaluation": recipe["evaluation"],
         "sft": recipe.get("sft"),
         "preparation": preparation,
         "experiment": experiment,
@@ -1112,7 +1101,7 @@ def earlier_documents(recipe):
 def accepted_documents(
     source,
     recipe,
-    benchmarks,
+    overlap,
     database,
     stats,
     training_fraction=None,
@@ -1130,7 +1119,7 @@ def accepted_documents(
         if text is None:
             stats["quality_rejected"] += 1
             continue
-        if benchmarks.matches(text, source["language"]):
+        if overlap.holds(text):
             stats["contaminated"] += 1
             continue
         digest = document_digest(text, recipe["seed"])
@@ -1157,9 +1146,10 @@ def accepted_documents(
         yield text, digest, row
 
 
-def prepare_tokenizer(recipe_path, output, benchmarks_path):
+def prepare_tokenizer(recipe_path, output, evaluation=EVALUATION):
     recipe = read_recipe(recipe_path)
     settings = recipe["tokenizer"]
+    overlap = EvaluationOverlap(evaluation)
     samples = None
     with output_directory(output) as staging, ExitStack() as stack:
         if "reuse_sha256" in settings:
@@ -1175,11 +1165,11 @@ def prepare_tokenizer(recipe_path, output, benchmarks_path):
             ):
                 raise ValueError("the reused tokenizer does not match the recipe")
         else:
-            samples = train_tokenizer(recipe, staging, stack, benchmarks_path)
+            samples = train_tokenizer(recipe, staging, stack, overlap)
         manifest = {
             "version": 1,
             "data_fingerprint": data_fingerprint(recipe_path),
-            "benchmarks_sha256": file_digest(Path(benchmarks_path) / "sources.json"),
+            "evaluation": overlap.made_from,
             "tokenizer_sha256": file_digest(staging / "tokenizer.json"),
             "reused": samples is None,
             "samples": samples,
@@ -1213,8 +1203,7 @@ def pre_tokenizer(settings):
     return byte_level
 
 
-def train_tokenizer(recipe, staging, stack, benchmarks_path):
-    benchmarks = BenchmarkFilter(benchmarks_path)
+def train_tokenizer(recipe, staging, stack, overlap):
     sources = sources_by_id(recipe)
     database = stack.enter_context(closing(seen_documents(staging)))
     destinations = {
@@ -1236,7 +1225,7 @@ def train_tokenizer(recipe, staging, stack, benchmarks_path):
         for text, _, _ in accepted_documents(
             source,
             recipe,
-            benchmarks,
+            overlap,
             database,
             stats,
             training_fraction=validation_fraction(recipe, first),
@@ -1345,14 +1334,14 @@ def part_directory(parts_root, part):
     return Path(parts_root) / f"{part['source']}-{part['index']:04d}"
 
 
-def prepare_part(recipe_path, tokenizer_directory, benchmarks_path, part, parts_root):
+def prepare_part(recipe_path, tokenizer_directory, evaluation, part, parts_root):
     """Tokenize one part of a source into per-corpus pieces for merging."""
     recipe = read_recipe(recipe_path)
     source = sources_by_id(recipe)[part["source"]]
     corpora = {item["name"]: item for item in recipe["corpora"]}
     tokenizer = Tokenizer.from_file(str(Path(tokenizer_directory) / "tokenizer.json"))
     bos, eos = tokenizer.token_to_id(BOS), tokenizer.token_to_id(EOS)
-    benchmarks = BenchmarkFilter(benchmarks_path)
+    overlap = EvaluationOverlap(evaluation)
     output = part_directory(parts_root, part)
     output.mkdir(parents=True)
     # The field scoring each document, for the corpora written in quality order.
@@ -1375,7 +1364,7 @@ def prepare_part(recipe_path, tokenizer_directory, benchmarks_path, part, parts_
         stream = accepted_documents(
             source,
             recipe,
-            benchmarks,
+            overlap,
             database,
             scanned,
             part=part,
@@ -1447,7 +1436,7 @@ def prepare_part(recipe_path, tokenizer_directory, benchmarks_path, part, parts_
 
 
 def prepare_corpus(
-    recipe_path, tokenizer_directory, workdir, benchmarks_path, workers=1
+    recipe_path, tokenizer_directory, workdir, evaluation=EVALUATION, workers=1
 ):
     """Write every corpus read from the sources; no document appears in two of them.
 
@@ -1457,14 +1446,15 @@ def prepare_corpus(
     recipe = read_recipe(recipe_path)
     tokenizer_directory = Path(tokenizer_directory)
     tokenizer_manifest = json.loads((tokenizer_directory / "manifest.json").read_text())
-    benchmark_digest = file_digest(Path(benchmarks_path) / "sources.json")
+    # Made here before the parts are read, which fetches the authors' code once.
+    made_from = EvaluationOverlap(evaluation).made_from
     fingerprint = data_fingerprint(recipe_path)
     if (
         tokenizer_manifest.get("data_fingerprint") != fingerprint
-        or tokenizer_manifest["benchmarks_sha256"] != benchmark_digest
+        or tokenizer_manifest.get("evaluation") != made_from
     ):
         raise ValueError(
-            "use the tokenizer trained with this recipe and benchmark exclusions"
+            "use the tokenizer trained with this recipe, without the same evaluation's text"
         )
     if (
         file_digest(tokenizer_directory / "tokenizer.json")
@@ -1483,7 +1473,7 @@ def prepare_corpus(
         {
             "data_fingerprint": fingerprint,
             "tokenizer_sha256": tokenizer_manifest["tokenizer_sha256"],
-            "benchmarks_sha256": benchmark_digest,
+            "evaluation": made_from,
         },
     )
     manifests, short = {}, []
@@ -1512,7 +1502,7 @@ def prepare_corpus(
             # found within minutes instead of after the large parts.
             arguments = sorted(
                 (
-                    (recipe_path, tokenizer_directory, benchmarks_path, part, parts_root)
+                    (recipe_path, tokenizer_directory, evaluation, part, parts_root)
                     for part in parts
                     if (part["source"], part["index"]) not in finished
                 ),
@@ -1536,7 +1526,7 @@ def prepare_corpus(
                         tokenizer,
                         tokenizer_directory,
                         tokenizer_manifest,
-                        benchmark_digest,
+                        made_from,
                         fingerprint,
                         database,
                         staging[item["name"]],
@@ -1553,7 +1543,7 @@ def keep_finished_parts(parts_root, parts, stage):
     """Ready the directory of parts, keeping those an interrupted run of the same stage finished.
 
     A part writes its record of itself last, so a part without it is read
-    again. A stage with another recipe, tokenizer or benchmarks reads every
+    again. A stage with another recipe, tokenizer or evaluation reads every
     part again. Return the finished parts.
     """
     record = parts_root / "stage.json"
@@ -1718,7 +1708,7 @@ def write_corpus(
     tokenizer,
     tokenizer_directory,
     tokenizer_manifest,
-    benchmark_digest,
+    evaluation,
     fingerprint,
     database,
     staging,
@@ -1849,7 +1839,7 @@ def write_corpus(
             "sources": used,
             # The sources whose training documents run from the lowest score to the highest, and their fields.
             **({"quality": item["quality"]} if "quality" in item else {}),
-            "benchmarks_sha256": benchmark_digest,
+            "evaluation": evaluation,
             "documents": counts,
             "duplicates_removed": sum(
                 source["statistics"].get("duplicates", 0) for source in used.values()
@@ -1949,11 +1939,10 @@ def write_sft_config(recipe_path, data, tokenizer_directory, output):
     if (
         tokenizer_manifest.get("data_fingerprint") != data_fingerprint(recipe_path)
         or corpus.manifest["tokenizer_sha256"] != tokenizer_manifest["tokenizer_sha256"]
-        or corpus.manifest["benchmarks_sha256"]
-        != tokenizer_manifest["benchmarks_sha256"]
+        or corpus.manifest.get("evaluation") != tokenizer_manifest.get("evaluation")
     ):
         raise ValueError(
-            "SFT must use this recipe's tokenizer and benchmark exclusions"
+            "SFT must use this recipe's tokenizer, without the same evaluation's text"
         )
     sft = recipe["sft"]
     tokens_per_step = sft["batch_size"] * sft["accumulation_steps"] * model.context

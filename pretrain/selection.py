@@ -466,7 +466,7 @@ def write_selection(recipe, item, pool, ranked, summary, fingerprint, output):
                     "vocabulary_size",
                     "tokenizer_sha256",
                     "tokenizer_training",
-                    "benchmarks_sha256",
+                    "evaluation",
                 )
             },
             "corpus": item["name"],

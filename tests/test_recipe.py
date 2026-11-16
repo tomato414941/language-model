@@ -38,7 +38,8 @@ from tokenizers import Tokenizer
 from pretrain.__main__ import main
 from pretrain.data import Corpus, file_digest
 from pretrain.conversation import conversation_text
-from pretrain.instructions import BenchmarkFilter, InstructionCorpus, prepare_instructions
+from pretrain.instructions import InstructionCorpus, prepare_instructions
+from pretrain.overlap import EvaluationOverlap, artifacts
 from pretrain.recipe import (
     accepted_documents,
     data_fingerprint,
@@ -60,6 +61,7 @@ from pretrain.recipe import (
     write_sft_config,
 )
 from pretrain.training import load_checkpoint, read_config, train
+from tests.helpers import evaluation
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -122,25 +124,9 @@ class RecipeTests(unittest.TestCase):
             "[training]\nsteps=8\nbatch_size=2\naccumulation_steps=1\nwarmup_steps=1\neval_batches=1\n"
         )
         self.recipe = read_recipe(self.recipe_path)
-        self.benchmarks = self.root / "benchmarks"
-        self.benchmarks.mkdir()
+        # An instruction prompt of the evaluation, which no training text may hold.
         self.question = "Describe rain without using commas."
-        questions = self.benchmarks / "ifeval.jsonl"
-        questions.write_text(json.dumps({"id": "1", "context": self.question}) + "\n")
-        (self.benchmarks / "sources.json").write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "tasks": {
-                        "ifeval": {
-                            "language": "en",
-                            "filename": questions.name,
-                            "sha256": file_digest(questions),
-                        }
-                    },
-                }
-            )
-        )
+        self.evaluation = evaluation(self, self.root / "evaluation", prompts={"en": [self.question]})
         self.rows = {}
         for source in self.recipe["sources"]:
             language = source["language"]
@@ -193,9 +179,9 @@ class RecipeTests(unittest.TestCase):
 
     def prepare(self):
         tokenizer = self.root / "tokenizer"
-        prepare_tokenizer(self.recipe_path, tokenizer, self.benchmarks)
+        prepare_tokenizer(self.recipe_path, tokenizer, self.evaluation)
         with contextlib.redirect_stdout(io.StringIO()):
-            prepare_corpus(self.recipe_path, tokenizer, self.root, self.benchmarks)
+            prepare_corpus(self.recipe_path, tokenizer, self.root, self.evaluation)
         return Corpus(self.root / "corpus")
 
     def test_学習計画のモデル規模と混合比と実行手順を表示する(self):
@@ -209,21 +195,17 @@ class RecipeTests(unittest.TestCase):
             15_000_000_000,
         )
         self.assertEqual(
-            plan["experiment"][-1]["argv"][-13:],
+            plan["experiment"][-1]["argv"][3:],
             [
-                "--llm-jp-eval",
-                "kuci",
-                "--tasks",
-                "hellaswag",
-                "arc_easy",
-                "ja_leaderboard_jcommonsenseqa",
-                "sciq",
-                "piqa",
-                "lambada_openai",
-                "blimp",
-                "ja_leaderboard_xwinograd",
-                "ja_leaderboard_jnli",
-                "ifeval",
+                "knowledge",
+                "--checkpoint",
+                "runs/instructions-1b/last.pt",
+                "--device",
+                "cuda",
+                "--artifacts",
+                "data/evaluation",
+                "--output",
+                "runs/instructions-1b/knowledge.json",
             ],
         )
         output = io.StringIO()
@@ -239,33 +221,42 @@ class RecipeTests(unittest.TestCase):
             )
         self.assertEqual(json.loads(output.getvalue())["nominal_training_tokens"], 2000)
 
-    def test_日本語の課題をllm_jp_evalで評価する手順を事前学習と指示学習の評価に加える(self):
-        """llm-jp-evalのデータセットを、事前学習の評価に渡し、指示学習の評価には指示の課題も加えて渡す。"""
-        plan = inspect_recipe(ROOT / "configs/pretrain-v5.toml", "data/pretrain-v5")
-        benchmarks = commands(plan, "benchmark")
-        asked = [command[command.index("--llm-jp-eval") + 1 : command.index("--tasks")] for command in benchmarks]
-        self.assertEqual(asked[0], ["kuci", "jmmlu"])
-        self.assertEqual(asked[-1], ["kuci", "jmmlu", "mif_eval_ja"])
-
-    def test_指示学習の評価だけを会話形式でも問う手順にする(self):
+    def test_事前学習の後のモデルの知識と指示学習の後のモデルの指示に従う力と知識を測る手順にする(self):
+        """事前学習の後は最後の重みと平均した重みの知識を測り、指示学習の後は指示に従う力と、参考の知識を測る。"""
         plan = inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6")
-        benchmarks = commands(plan, "benchmark")
-        self.assertEqual(["--also-as-conversation" in command for command in benchmarks], [False, False, True])
+        measured = [(command["kind"], command["argv"][command["argv"].index("--checkpoint") + 1],
+                     command["leaves"]) for command in plan["experiment"]
+                    if command["kind"] in ("knowledge", "instructions")]
+        self.assertEqual(measured, [
+            ("knowledge", "runs/pretrain-v6-decay/last.pt", ["runs/pretrain-v6-decay/knowledge.json"]),
+            ("knowledge", "runs/pretrain-v6-decay/averaged.pt", ["runs/pretrain-v6-decay/knowledge-averaged.json"]),
+            ("instructions", "runs/instructions-v6/last.pt", ["runs/instructions-v6/instructions.json"]),
+            ("knowledge", "runs/instructions-v6/last.pt", ["runs/instructions-v6/knowledge.json"]),
+        ])
+        for command in commands(plan, "knowledge"):
+            self.assertEqual(command[command.index("--artifacts") + 1], "data/evaluation")
+        for command in commands(plan, "instructions"):
+            self.assertEqual(command[command.index("--work") + 1], "work/instructions")
 
-    def test_減衰の間に残した重みの平均も最後の重みと別に評価する手順にする(self):
+    def test_減衰の間に残した重みの平均も最後の重みと別に測る手順にする(self):
         plan = inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6")
         experiment = [command["argv"] for command in plan["experiment"]]
-        benchmarks = commands(plan, "benchmark")
-        last, averaged = (command[command.index("--output") + 1] for command in benchmarks[:2])
-        self.assertEqual(last, "runs/pretrain-v6-decay/benchmarks.json")
-        self.assertEqual(averaged, "runs/pretrain-v6-decay/benchmarks-averaged.json")
+        measured = commands(plan, "knowledge")
         [average] = commands(plan, "average")
         self.assertEqual(average[average.index("--run") + 1], "runs/pretrain-v6-decay")
         self.assertEqual(average[average.index("--count") + 1], "10")
-        self.assertEqual(benchmarks[1][benchmarks[1].index("--checkpoint") + 1], average[average.index("--output") + 1])
-        self.assertLess(experiment.index(average), experiment.index(benchmarks[1]))
+        self.assertEqual(measured[1][measured[1].index("--checkpoint") + 1], average[average.index("--output") + 1])
+        self.assertLess(experiment.index(average), experiment.index(measured[1]))
         tuning = [command for command in commands(plan, "train") if "sft.toml" in command[command.index("--config") + 1]]
         self.assertEqual(tuning[0][tuning[0].index("--initialize-from") + 1], "runs/pretrain-v6-decay/last.pt")
+
+    def test_語彙とコーパスと指示データの準備は評価と重なる文章を教える成果物を読む(self):
+        plan = inspect_recipe(ROOT / "configs/pretrain-v7.toml", "data/pretrain-v7")
+        overlaps = [f"data/evaluation/{name}" for name in artifacts()]
+        reads = {command["name"]: command["reads"] for command in plan["preparation"]}
+        self.assertEqual(reads["tokenizer"], overlaps)
+        self.assertEqual(reads["corpus"][1:], overlaps)
+        self.assertEqual(reads["prepare-instructions"][2:], overlaps)
 
     def test_実験の各手順は前の手順か準備が残したものだけを読む(self):
         """実験の手順が読むものは、準備が残したデータか、それより前の手順が残したものに限る。"""
@@ -287,19 +278,6 @@ class RecipeTests(unittest.TestCase):
                          (0, stable["to_step"], late["to_step"]))
         self.assertIsNone(decay["to_step"])
         self.assertEqual(trainings["instructions-v7"]["settings"], "data/pretrain-v7/sft.toml")
-
-    def test_長い文脈の評価を求める計画は最後のモデルのRULERを最後に測る(self):
-        plan = inspect_recipe(ROOT / "configs/pretrain-v7.toml", "data/pretrain-v7")
-        last = plan["experiment"][-1]
-        self.assertEqual((last["kind"], last["reads"]), ("ruler", ["runs/instructions-v7/last.pt"]))
-        self.assertFalse(commands(inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6"), "ruler"))
-
-    def test_評価のまとまりの大きさを決めた計画はベンチマークにそれを渡す(self):
-        plan = inspect_recipe(ROOT / "configs/pretrain-v7.toml", "data/pretrain-v7")
-        for command in commands(plan, "benchmark"):
-            self.assertEqual(command[command.index("--batch-tokens") + 1], "16384")
-        plan = inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6")
-        self.assertFalse(any("--batch-tokens" in command for command in commands(plan, "benchmark")))
 
     def test_重みを残さない計画は平均を作らない(self):
         plan = inspect_recipe(ROOT / "configs/pretrain-v5.toml", "data/pretrain-v5")
@@ -452,9 +430,9 @@ class RecipeTests(unittest.TestCase):
         (self.root / "ordered-training.toml").write_text(
             (self.root / "training.toml").read_text() + 'sampling = "ordered"\n'
         )
-        prepare_tokenizer(ordered_path, self.root / "ordered-tokenizer", self.benchmarks)
+        prepare_tokenizer(ordered_path, self.root / "ordered-tokenizer", self.evaluation)
         with contextlib.redirect_stdout(io.StringIO()):
-            prepare_corpus(ordered_path, self.root / "ordered-tokenizer", self.root / "ordered", self.benchmarks)
+            prepare_corpus(ordered_path, self.root / "ordered-tokenizer", self.root / "ordered", self.evaluation)
         ordered = Corpus(self.root / "ordered/corpus")
 
         def records(corpus, source_id=None, split="train"):
@@ -594,7 +572,7 @@ class RecipeTests(unittest.TestCase):
         stats = corpus.manifest["sources"]["en-web"]["statistics"]
         self.assertGreaterEqual(stats["contaminated"], 1)
         self.assertGreaterEqual(stats["duplicates"], 1)
-        filter_ = BenchmarkFilter(self.benchmarks)
+        filter_ = EvaluationOverlap(self.evaluation)
         with sqlite3.connect(":memory:") as database:
             database.execute("CREATE TABLE documents (digest BLOB PRIMARY KEY)")
             source = next(s for s in self.recipe["sources"] if s["id"] == "ja-hq")
@@ -623,7 +601,7 @@ class RecipeTests(unittest.TestCase):
                 'vocabulary_size = 300\npretokenizer = "gpt4"\nsingle_digits = true\nreserved_tokens = 4',
             )
         )
-        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)
+        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.evaluation)
         tokenizer = Tokenizer.from_file(str(self.root / "tokenizer/tokenizer.json"))
         self.assertEqual(tokenizer.get_vocab_size(), 300)
         self.assertEqual(
@@ -645,10 +623,10 @@ class RecipeTests(unittest.TestCase):
         first = self.prepare()
         second_root = self.root / "second"
         second_tokenizer = second_root / "tokenizer"
-        prepare_tokenizer(self.recipe_path, second_tokenizer, self.benchmarks)
+        prepare_tokenizer(self.recipe_path, second_tokenizer, self.evaluation)
         with contextlib.redirect_stdout(io.StringIO()):
             prepare_corpus(
-                self.recipe_path, second_tokenizer, second_root, self.benchmarks
+                self.recipe_path, second_tokenizer, second_root, self.evaluation
             )
         second = Corpus(second_root / "corpus")
         self.assertEqual(first.fingerprint, second.fingerprint)
@@ -670,13 +648,13 @@ class RecipeTests(unittest.TestCase):
         corpora = []
         for workers in (1, 2):
             root = self.root / f"workers-{workers}"
-            prepare_tokenizer(self.recipe_path, root / "tokenizer", self.benchmarks)
+            prepare_tokenizer(self.recipe_path, root / "tokenizer", self.evaluation)
             with contextlib.redirect_stdout(io.StringIO()):
                 manifest = prepare_corpus(
                     self.recipe_path,
                     root / "tokenizer",
                     root,
-                    self.benchmarks,
+                    self.evaluation,
                     workers,
                 )["main"]
             corpora.append(Corpus(root / "corpus"))
@@ -687,22 +665,22 @@ class RecipeTests(unittest.TestCase):
 
     def test_並列に作る部分のプロセスが終わってしまうとコーパス作りを止める(self):
         """Stops at once when a part's process dies, instead of waiting for the part."""
-        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)
+        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.evaluation)
         with (
             patch("pretrain.recipe.prepare_part", side_effect=lambda *_: os._exit(1)),
             self.assertRaisesRegex(RuntimeError, "exit code 1"),
         ):
             prepare_corpus(
-                self.recipe_path, self.root / "tokenizer", self.root, self.benchmarks, 2
+                self.recipe_path, self.root / "tokenizer", self.root, self.evaluation, 2
             )
 
     def test_必要量に満たないとわかった時点で残りを読まずに止めコーパスを残さない(self):
         """部分を小さい順に読み、データ源が割当に届かないと確かになった時点で、残りの部分を読まずに止める。"""
-        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)
+        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.evaluation)
         rows, self.rows["ja-hq"] = self.rows["ja-hq"], []
         with self.assertRaisesRegex(ValueError, "short of the tokenizer sample budget"):
             prepare_tokenizer(
-                self.recipe_path, self.root / "second-tokenizer", self.benchmarks
+                self.recipe_path, self.root / "second-tokenizer", self.evaluation
             )
         self.rows["ja-hq"] = rows
         self.rows["en-math"] = self.rows["en-math"][:1]
@@ -717,7 +695,7 @@ class RecipeTests(unittest.TestCase):
             self.assertRaisesRegex(ValueError, r"main en-math lacks at least"),
         ):
             prepare_corpus(
-                self.recipe_path, self.root / "tokenizer", self.root, self.benchmarks
+                self.recipe_path, self.root / "tokenizer", self.root, self.evaluation
             )
         # The parts after en-math's, ja-hq's largest of all, are never read.
         self.assertEqual(read, ["ja-wiki", "en-math"])
@@ -725,7 +703,7 @@ class RecipeTests(unittest.TestCase):
 
     def test_止めたコーパス作りは終わった部分を読み直さずに続きから作る(self):
         """途中で止まったコーパス作りは終わった部分を残し、次は残りの部分だけを読んで、一度に作ったときと同じコーパスを作る。"""
-        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)
+        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.evaluation)
         read = []
 
         def interrupted(*arguments):
@@ -739,7 +717,7 @@ class RecipeTests(unittest.TestCase):
             contextlib.redirect_stdout(io.StringIO()),
             self.assertRaisesRegex(RuntimeError, "interrupted"),
         ):
-            prepare_corpus(self.recipe_path, self.root / "tokenizer", self.root, self.benchmarks)
+            prepare_corpus(self.recipe_path, self.root / "tokenizer", self.root, self.evaluation)
         self.assertFalse((self.root / "corpus").exists())
         resumed = []
         with (
@@ -750,13 +728,13 @@ class RecipeTests(unittest.TestCase):
             ),
             contextlib.redirect_stdout(io.StringIO()),
         ):
-            prepare_corpus(self.recipe_path, self.root / "tokenizer", self.root, self.benchmarks)
+            prepare_corpus(self.recipe_path, self.root / "tokenizer", self.root, self.evaluation)
         self.assertEqual(read, ["ja-wiki", "en-math"])
         self.assertEqual(resumed, ["en-wiki", "en-web", "ja-hq"])
         self.assertFalse((self.root / ".corpus-parts").exists())
         with contextlib.redirect_stdout(io.StringIO()):
             prepare_corpus(
-                self.recipe_path, self.root / "tokenizer", self.root / "whole", self.benchmarks
+                self.recipe_path, self.root / "tokenizer", self.root / "whole", self.evaluation
             )
         self.assertEqual(
             Corpus(self.root / "corpus").fingerprint, Corpus(self.root / "whole/corpus").fingerprint
@@ -764,7 +742,7 @@ class RecipeTests(unittest.TestCase):
 
     def test_レシピが変わったら止めたときの部分を使わずに読み直す(self):
         """途中で止まったあとにレシピが変わったら、残っていた部分は使わず、すべての部分を読み直す。"""
-        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)
+        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.evaluation)
         read = []
 
         def interrupted(*arguments):
@@ -778,11 +756,11 @@ class RecipeTests(unittest.TestCase):
             contextlib.redirect_stdout(io.StringIO()),
             self.assertRaisesRegex(RuntimeError, "interrupted"),
         ):
-            prepare_corpus(self.recipe_path, self.root / "tokenizer", self.root, self.benchmarks)
+            prepare_corpus(self.recipe_path, self.root / "tokenizer", self.root, self.evaluation)
         text = self.recipe_path.read_text()
         self.assertIn("minimum_characters = 50", text)
         self.recipe_path.write_text(text.replace("minimum_characters = 50", "minimum_characters = 60"))
-        prepare_tokenizer(self.recipe_path, self.root / "second-tokenizer", self.benchmarks)
+        prepare_tokenizer(self.recipe_path, self.root / "second-tokenizer", self.evaluation)
         reread = []
         with (
             patch(
@@ -793,13 +771,13 @@ class RecipeTests(unittest.TestCase):
             contextlib.redirect_stdout(io.StringIO()),
         ):
             prepare_corpus(
-                self.recipe_path, self.root / "second-tokenizer", self.root, self.benchmarks
+                self.recipe_path, self.root / "second-tokenizer", self.root, self.evaluation
             )
         self.assertEqual(len(reread), 5)
 
     def test_ほかのデータ源と重なって足りなくなったデータ源をまとめて通知する(self):
         """部分ごとには足りていても、まとめるときにほかのデータ源と重なる文書を除いて足りなくなったデータ源を、すべて通知する。"""
-        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)
+        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.evaluation)
         for copy, original in (("ja-wiki", "ja-hq"), ("en-wiki", "en-web")):
             self.rows[copy] = [
                 {**row, "text": source["text"]}
@@ -810,7 +788,7 @@ class RecipeTests(unittest.TestCase):
             self.assertRaisesRegex(ValueError, r"main ja-wiki lacks .*main en-wiki lacks"),
         ):
             prepare_corpus(
-                self.recipe_path, self.root / "tokenizer", self.root, self.benchmarks
+                self.recipe_path, self.root / "tokenizer", self.root, self.evaluation
             )
         self.assertFalse((self.root / "corpus").exists())
 
@@ -828,9 +806,9 @@ class RecipeTests(unittest.TestCase):
             )
         )
         later = self.root / "later"
-        prepare_tokenizer(recipe, later / "tokenizer", self.benchmarks)
+        prepare_tokenizer(recipe, later / "tokenizer", self.evaluation)
         with contextlib.redirect_stdout(io.StringIO()):
-            manifest = prepare_corpus(recipe, later / "tokenizer", later, self.benchmarks)[
+            manifest = prepare_corpus(recipe, later / "tokenizer", later, self.evaluation)[
                 "main"
             ]
 
@@ -843,9 +821,9 @@ class RecipeTests(unittest.TestCase):
             for split, target in source["targets"].items():
                 self.assertGreaterEqual(source["statistics"][f"{split}_tokens"], target)
         recipe.write_text(recipe.read_text().replace(file_digest(documents), "0" * 64))
-        prepare_tokenizer(recipe, later / "second-tokenizer", self.benchmarks)
+        prepare_tokenizer(recipe, later / "second-tokenizer", self.evaluation)
         with self.assertRaisesRegex(ValueError, "do not match their checksum"):
-            prepare_corpus(recipe, later / "second-tokenizer", later / "second", self.benchmarks)
+            prepare_corpus(recipe, later / "second-tokenizer", later / "second", self.evaluation)
         recipe.write_text(text.replace("[corpus]\n", '[corpus]\nexcluded_corpora = [{ path = "corpus" }]\n'))
         with self.assertRaisesRegex(ValueError, "excluded corpus"):
             read_recipe(recipe)
@@ -946,7 +924,7 @@ class RecipeTests(unittest.TestCase):
             self.root / "tokenizer/tokenizer.json",
             context=128,
             validation_conversations=2,
-            benchmarks=self.benchmarks,
+            evaluation=self.evaluation,
         )
         result = write_sft_config(
             self.recipe_path,
@@ -1048,7 +1026,7 @@ class RecipeTests(unittest.TestCase):
 
     def phase_recipe(self, extra=""):
         """A two-phase recipe that reuses the fixture's tokenizer and sources."""
-        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.benchmarks)
+        prepare_tokenizer(self.recipe_path, self.root / "tokenizer", self.evaluation)
         (self.root / "phases.toml").write_text(
             '[model]\narchitecture="llama"\nwidth=24\nheads=4\nkv_heads=2\nlayers=1\nintermediate_size=64\ncontext=128\n'
             "[training]\nsteps=6\nbatch_size=2\naccumulation_steps=1\nwarmup_steps=1\neval_batches=1\n"
@@ -1070,10 +1048,6 @@ reuse_sha256 = "{digest}"
 validation_tokens_per_language = 200
 minimum_characters = 50
 maximum_characters = 100000
-
-[evaluation]
-framework = "lm-eval"
-base_tasks = ["arc_easy"]
 
 [[corpora]]
 name = "stable"
@@ -1169,7 +1143,7 @@ mix = {{ ja-hq = 25, ja-wiki = 25, en-web = 25, en-wiki = 25 }}
 
     def test_記録した語彙を再利用し異なる語彙を拒否する(self):
         recipe = self.phase_recipe()
-        prepare_tokenizer(recipe, self.root / "reused", self.benchmarks)
+        prepare_tokenizer(recipe, self.root / "reused", self.evaluation)
         self.assertEqual(
             file_digest(self.root / "reused/tokenizer.json"),
             file_digest(self.root / "tokenizer/tokenizer.json"),
@@ -1178,17 +1152,17 @@ mix = {{ ja-hq = 25, ja-wiki = 25, en-web = 25, en-wiki = 25 }}
         start = text.index('reuse_sha256 = "') + len('reuse_sha256 = "')
         recipe.write_text(text[:start] + "0" * 64 + text[start + 64 :])
         with self.assertRaisesRegex(ValueError, "does not match its checksum"):
-            prepare_tokenizer(recipe, self.root / "rejected", self.benchmarks)
+            prepare_tokenizer(recipe, self.root / "rejected", self.evaluation)
 
     def test_段階ごとのコーパスを重複なく作り段階をつなぐ手順を示す(self):
         recipe = self.phase_recipe('initialize_from = "runs/base/model.pt"\n')
-        prepare_tokenizer(recipe, self.root / "phased/tokenizer", self.benchmarks)
+        prepare_tokenizer(recipe, self.root / "phased/tokenizer", self.evaluation)
         with contextlib.redirect_stdout(io.StringIO()):
             manifests = prepare_corpus(
                 recipe,
                 self.root / "phased/tokenizer",
                 self.root / "phased",
-                self.benchmarks,
+                self.evaluation,
             )
         self.assertEqual(set(manifests), {"stable", "decay"})
         self.assertTrue(validate_corpus(recipe, self.root / "phased")["ready"])

@@ -25,16 +25,6 @@ minimum_characters = 300
 maximum_characters = 100000
 part_tokens = 100_000_000
 
-[evaluation]
-framework = "lm-eval"
-version = "0.4.13"
-base_tasks = [
-    "hellaswag", "arc_easy", "ja_leaderboard_jcommonsenseqa", "sciq", "piqa",
-    "lambada_openai", "blimp", "ja_leaderboard_xwinograd", "ja_leaderboard_jnli",
-]
-instruction_tasks = ["ifeval"]
-llm_jp_eval_tasks = ["kuci"]
-
 # The sources without the files continue-v4 read, in continue-v4's split of
 # the two languages.
 [[corpora]]

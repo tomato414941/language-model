@@ -20,7 +20,7 @@ from pretrain.model import LanguageModel, ModelConfig
 from pretrain.remote import GPUTime, RemoteTextModel, relay
 from responses_api import ModelSettings
 from server import create_app
-from tests.test_benchmarks import byte_tokenizer
+from tests.test_huggingface import byte_tokenizer
 
 MARKERS = [
     "<pad>", "<eos>", "<bos>", "<|turn>", "<turn|>", "<|think|>", "<|channel>", "<channel|>",

@@ -13,21 +13,38 @@ procedure nor the definition holds; the model's own replies compare with these a
 """
 import random
 from pathlib import Path
-from types import SimpleNamespace
 
-from .conversation import chat_prompt
-from .evaluation import NativeLM
+from .conversation import chat_prompt, reply_ends
+from .data import BOS
+from .training import autocast
 
 DEFINITION = "instructions-ja-en-1"
 
 
 def replies(model, tokenizer, device, precision, batch_tokens, asked, limit):
-    """The model's reply to each prompt ({prompt: reply}), each prompt the user's message of a conversation."""
-    backend = NativeLM(model, tokenizer, device, precision, batch_tokens)
-    requests = [SimpleNamespace(args=(chat_prompt([{"role": "user", "content": row["prompt"]}]),
-                                      {"max_gen_toks": limit, "until": []}))
-                for row in asked]
-    return {row["prompt"]: reply for row, reply in zip(asked, backend.generate_until(requests, disable_tqdm=True))}
+    """The model's reply to each prompt ({prompt: reply}), each prompt the user's message of a conversation after the
+    BOS token, written greedily up to `limit` tokens. The prompts are written together, the longest first, as many at a
+    time as fit in `batch_tokens` with their replies; a prompt that leaves too little room to reply keeps its end."""
+    bos = tokenizer.token_to_id(BOS)
+    room = model.config.context - limit + 1
+    prompts = []
+    for row in asked:
+        tokens = tokenizer.encode(chat_prompt([{"role": "user", "content": row["prompt"]}]),
+                                  add_special_tokens=False).ids
+        if not tokens or tokens[0] != bos:
+            tokens.insert(0, bos)
+        prompts.append(tokens[-room:] if 0 < room < len(tokens) else tokens)
+    order = sorted(range(len(prompts)), key=lambda index: -len(prompts[index]))
+    written, start = [None] * len(prompts), 0
+    while start < len(order):
+        batch = order[start:start + max(1, batch_tokens // (len(prompts[order[start]]) + limit))]
+        start += len(batch)
+        with autocast(device, precision):
+            continuations = model.continue_greedily([prompts[index] for index in batch], limit,
+                                                    reply_ends(tokenizer), banned=[bos])
+        for index, continuation in zip(batch, continuations):
+            written[index] = tokenizer.decode(continuation, skip_special_tokens=True)
+    return {row["prompt"]: reply for row, reply in zip(asked, written)}
 
 
 def others(asked, replies, seed):

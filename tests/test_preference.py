@@ -15,7 +15,6 @@ import numpy as np
 import torch
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 
-from pretrain.data import file_digest
 from pretrain.model import LanguageModel, ModelConfig
 from pretrain.preference import (
     PreferenceConfig,
@@ -26,6 +25,7 @@ from pretrain.preference import (
     train_preferences,
 )
 from pretrain.training import atomic_save, load_model
+from tests.helpers import evaluation
 
 
 # The special tokens, eight reserved tokens that mark conversations, and bytes.
@@ -62,25 +62,9 @@ class PreferenceTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.tokenizer = byte_tokenizer()
         self.tokenizer.save(str(self.root / "tokenizer.json"))
-        benchmarks = self.root / "benchmarks"
-        benchmarks.mkdir()
+        # An instruction prompt of the evaluation, which no training text may hold.
         self.question = "Describe rain without using commas."
-        (benchmarks / "ifeval.jsonl").write_text(json.dumps({"id": "1", "context": self.question}) + "\n")
-        (benchmarks / "sources.json").write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "tasks": {
-                        "ifeval": {
-                            "language": "en",
-                            "filename": "ifeval.jsonl",
-                            "sha256": file_digest(benchmarks / "ifeval.jsonl"),
-                        }
-                    },
-                }
-            )
-        )
-        self.benchmarks = benchmarks
+        self.evaluation = evaluation(self, self.root / "evaluation", prompts={"en": [self.question]})
 
     def write_source(self, pairs_by_language):
         source = self.root / "source"
@@ -138,7 +122,7 @@ class PreferenceTests(unittest.TestCase):
         ]
         manifest = prepare_preferences(
             self.write_source(pairs), self.root / "pairs", self.root / "tokenizer.json",
-            context=64, validation_pairs=2, benchmarks=self.benchmarks,
+            context=64, validation_pairs=2, evaluation=self.evaluation,
         )
         english = manifest["pairs"]["en"]
         self.assertEqual(

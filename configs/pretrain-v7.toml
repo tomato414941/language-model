@@ -14,8 +14,7 @@
 # score keep their written order. The decay phase's documents come in two
 # corpora of the same mix, so that the learning rate starts down only with the
 # second, the last two fifths of them: at 630M, decaying over the last 40% of
-# the switched data lowered its loss by 0.014 to 0.024. RULER's SQuAD and
-# HotpotQA questions are left out with the other benchmarks' questions.
+# the switched data lowered its loss by 0.014 to 0.024.
 training_config = "model-v7.toml"
 patch_config = "model-v7-patch.toml"
 sources = "sources.toml"
@@ -34,33 +33,9 @@ validation_tokens_per_language = 5_000_000
 minimum_characters = 300
 maximum_characters = 100000
 
-[evaluation]
-framework = "lm-eval"
-version = "0.4.13"
-# OpenBookQA, WinoGrande and BoolQ complete the seven tasks of HobbyLM's table
-# that the pretrained models are listed beside; their questions stay in the
-# training data, as in v5's and v6's.
-base_tasks = [
-    "hellaswag", "arc_easy", "ja_leaderboard_jcommonsenseqa", "sciq", "piqa",
-    "lambada_openai", "blimp", "ja_leaderboard_xwinograd", "ja_leaderboard_jnli",
-    "mmlu_continuation", "arc_challenge", "gsm8k", "ja_leaderboard_mgsm",
-    "humaneval", "mbpp", "ja_leaderboard_jsquad",
-    "openbookqa", "winogrande", "boolq",
-]
-# MMLU in its authors' form joins the pass line's English mean.
-instruction_tasks = ["ifeval", "mmlu"]
-# llm-jp-eval leaves out JHumanEval, whose processing it does not allow for
-# commercial use.
-llm_jp_eval_tasks = ["kuci", "jmmlu"]
-llm_jp_eval_instruction_tasks = ["mif_eval_ja"]
-# Tokens a benchmark batch holds on the GPU, as every GPU evaluation so far.
-batch_tokens = 16_384
-# RULER at 8,192 and 16,384 tokens for the last model, for reference.
-ruler = true
-
 # Instruction tuning as v6's, until v7's is planned, at the rate of the v6
 # tuning that was chosen: of its two rates, 0.0006 gave the higher sum of the
-# pass line's two means.
+# two means of the pass line then.
 [sft]
 epochs = 2
 learning_rate = 0.0006

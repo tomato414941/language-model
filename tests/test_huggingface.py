@@ -3,18 +3,32 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 import torch
+from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from pretrain.conversation import TURN_END, chat_prompt
 from pretrain.count import CountTable, history_keys
 from pretrain.data import BOS, EOS
-from pretrain.evaluation import evaluate_benchmarks, evaluate_hub_benchmarks
 from pretrain.huggingface import export_huggingface
 from pretrain.model import LanguageModel, ModelConfig
-from tests.test_benchmarks import benchmark_dataset, byte_tokenizer
+
+
+def byte_tokenizer(reserved_tokens=0):
+    """A tokenizer whose vocabulary holds only the special and reserved tokens and bytes."""
+    tokenizer = Tokenizer(models.BPE())
+    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    tokenizer.decoder = decoders.ByteLevel()
+    trainer = trainers.BpeTrainer(
+        vocab_size=258 + reserved_tokens,
+        show_progress=False,
+        special_tokens=["<|bos|>", "<|eos|>", *(f"<|reserved_{index}|>" for index in range(reserved_tokens))],
+        initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
+    )
+    tokenizer.train_from_iterator(["abc"], trainer=trainer)
+    return tokenizer
+
 
 # The checks run on a model without and with value embeddings and residual
 # scalars, with a squared ReLU in place of SwiGLU, reading a count table, and
@@ -185,25 +199,6 @@ class HuggingFaceTest(unittest.TestCase):
             loaded(rendered, add_special_tokens=False)["input_ids"],
             [self.bos, *self.tokenizer.encode(chat_prompt(messages)).ids],
         )
-
-    def test_標準評価をHugging_Faceの道筋で測っても自前の道筋と同じ点数を出す(self):
-        for parts in PARTS:
-            with self.subTest(**parts):
-                native, _ = self.export(**parts)
-                with patch("lm_eval.api.task.datasets.load_dataset", side_effect=benchmark_dataset):
-                    expected = evaluate_benchmarks(native, self.tokenizer, torch.device("cpu"), tasks=["arc_easy"])
-                    got = evaluate_hub_benchmarks(
-                        str(self.root / "hf"), None, torch.device("cpu"), tasks=["arc_easy"],
-                        trust_remote_code=True, add_bos_token=True,
-                    )
-                for metric in ("acc,none", "acc_norm,none"):
-                    self.assertEqual(got["results"]["arc_easy"][metric], expected["results"]["arc_easy"][metric])
-                for value, reference in zip(
-                    got["items"]["arc_easy"]["gold_bits_per_byte"],
-                    expected["items"]["arc_easy"]["gold_bits_per_byte"],
-                    strict=True,
-                ):
-                    self.assertAlmostEqual(value, reference, places=4)
 
     def test_書き出せない部品を持つモデルは書き出しを断る(self):
         with self.assertRaisesRegex(ValueError, "full_attention_every"):
