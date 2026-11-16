@@ -221,19 +221,21 @@ class RecipeTests(unittest.TestCase):
             )
         self.assertEqual(json.loads(output.getvalue())["nominal_training_tokens"], 2000)
 
-    def test_事前学習の後のモデルの知識と指示学習の後のモデルの指示に従う力と知識を測る手順にする(self):
-        """事前学習の後は最後の重みと平均した重みの知識を測り、指示学習の後は指示に従う力と、参考の知識を測る。"""
+    def test_事前学習の後のモデルの知識と日英の釣り合い_指示学習の後のモデルの指示に従う力と知識を測る手順にする(self):
+        """事前学習の後は最後の重みと平均した重みの知識と、最後の重みの日英の釣り合いを測り、指示学習の後は指示に従う力と、
+        参考の知識を測る。"""
         plan = inspect_recipe(ROOT / "configs/pretrain-v6.toml", "data/pretrain-v6")
         measured = [(command["kind"], command["argv"][command["argv"].index("--checkpoint") + 1],
                      command["leaves"]) for command in plan["experiment"]
-                    if command["kind"] in ("knowledge", "instructions")]
+                    if command["kind"] in ("knowledge", "balance", "instructions")]
         self.assertEqual(measured, [
             ("knowledge", "runs/pretrain-v6-decay/last.pt", ["runs/pretrain-v6-decay/knowledge.json"]),
+            ("balance", "runs/pretrain-v6-decay/last.pt", ["runs/pretrain-v6-decay/balance.json"]),
             ("knowledge", "runs/pretrain-v6-decay/averaged.pt", ["runs/pretrain-v6-decay/knowledge-averaged.json"]),
             ("instructions", "runs/instructions-v6/last.pt", ["runs/instructions-v6/instructions.json"]),
             ("knowledge", "runs/instructions-v6/last.pt", ["runs/instructions-v6/knowledge.json"]),
         ])
-        for command in commands(plan, "knowledge"):
+        for command in commands(plan, "knowledge") + commands(plan, "balance"):
             self.assertEqual(command[command.index("--artifacts") + 1], "data/evaluation")
         for command in commands(plan, "instructions"):
             self.assertEqual(command[command.index("--work") + 1], "work/instructions")

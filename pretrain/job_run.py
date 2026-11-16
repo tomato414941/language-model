@@ -1,19 +1,19 @@
 """A recipe's experiment as a run for job-runner, which carries it to its end on rented GPUs.
 
-A run's settings file, such as configs/pretrain-v7-job.toml, names the
-recipe and says where its experiment runs: the machine to rent, the rate each
-training went at there, and the run's policy. write_run takes the experiment's
-commands from the recipe's plan as the run's steps, each with the files it reads
-and leaves, and writes spec.json with code.tar.gz beside it: the committed tree,
-the small files of the data the preparation built, and the artifacts that the
-knowledge measure reads, the same bytes for the same commit and data. The data's
-packed files stay in the store at the paths the plan reads them from, and are
-checked against the recipe before a run is written. Each machine sets up the
-environment that the lock file pins, then passes its check, the tests that only
-a CUDA GPU runs, before any step: a machine whose GPU computes the model wrongly
-fails it. The check runs again whenever a step fails, so that a machine that
-broke under the step, as one that lost its GPU, takes the blame, and a step that
-fails on a sound machine does not blame it.
+A run's settings file, such as configs/pretrain-v7-job.toml, names the recipe
+and says where its experiment runs: the machine to rent, the rate each training
+went at there, and the run's policy. write_run takes the experiment's commands
+from the recipe's plan as the run's steps, each with the files it reads and
+leaves, and writes spec.json with code.tar.gz beside it: the committed tree, the
+small files of the data the preparation built, and the artifacts that the
+knowledge and balance measures read, the same bytes for the same commit and
+data. The data's packed files stay in the store at the paths the plan reads them
+from, and are checked against the recipe before a run is written. Each machine
+sets up the environment that the lock file pins, then passes its check, the
+tests that only a CUDA GPU runs, before any step: a machine whose GPU computes
+the model wrongly fails it. The check runs again whenever a step fails, so that
+a machine that broke under the step, as one that lost its GPU, takes the blame,
+and a step that fails on a sound machine does not blame it.
 """
 
 import gzip
@@ -119,15 +119,16 @@ class Experiment:
 
 
 def write_code(path, small, evaluation=EVALUATION):
-    """The committed tree, the built data's small files and the artifacts the knowledge measure reads, kept by their
-    names in `evaluation`, as a tarball of the same bytes each time."""
+    """The committed tree, the built data's small files and the artifacts the knowledge and balance measures read,
+    kept by their names in `evaluation`, as a tarball of the same bytes each time."""
     import olmes_measure
     from language_model_evaluation import definition
 
-    from .knowledge import DEFINITION, artifacts_of
+    from . import balance, knowledge
 
     evaluation = Path(evaluation)
-    measured = [evaluation / name for name in artifacts_of(definition.load(DEFINITION))]
+    measured = [evaluation / name for measure in (knowledge, balance)
+                for name in measure.artifacts_of(definition.load(measure.DEFINITION))]
     for artifact in measured:
         olmes_measure.check(artifact)  # here and whole, before a machine is rented to read it
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,

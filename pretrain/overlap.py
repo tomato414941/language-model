@@ -1,11 +1,11 @@
-"""The training texts that overlap the evaluation that judges a generation (docs/evaluation.md), which nothing that
-learns may read: the documents of the corpora and of the tokenizer's sample, and the conversations of the instruction
-and preference data.
+"""The training texts that overlap the evaluation (docs/evaluation.md), which nothing that learns may read: the
+documents of the corpora and of the tokenizer's sample, and the conversations of the instruction and preference data.
 
 A text overlaps when it holds a question or a stretch of a text of knowledge-ja-en-1, the whole that the part that
-judges is drawn from, in either language, as its overlap artifacts tell them, or a prompt of instructions-ja-en-1,
-found by the middle of its letters as a question is. The artifacts are kept by their names in one directory, as the
-knowledge measure reads its own, and the prompts are the authors', from their code fetched beside them.
+judges is drawn from, or a sentence of either split of FLORES+, which balance-ja-en-1 reads, in either language, as
+the definitions' overlap artifacts tell them, or a prompt of instructions-ja-en-1, found by the middle of its letters
+as a question is. The artifacts are kept by their names in one directory, as the measures read their own, and the
+prompts are the authors', from their code fetched beside them.
 """
 from pathlib import Path
 
@@ -14,14 +14,14 @@ EVALUATION = Path("data/evaluation")
 
 
 def artifacts():
-    """The names of the knowledge definition's overlap artifacts: of its English questions and text, and of its
-    Japanese ones."""
+    """The names of the overlap artifacts: the knowledge definition's, of its English questions and text and of its
+    Japanese ones, and the balance definition's, of FLORES+'s sentences."""
     from language_model_evaluation import definition
 
-    from .knowledge import DEFINITION
+    from . import balance, knowledge
 
-    found = definition.load(DEFINITION)["overlap"]
-    return [found["artifact"], found["japanese"]["artifact"]]
+    found, sentences = (definition.load(measure.DEFINITION)["overlap"] for measure in (knowledge, balance))
+    return [found["artifact"], found["japanese"]["artifact"], sentences["artifact"]]
 
 
 class EvaluationOverlap:

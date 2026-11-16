@@ -585,12 +585,12 @@ def inspect_recipe(path, workdir):
             {"settings": str(settings), "from_step": start, "to_step": end}))
 
     def measure(kind, checkpoint):
-        """Measure a checkpoint by a definition that judges a generation (docs/evaluation.md), `knowledge` or
-        `instructions`, into a result beside it."""
+        """Measure a checkpoint by a definition of the shared evaluation (docs/evaluation.md), `knowledge`, `balance`
+        or `instructions`, into a result beside it."""
         checkpoint = Path(checkpoint)
         suffix = "" if checkpoint.stem == "last" else f"-{checkpoint.stem}"
         output = checkpoint.parent / f"{kind}{suffix}.json"
-        given = ["--artifacts", EVALUATION] if kind == "knowledge" else ["--work", Path("work") / "instructions"]
+        given = ["--work", Path("work") / "instructions"] if kind == "instructions" else ["--artifacts", EVALUATION]
         experiment.append(planned(f"{kind}-{checkpoint.parent.name}{suffix}", kind,
                                   ["--checkpoint", checkpoint, "--device", "cuda", *given, "--output", output],
                                   [checkpoint], [output]))
@@ -618,6 +618,7 @@ def inspect_recipe(path, workdir):
             begin, step = ("--continue-from", runs[item["name"]] / "last.pt"), end
         final = runs[phases[-1]["name"]]
         measure("knowledge", final / "last.pt")
+        measure("balance", final / "last.pt")
         if training.snapshot_every:
             # The weights kept through the decay, averaged, are measured beside the last.
             averaged = final / "averaged.pt"
@@ -639,6 +640,7 @@ def inspect_recipe(path, workdir):
                     f"evaluate-{output.name}-{data.name}", "evaluate",
                     ["--checkpoint", output / "last.pt", "--data", data, "--other-data"], [output / "last.pt", data]))
             measure("knowledge", output / "last.pt")
+            measure("balance", output / "last.pt")
     if phases and "sft" in recipe:
         stem = Path(path).stem
         tuned = Path("runs") / (

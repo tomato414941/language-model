@@ -30,9 +30,13 @@ A generation passes when, against the base,
 
 Each is the overall improvement of the comparison. The base is v7; a generation that passes becomes the base. The model after instruction tuning is also measured by knowledge-ja-en-part-1, to see what tuning keeps of what the model knows, but that result does not judge. This pass line was set on 2026-11-16, before the next generation's results.
 
+## How evenly a model reads Japanese and English
+
+The model after pretraining is also measured by balance-ja-en-1 (`python -m pretrain balance`), which judges nothing: it tells how the two languages' data serve the model, for choosing their shares. The model reads FLORES+'s 1,012 devtest sentences, written in English and translated by people into Japanese, each by itself, and the result is the bits that it takes to read the Japanese sentences over those for the same sentences in English, with a standard error from drawing the sentences again: above 1, Japanese costs the model more for the same content. Two results compare by their difference. FLORES+ is not put where crawlers can collect it, as its terms ask.
+
 ## Training data
 
-The questions, prompts and texts of the evaluation are removed from the training data. The recipe leaves out every document and conversation that holds a question or a stretch of a text of knowledge-ja-en-1, the whole that the part is drawn from, as its overlap artifacts tell them, or a prompt of instructions-ja-en-1 (`pretrain/overlap.py`): from the corpora, the tokenizer's sample, and the instruction and preference data. v5 to v7 were trained before these definitions, and their data were checked only against the questions of the evaluation they had then.
+The questions, prompts and texts of the evaluation are removed from the training data. The recipe leaves out every document and conversation that holds a question or a stretch of a text of knowledge-ja-en-1, the whole that the part is drawn from, or a sentence of either split of FLORES+, which balance-ja-en-1 reads, as their overlap artifacts tell them, or a prompt of instructions-ja-en-1 (`pretrain/overlap.py`): from the corpora, the tokenizer's sample, and the instruction and preference data. v5 to v7 were trained before these definitions, and their data were checked only against the questions of the evaluation they had then.
 
 ## Cautions when reading results
 

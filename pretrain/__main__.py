@@ -296,6 +296,18 @@ def main(argv=None):
     knowledge.add_argument(
         "--output", type=Path, required=True, help="区分・課題・文章ごとの点を書く JSON ファイル"
     )
+    balance = commands.add_parser(
+        "balance",
+        help="保存したモデルが日本語と英語をどれだけ同じように読めるかを、共有の評価の定義（同じ文を読む bits の比）で測る",
+    )
+    balance.add_argument(
+        "--artifacts", type=Path, required=True, help="定義が名指しする文の成果物を、その名前で置いた場所"
+    )
+    balance.add_argument("--definition", default="balance-ja-en-1", help="language-model-evaluation の定義の名前")
+    balance.add_argument("--batch-tokens", type=int, default=16384)
+    balance.add_argument(
+        "--output", type=Path, required=True, help="釣り合いとその標準誤差、言語ごと・文ごとの bits を書く JSON ファイル"
+    )
     following = commands.add_parser(
         "instructions",
         help="保存したモデルが指示に従う力を、共有の評価の定義（作者の採点コード）で測る",
@@ -312,7 +324,7 @@ def main(argv=None):
     )
     improvement = commands.add_parser(
         "improvement",
-        help="共有の評価の定義で測った二つの結果を比べ、改善の度合いと標準誤差、読める差かを区分ごとに示す",
+        help="共有の評価の定義で測った二つの結果を定義の決まりで比べ、改善の度合い（釣り合いは差）と標準誤差、読める差かを示す",
     )
     improvement.add_argument("--other", type=Path, required=True, help="比べる先の結果")
     against = improvement.add_mutually_exclusive_group(required=True)
@@ -320,7 +332,7 @@ def main(argv=None):
     against.add_argument(
         "--chance", action="store_true", help="指示の結果を、同じ返答を他の問題に付け替えたときの点と比べる"
     )
-    for command in (evaluation, generation, knowledge, following):
+    for command in (evaluation, generation, knowledge, balance, following):
         command.add_argument(
             "--checkpoint", type=Path, default=Path("runs/bilingual/last.pt")
         )
@@ -568,7 +580,7 @@ def main(argv=None):
                     flush=True,
                 )
         else:
-            if args.command in ("knowledge", "instructions") and args.output.exists():
+            if args.command in ("knowledge", "balance", "instructions") and args.output.exists():
                 # Its record is written whole at the end, so an evaluation run again has nothing left to do.
                 print(json.dumps({"event": "done_already", "output": str(args.output)}), flush=True)
                 return
@@ -626,20 +638,16 @@ def main(argv=None):
                     "batch_size": batch_size,
                 }
                 print(json.dumps(result, indent=2))
-            elif args.command in ("knowledge", "instructions"):
+            elif args.command in ("knowledge", "balance", "instructions"):
                 precision = select_precision(device)
                 if args.command == "knowledge":
                     from .knowledge import measure
-
-                    result = measure(
-                        model, tokenizer, device, precision, args.artifacts, args.batch_tokens, args.definition
-                    )
+                elif args.command == "balance":
+                    from .balance import measure
                 else:
                     from .following import measure
-
-                    result = measure(
-                        model, tokenizer, device, precision, args.work, args.batch_tokens, args.definition
-                    )
+                given = args.work if args.command == "instructions" else args.artifacts
+                result = measure(model, tokenizer, device, precision, given, args.batch_tokens, args.definition)
                 result["checkpoint"] = {
                     "checkpoint": str(args.checkpoint),
                     "sha256": file_digest(args.checkpoint),
@@ -649,7 +657,8 @@ def main(argv=None):
                     "precision": precision,
                 }
                 write_output(args.output, json.dumps(result, indent=2) + "\n")
-                print(json.dumps(result["categories"], indent=2))
+                shown = ("balance", "standard_error") if args.command == "balance" else ("categories",)
+                print(json.dumps({key: result[key] for key in shown}, indent=2))
             else:
                 print(
                     model.generate(

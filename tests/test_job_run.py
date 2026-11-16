@@ -37,11 +37,12 @@ class RentalRunTests(unittest.TestCase):
             "evaluation": EVALUATION, "files": {"train_ja.bin": {"rows": 2, "sha256": "i"},
                                                 "train_ja_mask.bin": {"rows": 2, "sha256": "m"}}})
         shutil.copy("configs/model-v7.toml", self.built / "sft.toml")
-        # An artifact in place of those the knowledge measure reads, kept by its name.
+        # Artifacts in place of those the knowledge and balance measures read, kept by their names.
         from language_model_evaluation import overlap
 
         self.evaluation = self.root / "evaluation"
         self.artifact = overlap.write(self.evaluation, [], b"").name
+        self.sentences = overlap.write(self.evaluation, ["sentence"], b"").name
 
     def tearDown(self):
         self.directory.cleanup()
@@ -52,7 +53,8 @@ class RentalRunTests(unittest.TestCase):
         path.write_text(json.dumps(value))
 
     def run_spec(self, name="run", settings=SETTINGS):
-        with patch("pretrain.knowledge.artifacts_of", return_value=[self.artifact]):
+        with patch("pretrain.knowledge.artifacts_of", return_value=[self.artifact]), \
+                patch("pretrain.balance.artifacts_of", return_value=[self.sentences]):
             write_run(settings, self.built, self.root / name, "bucket", self.evaluation)
         return json.loads((self.root / name / "spec.json").read_text())
 
@@ -60,7 +62,8 @@ class RentalRunTests(unittest.TestCase):
         spec = self.run_spec()
         self.assertEqual([step["name"] for step in spec["steps"]], [
             "pretrain-v7-patch", "pretrain-v7-stable", "pretrain-v7-late", "pretrain-v7-decay",
-            "knowledge-pretrain-v7-decay", "average-pretrain-v7-decay", "knowledge-pretrain-v7-decay-averaged",
+            "knowledge-pretrain-v7-decay", "balance-pretrain-v7-decay", "average-pretrain-v7-decay",
+            "knowledge-pretrain-v7-decay-averaged",
             "instructions-v7", "instructions-instructions-v7", "knowledge-instructions-v7"])
         available = {item["path"] for item in spec["files"]}
         for step in spec["steps"]:
@@ -123,12 +126,15 @@ class RentalRunTests(unittest.TestCase):
             names = set(bundle.getnames())
         self.assertLessEqual({"SOURCE_COMMIT", "data/pretrain-v7/corpus-late/manifest.json",
                               "data/pretrain-v7/sft.toml", f"data/evaluation/{self.artifact}/manifest.json",
-                              "pretrain/training.py"}, names)
+                              f"data/evaluation/{self.sentences}/manifest.json", "pretrain/training.py"}, names)
 
-    def test_refuses_to_write_a_run_without_the_artifacts_the_knowledge_measure_reads(self):
-        shutil.rmtree(self.evaluation / self.artifact)
-        with self.assertRaises(FileNotFoundError):
-            self.run_spec()
+    def test_refuses_to_write_a_run_without_the_artifacts_the_measures_read(self):
+        for name in (self.artifact, self.sentences):
+            kept = self.root / "kept"
+            shutil.move(self.evaluation / name, kept)
+            with self.assertRaises(FileNotFoundError):
+                self.run_spec()
+            shutil.move(kept, self.evaluation / name)
 
 
 if __name__ == "__main__":

@@ -974,7 +974,7 @@ requires-dist = [
     { name = "fla-core", marker = "extra == 'train'", specifier = "==0.5.2" },
     { name = "huggingface-hub", marker = "extra == 'corpus'", specifier = ">=0.35,<2" },
     { name = "huggingface-hub", marker = "extra == 'hub'", specifier = ">=0.35,<2" },
-    { name = "language-model-evaluation", url = "https://github.com/tomato414941/language-model-evaluation/archive/6bd3eb49d0571b48cb714fe4c31727f693e26bd6.zip" },
+    { name = "language-model-evaluation", url = "https://github.com/tomato414941/language-model-evaluation/archive/d10dc7f73e26b39184d8bd303dd8daff037176e0.zip" },
     { name = "modal", marker = "extra == 'deploy'", specifier = ">=1.6.1,<2" },
     { name = "numpy", marker = "extra == 'train'", specifier = ">=2.2,<3" },
     { name = "numpy", marker = "extra == 'train-cpu'", specifier = ">=2.2,<3" },
@@ -1002,13 +1002,13 @@ dev = [
 [[package]]
 name = "language-model-evaluation"
 version = "0.2.0"
-source = { url = "https://github.com/tomato414941/language-model-evaluation/archive/6bd3eb49d0571b48cb714fe4c31727f693e26bd6.zip" }
+source = { url = "https://github.com/tomato414941/language-model-evaluation/archive/d10dc7f73e26b39184d8bd303dd8daff037176e0.zip" }
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pyahocorasick" },
 ]
-sdist = { hash = "sha256:6ab1ffbcab62539a7901733fb4c66062e7f2db1549cbf307c902a0eb78b81365" }
+sdist = { hash = "sha256:f41e5ad6992e7ee03eb3d5194ca96d40ffdfd11e7bc0ce1ef3af5b284b876e5d" }
 
 [package.metadata]
 requires-dist = [
