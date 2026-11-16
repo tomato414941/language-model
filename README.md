@@ -2,7 +2,7 @@
 
 Train Japanese and English language models from scratch. The goal is a better model than the current one on a smaller budget. A smaller budget is not a requirement for a new generation but one of the points by which an improvement is judged, so the next generation need not be cheaper than the previous one. Costs exclude trials.
 
-What is known about how to build the model is in `docs/ideal-model.md`, and the results are in `docs/results.md`.
+What is known about how to build the model is in `docs/ideal-model.md`, how a generation is judged in `docs/evaluation.md`, and the results in `docs/results.md`.
 
 ```bash
 bash scripts/setup_environment.sh   # install uv and the training dependencies

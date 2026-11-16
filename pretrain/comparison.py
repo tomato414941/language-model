@@ -17,7 +17,7 @@ from collections import Counter
 
 from .evaluation import STANDARD_TASKS, result_keys, task_reading
 
-# docs/evaluation.md's pass line, in standard errors of the difference between
+# v7's pass line, in standard errors of the difference between
 # two separately trained models. A language's mean must rise by more than the
 # first. With about twenty tasks, the second keeps a task from falling past it
 # by chance alone; at two, one of them would about four times in ten.
@@ -172,7 +172,7 @@ def score_error(score, questions):
 
 
 def pass_line(base, other, ruler=None):
-    """Whether other passes docs/evaluation.md's pass line on scores against base.
+    """Whether other passes v7's pass line on scores against base.
 
     Only tasks both evaluations read in the same form count. A task base never
     asked has no score to compare with, so other's score is listed as reference
