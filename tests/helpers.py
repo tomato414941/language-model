@@ -18,11 +18,12 @@ def evaluation(test, directory, questions=None, paragraphs=(), prompts=None):
     artifact = overlap.write(directory, keys, overlap.digests_of(paragraphs), overlap.stretches_of(paragraphs))
     home = directory / "instructions" / "code"
     (home / "data").mkdir(parents=True, exist_ok=True)
-    (home / "evaluation_main.py").write_text("")  # the code is there, so it is not fetched
+    (home / "tasks" / "ifeval").mkdir(parents=True, exist_ok=True)
+    (home / "tasks" / "ifeval" / "utils.py").write_text("")  # the code is there, so it is not fetched
     for language in ("en", "ja"):
         rows = [{"key": key, "prompt": prompt, "instruction_id_list": [], "kwargs": []}
                 for key, prompt in enumerate((prompts or {}).get(language, []))]
-        (home / "data" / f"{language}_input_data.jsonl").write_text(
+        (home / "data" / f"ifeval_{language}.jsonl").write_text(
             "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
     patcher = patch("pretrain.overlap.artifacts", return_value=[artifact.name])
     patcher.start()

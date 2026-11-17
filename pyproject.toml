@@ -31,7 +31,7 @@ conflicts = [[{ extra = "train" }, { extra = "train-cpu" }]]
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu", extra = "train-cpu" }]
-language-model-evaluation = { url = "https://github.com/tomato414941/language-model-evaluation/archive/d10dc7f73e26b39184d8bd303dd8daff037176e0.zip" }
+language-model-evaluation = { url = "https://github.com/tomato414941/language-model-evaluation/archive/4db3750da759bd8df116e35c66c9f7ade1850e8d.zip" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

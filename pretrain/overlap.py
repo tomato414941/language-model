@@ -5,7 +5,7 @@ A text overlaps when it holds a question or a stretch of a text of knowledge-ja-
 judges is drawn from, or a sentence of either split of FLORES+, which balance-ja-en-1 reads, in either language, as
 the definitions' overlap artifacts tell them, or a prompt of instructions-ja-en-1, found by the middle of its letters
 as a question is. The artifacts are kept by their names in one directory, as the measures read their own, and the
-prompts are the authors', from their code fetched beside them.
+prompts are the authors', fetched with their code beside them.
 """
 from pathlib import Path
 
@@ -25,8 +25,8 @@ def artifacts():
 
 
 class EvaluationOverlap:
-    """What tells a text that overlaps the evaluation, from the artifacts in `directory` and the authors' code, which
-    is fetched to directory/instructions the first time. `made_from` names what it tells by."""
+    """What tells a text that overlaps the evaluation, from the artifacts in `directory` and the authors' prompts,
+    which are fetched with their code to directory/instructions the first time. `made_from` names what it tells by."""
 
     def __init__(self, directory=EVALUATION):
         from language_model_evaluation import definition, instructions, overlap
@@ -35,14 +35,15 @@ class EvaluationOverlap:
 
         directory, names = Path(directory), artifacts()
         chosen = definition.load(DEFINITION)
-        if chosen["instructions"]["commit"] != instructions.COMMIT:
-            raise ValueError(f"{chosen['name']} asks the prompts of the authors' code at another commit")
+        asked = chosen["instructions"]
+        if (asked["commit"], asked["revision"]) != (instructions.COMMIT, instructions.REVISION):
+            raise ValueError(f"{chosen['name']} asks the authors' prompts of another version")
         home = instructions.code(directory / "instructions")
         keys = {key for category in chosen["categories"].values() for language in category["instructions"]
                 for key in overlap.keys_of([row["prompt"] for row in instructions.prompts(language, home)], language)}
         self.texts = [overlap.load(directory / name) for name in names]
         self.prompts = overlap.Overlap(sorted(keys), b"")
-        self.made_from = {"overlap": names, "instructions": instructions.COMMIT}
+        self.made_from = {"overlap": names, "instructions": instructions.REVISION}
 
     def holds(self, text):
         """Whether a text overlaps the evaluation."""

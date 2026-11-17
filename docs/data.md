@@ -32,6 +32,6 @@ v6 からの変更は4つ。
 
 手順は `python -m pretrain recipe --config configs/pretrain-v7.toml --workdir data/pretrain-v7 --stage inspect` の `commands` に出る。CPU の多い機械で作り、R2 の `data/pretrain-v7/` に置く。v6 のコーパスは20プロセスで53分、16プロセスで61分かかり、どちらもバイト単位で同じものができた。指示学習のデータは6分で作れた。読み込みは約170GB（転送料からの推定）で、できるデータは約20GB。
 
-評価と重なる文書を除くため、準備の前に knowledge-ja-en-1 の overlap の成果物2つと balance-ja-en-1 の1つを language-model-evaluation で作り、`data/evaluation/` に名前のまま置く。M-IFEval の作者のコードは、最初の準備のときにその下に取ってくる。Wikipedia の標本では、日本語の文書の約6%と英語の約2%が評価と重なった。判定は1プロセスあたり毎秒1〜1.5MB の速さで、コーパスを作る時間はその分延びる。v5〜v7 のデータは、前の評価の問題だけを除いて作った。
+評価と重なる文書を除くため、準備の前に knowledge-ja-en-1 の overlap の成果物2つと balance-ja-en-1 の1つを language-model-evaluation で作り、`data/evaluation/` に名前のまま置く。BenchMAX の作者のコードと問いは、最初の準備のときにその下に取ってくる。Wikipedia の標本では、日本語の文書の約6%と英語の約2%が評価と重なった。判定は1プロセスあたり毎秒1〜1.5MB の速さで、コーパスを作る時間はその分延びる。v5〜v7 のデータは、前の評価の問題だけを除いて作った。
 
 `nemotron-v2-ja` と、balance-ja-en-1 が読む FLORES+ は利用条件への同意が要るので、取得には同意したアカウントの Hugging Face のトークンが要る。FLORES+ の文を含む成果物は、クローラーが集められる場所に置かない。

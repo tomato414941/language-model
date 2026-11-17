@@ -42,7 +42,7 @@ class EvaluationOverlapTest(unittest.TestCase):
         from language_model_evaluation import instructions
 
         names = [path.name for path in self.directory.iterdir() if path.name.startswith("overlap-")]
-        self.assertEqual(self.overlap.made_from, {"overlap": names, "instructions": instructions.COMMIT})
+        self.assertEqual(self.overlap.made_from, {"overlap": names, "instructions": instructions.REVISION})
 
 
 if __name__ == "__main__":

@@ -134,7 +134,7 @@ class FollowingTest(unittest.TestCase):
 
         other = definition.load("instructions-ja-en-1")
         other["instructions"] = {**other["instructions"], "commit": "0" * 40}
-        with self.assertRaisesRegex(ValueError, "authors' code"):
+        with self.assertRaisesRegex(ValueError, "authors' prompts and code"):
             following.measure(self.model, self.tokenizer, torch.device("cpu"), "float32", "work", chosen=other)
 
 

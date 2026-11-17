@@ -1,6 +1,6 @@
 # Evaluation
 
-A generation is judged by two definitions of language-model-evaluation, the language-model projects' shared evaluation: one measures what a model knows, the other how it follows instructions. A definition fixes what is measured and how two results compare. It is not changed to suit a model's results; a change makes a new definition with a new name, and the generations to be compared are measured again by it. A way of measuring that is confirmed to be wrong is dropped, even if results then no longer compare with the past.
+A generation is judged by two definitions of language-model-evaluation, the language-model projects' shared evaluation: one measures what a model knows, the other how it follows instructions. A definition fixes what is measured and how two results compare. It is not changed to suit a model's results. A way of measuring that is confirmed to be wrong is dropped, even if results then no longer compare with the past.
 
 ## What a model knows
 
@@ -13,7 +13,7 @@ The model after pretraining is measured in plain text by knowledge-ja-en-part-1 
 
 The model after instruction tuning is measured by instructions-ja-en-1 (`python -m pretrain instructions`).
 
-- IFEval's 541 English prompts and M-IFEval's 172 Japanese prompts, scored by M-IFEval's code at a fixed commit. A language's score is the share of prompts whose every instruction the reply follows (strict). Two models compare by the mean of the two languages' rates of improvement.
+- BenchMAX's prompts: 429 of IFEval's English prompts, without those that only English can follow, and the same prompts in Japanese, translated by machine and corrected by native speakers, scored by the authors' code at a fixed commit. A language's score is the share of prompts whose every instruction the reply follows (strict). Two models compare by the mean of the two languages' rates of improvement.
 - Each prompt is the user's message of a conversation in the model's format, and the model replies greedily up to 2,048 tokens.
 - The Japanese prompts are few: from v5 to v7, a change in Japanese alone was readable only beyond about a third of the base's score.
 

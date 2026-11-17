@@ -1,10 +1,10 @@
 """How well a model follows instructions, measured by a definition of language-model-evaluation, the language-model
 projects' shared evaluation.
 
-The definition (instructions-ja-en-1) asks IFEval's English prompts and M-IFEval's Japanese ones and scores the
-replies by the authors' code: the share of prompts whose every instruction the reply follows, each language counting
-equally. The model writes each reply as an assistant answering the prompt in its conversation format, greedily, up to
-the definition's number of tokens, as the authors asked the models whose replies they published.
+The definition (instructions-ja-en-1) asks BenchMAX's prompts, the same 429 of IFEval's in English and in Japanese,
+and scores the replies by the authors' code: the share of prompts whose every instruction the reply follows, each
+language counting equally. The model writes each reply as an assistant answering the prompt in its conversation
+format, greedily, up to the definition's number of tokens, as the authors' task asks.
 
 Replies follow some instructions by chance, whatever they answer. To read how much of a score is the model's following
 the prompts, a result also scores the model's replies given to other prompts (`chance`), which neither the authors'
@@ -82,8 +82,8 @@ def measure(model, tokenizer, device, precision, work, batch_tokens=16384, chose
 
     chosen = definition.load(chosen) if isinstance(chosen, str) else chosen
     asked = chosen["instructions"]
-    if asked["commit"] != instructions.COMMIT:
-        raise ValueError(f"{chosen['name']} is scored by the authors' code at {asked['commit']}")
+    if (asked["commit"], asked["revision"]) != (instructions.COMMIT, instructions.REVISION):
+        raise ValueError(f"{chosen['name']} is asked and scored by the authors' prompts and code of other versions")
     home = instructions.code(work)
     languages = [language for names in chosen["languages"].values() for category in names
                  for language in chosen["categories"][category]["instructions"]]
