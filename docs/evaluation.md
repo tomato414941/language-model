@@ -36,7 +36,7 @@ The model after pretraining is also measured by balance-ja-en-1 (`python -m pret
 
 ## Training data
 
-The questions, prompts and texts of the evaluation are removed from the training data. The recipe leaves out every document and conversation that holds a question or a stretch of a text of knowledge-ja-en-1, the whole that the part is drawn from, or a sentence of either split of FLORES+, which balance-ja-en-1 reads, as their overlap artifacts tell them, or a prompt of instructions-ja-en-1 (`pretrain/overlap.py`): from the corpora, the tokenizer's sample, and the instruction and preference data. v5 to v7 were trained before these definitions, and their data were checked only against the questions of the evaluation they had then.
+The questions, prompts and texts of the evaluation are removed from the training data. The recipe leaves out every document and conversation that holds a question or a stretch of a text of knowledge-ja-en-1, the whole that the part is drawn from, or a sentence of either split of FLORES+, which balance-ja-en-1 reads, as their overlap artifacts tell them, or a prompt of instructions-ja-en-1 (`pretrain/overlap.py`): from the corpora, the tokenizer's sample, and the instruction and preference data. v5 to v7 were trained before these definitions, and their data were checked against the questions of the evaluation they had then. Checked since, their corpora held 114 of FLORES+'s 1,012 devtest sentences in English and none in Japanese (`results.md`), and the instruction data of v5 and v7, drawn from the same sources, held none of instructions-ja-en-1's prompts.
 
 ## Cautions when reading results
 
