@@ -15,7 +15,7 @@ The model after instruction tuning is measured by instructions-ja-en-1 (`python 
 
 - BenchMAX's prompts: 429 of IFEval's English prompts, without those that only English can follow, and the same prompts in Japanese, translated by machine and corrected by native speakers, scored by the authors' code at a fixed commit. A language's score is the share of prompts whose every instruction the reply follows (strict). Two models compare by the mean of the two languages' rates of improvement.
 - Each prompt is the user's message of a conversation in the model's format, and the model replies greedily up to 2,048 tokens.
-- The Japanese prompts are few: from v5 to v7, a change in Japanese alone was readable only beyond about a third of the base's score.
+- 22 of the Japanese prompts ask for no 読点 (、), which the authors' check does not count, so a Japanese reply almost always follows that instruction. From v5 to v7, a change in Japanese alone was readable beyond about a quarter to a third of the base's score.
 
 ## Comparing two results
 
