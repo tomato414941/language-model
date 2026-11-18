@@ -37,6 +37,12 @@ from .model import LanguageModel
 from .overlap import EVALUATION, EvaluationOverlap, artifacts
 from .training import TrainConfig, read_config, read_length
 
+# Where a build keeps each file its sources read, under the source's repository
+# and revision, so that later builds read them here and not from their hosts; a
+# run keeps this directory in its store. A file being fetched waits in
+# SOURCE_ARRIVALS until it is whole.
+SOURCE_COPIES = Path("sources")
+SOURCE_ARRIVALS = Path(".sources-arriving")
 SOURCE_FORMATS = {
     "parquet": ".parquet",
     "jsonl": ".jsonl",
@@ -899,21 +905,59 @@ def gitlab_files(source):
     return names, open_file, sizes
 
 
+def host_files(source):
+    return (gitlab_files if "host" in source else hub_files)(source)
+
+
 def source_shards(source):
-    """The files a source reads at its commit, how to open one and their sizes."""
-    names, open_file, sizes = (gitlab_files if "host" in source else hub_files)(source)
+    """The files a source reads at its commit, how to open one and their sizes.
+
+    Each file opens from its copy under SOURCE_COPIES. The first time, it comes
+    whole from the host into the copy; the source's list of files is kept there
+    too, so that a source whose host is down still reads from its copies.
+    """
+    copy = SOURCE_COPIES / source["repository"] / source["revision"]
+    listing = copy / f"{source['id']}.files.json"
     form = source.get("format", "parquet")
-    excluded = set(source.get("exclude_files", ()))
-    shards = sorted(
-        name
-        for name in names
-        if name.startswith(source["prefix"])
-        and name.endswith(SOURCE_FORMATS[form])
-        and name not in excluded
-    )
-    if not shards:
-        raise ValueError(f"no {form} files found for {source['id']}")
-    return shards, open_file, sizes
+    chosen = {"prefix": source["prefix"], "format": form, "exclude_files": sorted(source.get("exclude_files", ()))}
+    kept = json.loads(listing.read_text()) if listing.exists() else None
+    if kept is not None and kept["chosen"] == chosen:
+        sizes = kept["files"]
+    else:
+        names, _, host_sizes = host_files(source)
+        shards = sorted(
+            name
+            for name in names
+            if name.startswith(source["prefix"])
+            and name.endswith(SOURCE_FORMATS[form])
+            and name not in chosen["exclude_files"]
+        )
+        if not shards:
+            raise ValueError(f"no {form} files found for {source['id']}")
+        sizes = host_sizes(shards)
+        listing.parent.mkdir(parents=True, exist_ok=True)
+        arriving = listing.with_name(f".{listing.name}.{os.getpid()}")
+        arriving.write_text(json.dumps({"chosen": chosen, "files": sizes}, indent=1, sort_keys=True))
+        os.replace(arriving, listing)
+    host = []
+
+    def open_file(name):
+        path = copy / name
+        if not path.is_file() or path.stat().st_size != sizes[name]:
+            if not host:
+                host.append(host_files(source)[1])
+            arriving = SOURCE_ARRIVALS / f"{os.getpid()}-{path.name}"
+            arriving.parent.mkdir(parents=True, exist_ok=True)
+            with host[0](name) as remote, arriving.open("wb") as local:
+                shutil.copyfileobj(remote, local, 16 * 1024 * 1024)
+            if arriving.stat().st_size != sizes[name]:
+                arriving.unlink()
+                raise OSError(f"{source['id']}'s {name} did not arrive whole")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(arriving, path)
+        return path.open("rb")
+
+    return sorted(sizes), open_file, lambda names: {name: sizes[name] for name in names}
 
 
 def source_sizes(source):

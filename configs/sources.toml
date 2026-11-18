@@ -443,6 +443,64 @@ terms_url = "https://gitlab.llm-jp.nii.ac.jp/datasets/llm-jp-corpus-midtraining-
 # A question with its answer is often shorter than a web page worth keeping.
 minimum_characters = 100
 
+# Japanese questions and answers from the Hugging Face Hub, in place of LLM-jp's,
+# whose host stopped serving its large files in November 2026. The Swallow
+# project put the math, code and science problems of Nemotron-Post-Training-
+# Dataset-v1 into Japanese and had gpt-oss-120b (Apache-2.0) answer them in
+# Japanese after reasoning in English; the answer is read, not the reasoning.
+# A few code problems stay in English.
+[[sources]]
+id = "ja-math-swallow"
+language = "ja"
+repository = "tokyotech-llm/Swallow-Nemotron-Post-Training-Dataset-v1"
+revision = "f3138973e32c6a60fcee33bbf99c3a50d0c09edf"
+prefix = "math/nemotron-post-training-v1-ja-math-"
+format = "jsonl.gz"
+license = "CC-BY-4.0"
+terms_url = "https://huggingface.co/datasets/tokyotech-llm/Swallow-Nemotron-Post-Training-Dataset-v1"
+template = "User: {conversation.0.content}\n\nAssistant: {conversation.1.content}"
+minimum_characters = 100
+maximum_characters = 12000
+
+[[sources]]
+id = "ja-code-swallow"
+language = "ja"
+repository = "tokyotech-llm/Swallow-Nemotron-Post-Training-Dataset-v1"
+revision = "f3138973e32c6a60fcee33bbf99c3a50d0c09edf"
+prefix = "code/nemotron-post-training-v1-ja-code-"
+format = "jsonl.gz"
+license = "CC-BY-4.0"
+terms_url = "https://huggingface.co/datasets/tokyotech-llm/Swallow-Nemotron-Post-Training-Dataset-v1"
+template = "User: {conversation.0.content}\n\nAssistant: {conversation.1.content}"
+minimum_characters = 100
+maximum_characters = 12000
+
+[[sources]]
+id = "ja-stem-swallow"
+language = "ja"
+repository = "tokyotech-llm/Swallow-Nemotron-Post-Training-Dataset-v1"
+revision = "f3138973e32c6a60fcee33bbf99c3a50d0c09edf"
+prefix = "stem/nemotron-post-training-v1-ja-stem-"
+format = "jsonl.gz"
+license = "CC-BY-4.0"
+terms_url = "https://huggingface.co/datasets/tokyotech-llm/Swallow-Nemotron-Post-Training-Dataset-v1"
+template = "User: {conversation.0.content}\n\nAssistant: {conversation.1.content}"
+minimum_characters = 100
+maximum_characters = 12000
+
+# Two-turn conversations on random topics written by CALM3-22B-Chat (Apache-2.0),
+# one of the sets LLM-jp's general questions and answers were drawn from.
+[[sources]]
+id = "ja-general-calm3"
+language = "ja"
+repository = "kanhatakeyama/0719-calm3-22b-random-genre-inst-sft-multiturn-tsub"
+revision = "74791a943cf3c7fa4aa8cc69024c10553e539ec4"
+prefix = "data/split_"
+format = "jsonl"
+license = "Apache-2.0"
+terms_url = "https://huggingface.co/datasets/kanhatakeyama/0719-calm3-22b-random-genre-inst-sft-multiturn-tsub"
+minimum_characters = 100
+
 # Documents longer than the v5 model's pretraining windows of 8,192 tokens,
 # about 14,000 characters of Japanese and 32,000 of English, for the phase
 # that lengthens its context. The few past about four of its longer windows

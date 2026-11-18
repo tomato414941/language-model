@@ -5,3 +5,5 @@ __pycache__/
 /data/
 /runs/
 **/.claude/settings.local.json
+/sources/
+/.sources-arriving/

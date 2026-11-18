@@ -101,6 +101,10 @@ class RecipeTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        for name, path in (("SOURCE_COPIES", self.root / "sources"), ("SOURCE_ARRIVALS", self.root / "arriving")):
+            kept = patch(f"pretrain.recipe.{name}", path)
+            kept.start()
+            self.addCleanup(kept.stop)
         self.recipe_path = self.root / "recipe.toml"
         for name in ("sources.toml", "previous-shards.toml"):
             (self.root / name).write_text((ROOT / "configs" / name).read_text())
@@ -1025,6 +1029,36 @@ class RecipeTests(unittest.TestCase):
             document_digest(rows[0]["text"], 42),
             document_digest("  " + rows[0]["text"].replace(" ", "\n ") + "  ", 42),
         )
+
+    def test_データ源のファイルは初めて開くときに丸ごと写しを取りそのあとは写しから読む(self):
+        from types import SimpleNamespace
+
+        source = self.recipe["sources"][0]
+        rows = self.rows[source["id"]][:5]
+        file = self.root / "source.parquet"
+        parquet.write_table(arrow.Table.from_pylist(rows), file, row_group_size=2)
+        name = source["prefix"] + "fixture.parquet"
+        with (
+            patch("huggingface_hub.HfApi") as api,
+            patch("huggingface_hub.HfFileSystem") as filesystem,
+        ):
+            api.return_value.dataset_info.return_value = SimpleNamespace(
+                sha=source["revision"],
+                siblings=[SimpleNamespace(rfilename=name, size=file.stat().st_size)],
+            )
+            filesystem.return_value.open.side_effect = lambda *args, **kwargs: file.open("rb")
+            first = list(iter_source(source, 42))
+        copy = self.root / "sources" / source["repository"] / source["revision"] / name
+        self.assertEqual(copy.read_bytes(), file.read_bytes())
+        with (
+            patch("huggingface_hub.HfApi") as api,
+            patch("huggingface_hub.HfFileSystem") as filesystem,
+        ):
+            api.return_value.dataset_info.side_effect = OSError("the host is down")
+            filesystem.return_value.open.side_effect = OSError("the host is down")
+            again = list(iter_source(source, 42))
+        self.assertEqual(again, first)
+        self.assertEqual({row["url"] for row in first}, {row["url"] for row in rows})
 
     def phase_recipe(self, extra=""):
         """A two-phase recipe that reuses the fixture's tokenizer and sources."""
