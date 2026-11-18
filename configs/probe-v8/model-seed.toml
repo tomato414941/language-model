@@ -1,0 +1,44 @@
+# v7's model at half its width and layers, with three of twelve experts active as in v7, for the small runs that
+# compare v8's choices: the phases after the patches, from another seed.
+# Each update reads an eighth of v7's tokens, over v7's number of steps.
+[model]
+architecture = "llama"
+width = 512
+heads = 4
+kv_heads = 1
+layers = 16
+feed_forward = "relu_squared"
+intermediate_size = 2048
+context = 8192
+rope_theta = 10000.0
+qk_norm = true
+attention_gate = "headwise"
+value_embeddings = true
+residual_scalars = true
+zero_output_init = false
+document_start = 0
+experts = 12
+active_experts = 3
+expert_size = 512
+shared_expert_size = 512
+[training]
+steps = 3000
+batch_size = 1
+accumulation_steps = 16
+learning_rate = 0.002
+min_learning_rate = 0.000667
+warmup_steps = 68
+weight_decay = 0.0
+gradient_clip = 1.0
+eval_every = 200
+save_every = 50
+eval_batches = 64
+log_every = 5
+seed = 43
+schedule = "wsd"
+decay_steps = 720
+decay_shape = "1-sqrt"
+sampling = "sequential"
+optimizer = "normuon"
+hyperball_rate = 5.0
+fp8 = true

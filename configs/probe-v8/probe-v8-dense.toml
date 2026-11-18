@@ -1,0 +1,46 @@
+# The base of the small runs with a dense network in place of the experts, as wide as the three experts and the
+# shared one that each token reads: whether the experts pay in so short a training. It reads the base's data.
+training_config = "model-dense.toml"
+patch_config = "model-dense-patch.toml"
+sources = "../sources.toml"
+seed = 42
+compile = true
+
+[tokenizer]
+vocabulary_size = 32_768
+bytes_per_language = 67_108_864
+pretokenizer = "gpt4"
+single_digits = true
+reserved_tokens = 256
+
+[corpus]
+validation_tokens_per_language = 5_000_000
+minimum_characters = 300
+maximum_characters = 100_000
+
+[[corpora]]
+name = "patch"
+purpose = "patch"
+# 6,000 updates of 4 windows of 8,192 patches and the three tokens that let the last patch's next patch fit.
+training_tokens = 786_504_000
+mix = { ja-climblab = 21, ja-paraphrase-llmjp = 21, ja-wiki = 4, ja-math-llmjp = 2, ja-code-llmjp = 2, en-finephrase = 3, en-web = 12, en-dclm = 15, en-code-swallow = 5, en-code-stack-edu = 5, en-qa-stackexchange = 2, en-math = 3, en-math-megamath = 3, en-math-swallow-qa = 1, en-math-swallow-textbook = 1 }
+quality = { ja-climblab = "quality", en-web = "score", en-dclm = "fasttext_openhermes_reddit_eli5_vs_rw_v2_bigram_200k_train_prob", en-math = "score", en-math-megamath = "math_score" }
+
+[[corpora]]
+name = "stable"
+# 1,200 updates of 16 windows of 8,192 tokens.
+training_tokens = 157_286_400
+mix = { ja-climblab = 21, ja-paraphrase-llmjp = 21, ja-wiki = 4, ja-math-llmjp = 2, ja-code-llmjp = 2, en-finephrase = 3, en-web = 12, en-dclm = 15, en-code-swallow = 5, en-code-stack-edu = 5, en-qa-stackexchange = 2, en-math = 3, en-math-megamath = 3, en-math-swallow-qa = 1, en-math-swallow-textbook = 1 }
+
+[[corpora]]
+name = "late"
+# 1,080 updates at the full learning rate.
+training_tokens = 141_557_760
+mix = { ja-climblab-top = 18, ja-wiki = 8, ja-aozora = 2, ja-general-llmjp = 7, ja-reasoning-llmjp = 6, ja-math-llmjp = 5, ja-code-llmjp = 4, en-ultrafineweb = 10, en-wiki = 5, en-stem-nemotron = 3, en-code-swallow = 6, en-code-stack-edu = 2, en-math-swallow-qa = 4, en-math-swallow-textbook = 3, en-math = 2, en-reasoning-openmath = 5, en-general-llmjp = 4, en-reasoning-llmjp = 4, en-math-llmjp = 1, en-code-llmjp = 1 }
+
+[[corpora]]
+name = "decay"
+# 720 updates while the learning rate decays.
+training_tokens = 94_371_840
+validation_tokens_per_language = 2_000_000
+mix = { ja-climblab-top = 18, ja-wiki = 8, ja-aozora = 2, ja-general-llmjp = 7, ja-reasoning-llmjp = 6, ja-math-llmjp = 5, ja-code-llmjp = 4, en-ultrafineweb = 10, en-wiki = 5, en-stem-nemotron = 3, en-code-swallow = 6, en-code-stack-edu = 2, en-math-swallow-qa = 4, en-math-swallow-textbook = 3, en-math = 2, en-reasoning-openmath = 5, en-general-llmjp = 4, en-reasoning-llmjp = 4, en-math-llmjp = 1, en-code-llmjp = 1 }
