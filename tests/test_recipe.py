@@ -1030,7 +1030,7 @@ class RecipeTests(unittest.TestCase):
             document_digest("  " + rows[0]["text"].replace(" ", "\n ") + "  ", 42),
         )
 
-    def test_データ源のファイルは初めて開くときに丸ごと写しを取りそのあとは写しから読む(self):
+    def test_データ源のファイルは初めて開くときに出どころの番地に丸ごと写しを取りそのあとは写しから読む(self):
         from types import SimpleNamespace
 
         source = self.recipe["sources"][0]
@@ -1048,8 +1048,11 @@ class RecipeTests(unittest.TestCase):
             )
             filesystem.return_value.open.side_effect = lambda *args, **kwargs: file.open("rb")
             first = list(iter_source(source, 42))
-        copy = self.root / "sources" / source["repository"] / source["revision"] / name
-        self.assertEqual(copy.read_bytes(), file.read_bytes())
+        revision = self.root / "sources/huggingface.co/datasets" / source["repository"] / source["revision"]
+        self.assertEqual((revision / name).read_bytes(), file.read_bytes())
+        self.assertEqual([path for path in revision.rglob("*") if path.is_file()], [revision / name])
+        listing = json.loads(revision.with_name(f"{revision.name}.json").read_text())
+        self.assertEqual(listing, {name: file.stat().st_size})
         with (
             patch("huggingface_hub.HfApi") as api,
             patch("huggingface_hub.HfFileSystem") as filesystem,

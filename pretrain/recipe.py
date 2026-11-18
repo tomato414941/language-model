@@ -37,10 +37,10 @@ from .model import LanguageModel
 from .overlap import EVALUATION, EvaluationOverlap, artifacts
 from .training import TrainConfig, read_config, read_length
 
-# Where a build keeps each file its sources read, under the source's repository
-# and revision, so that later builds read them here and not from their hosts; a
-# run keeps this directory in its store. A file being fetched waits in
-# SOURCE_ARRIVALS until it is whole.
+# Where a build keeps each file its sources read, at the address it came from:
+# the host, the repository, the revision and the file's path. Later builds read
+# the copies, not the hosts; the store holds the same tree under the same names.
+# A file being fetched waits in SOURCE_ARRIVALS until it is whole.
 SOURCE_COPIES = Path("sources")
 SOURCE_ARRIVALS = Path(".sources-arriving")
 SOURCE_FORMATS = {
@@ -859,13 +859,7 @@ def gitlab_files(source):
     names = []
     for page in itertools.count(1):
         query = urllib.parse.urlencode(
-            {
-                "ref": source["revision"],
-                "path": source["prefix"].rpartition("/")[0],
-                "recursive": "true",
-                "per_page": 100,
-                "page": page,
-            }
+            {"ref": source["revision"], "recursive": "true", "per_page": 100, "page": page}
         )
         entries = json.loads(read_url(f"{project}/repository/tree?{query}"))
         names += [entry["path"] for entry in entries if entry["type"] == "blob"]
@@ -879,25 +873,27 @@ def gitlab_files(source):
         return io.BufferedReader(RemoteFile(url), 16 * 1024 * 1024)
 
     def sizes(names):
-        # One query asks for every file; a large file's size is that of the
-        # content it stands for, not of its pointer.
-        answer = json.loads(
-            read_url(
-                f"{source['host']}/api/graphql",
-                {
-                    "query": "query($project: ID!, $ref: String!, $paths: [String!]!) "
-                    "{ project(fullPath: $project) { repository "
-                    "{ blobs(ref: $ref, paths: $paths) { nodes { path rawSize } } } } }",
-                    "variables": {
-                        "project": source["repository"],
-                        "ref": source["revision"],
-                        "paths": list(names),
+        # A query asks for a hundred files at a time; a large file's size is
+        # that of the content it stands for, not of its pointer.
+        names, found = list(names), {}
+        for start in range(0, len(names), 100):
+            answer = json.loads(
+                read_url(
+                    f"{source['host']}/api/graphql",
+                    {
+                        "query": "query($project: ID!, $ref: String!, $paths: [String!]!) "
+                        "{ project(fullPath: $project) { repository "
+                        "{ blobs(ref: $ref, paths: $paths) { nodes { path rawSize } } } } }",
+                        "variables": {
+                            "project": source["repository"],
+                            "ref": source["revision"],
+                            "paths": names[start : start + 100],
+                        },
                     },
-                },
+                )
             )
-        )
-        nodes = answer["data"]["project"]["repository"]["blobs"]["nodes"]
-        found = {node["path"]: int(node["rawSize"]) for node in nodes}
+            nodes = answer["data"]["project"]["repository"]["blobs"]["nodes"]
+            found.update((node["path"], int(node["rawSize"])) for node in nodes)
         if set(found) != set(names):
             raise ValueError(f"{source['id']}'s host did not give the size of every file")
         return found
@@ -909,55 +905,63 @@ def host_files(source):
     return (gitlab_files if "host" in source else hub_files)(source)
 
 
+def source_origin(source):
+    """Where a source's repository lives, as its address reads: the host, then the repository's path there."""
+    if "host" in source:
+        return f"{urllib.parse.urlsplit(source['host']).netloc}/{source['repository']}"
+    return f"huggingface.co/datasets/{source['repository']}"
+
+
 def source_shards(source):
     """The files a source reads at its commit, how to open one and their sizes.
 
-    Each file opens from its copy under SOURCE_COPIES. The first time, it comes
-    whole from the host into the copy; the source's list of files is kept there
-    too, so that a source whose host is down still reads from its copies.
+    A file opens from its copy at SOURCE_COPIES/<origin>/<revision>/<path>,
+    into which it first comes whole from the host. <revision>.json beside that
+    directory lists every file the host held at the revision with its size, so
+    that a source whose host is down still reads the same files in the same order.
     """
-    copy = SOURCE_COPIES / source["repository"] / source["revision"]
-    listing = copy / f"{source['id']}.files.json"
-    form = source.get("format", "parquet")
-    chosen = {"prefix": source["prefix"], "format": form, "exclude_files": sorted(source.get("exclude_files", ()))}
-    kept = json.loads(listing.read_text()) if listing.exists() else None
-    if kept is not None and kept["chosen"] == chosen:
-        sizes = kept["files"]
+    copy = SOURCE_COPIES / source_origin(source) / source["revision"]
+    listing = copy.with_name(f"{copy.name}.json")
+    if listing.exists():
+        held = json.loads(listing.read_text())
     else:
-        names, _, host_sizes = host_files(source)
-        shards = sorted(
-            name
-            for name in names
-            if name.startswith(source["prefix"])
-            and name.endswith(SOURCE_FORMATS[form])
-            and name not in chosen["exclude_files"]
-        )
-        if not shards:
-            raise ValueError(f"no {form} files found for {source['id']}")
-        sizes = host_sizes(shards)
+        names, _, sizes = host_files(source)
+        held = sizes(names)
+        arriving = SOURCE_ARRIVALS / f"{os.getpid()}-{listing.name}"
+        arriving.parent.mkdir(parents=True, exist_ok=True)
+        arriving.write_text(json.dumps(held, indent=1, sort_keys=True) + "\n")
         listing.parent.mkdir(parents=True, exist_ok=True)
-        arriving = listing.with_name(f".{listing.name}.{os.getpid()}")
-        arriving.write_text(json.dumps({"chosen": chosen, "files": sizes}, indent=1, sort_keys=True))
         os.replace(arriving, listing)
+    form = source.get("format", "parquet")
+    excluded = set(source.get("exclude_files", ()))
+    shards = sorted(
+        name
+        for name in held
+        if name.startswith(source["prefix"])
+        and name.endswith(SOURCE_FORMATS[form])
+        and name not in excluded
+    )
+    if not shards:
+        raise ValueError(f"no {form} files found for {source['id']}")
     host = []
 
     def open_file(name):
         path = copy / name
-        if not path.is_file() or path.stat().st_size != sizes[name]:
+        if not path.is_file() or path.stat().st_size != held[name]:
             if not host:
                 host.append(host_files(source)[1])
             arriving = SOURCE_ARRIVALS / f"{os.getpid()}-{path.name}"
             arriving.parent.mkdir(parents=True, exist_ok=True)
             with host[0](name) as remote, arriving.open("wb") as local:
                 shutil.copyfileobj(remote, local, 16 * 1024 * 1024)
-            if arriving.stat().st_size != sizes[name]:
+            if arriving.stat().st_size != held[name]:
                 arriving.unlink()
                 raise OSError(f"{source['id']}'s {name} did not arrive whole")
             path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(arriving, path)
         return path.open("rb")
 
-    return sorted(sizes), open_file, lambda names: {name: sizes[name] for name in names}
+    return shards, open_file, lambda names: {name: held[name] for name in names}
 
 
 def source_sizes(source):
